@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler, FrameNavigationStartingEventHandler, NavigationStartingEventHandler,
-    WebResourceRequestedEventHandler,
+    take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler, NavigationStartingEventHandler, WebResourceRequestedEventHandler,
 };
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use wry::WebViewExtWindows;
@@ -249,7 +248,8 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
             Ok(())
         }))
     };
-    let frame = FrameNavigationStartingEventHandler::create(Box::new(move |sender, args| {
+    // ICoreWebView2::add_FrameNavigationStarting memakai jenis handler yang sama.
+    let frame = NavigationStartingEventHandler::create(Box::new(move |sender, args| {
         let (Some(core), Some(args)) = (sender, args) else { return Ok(()) };
         let uri = uri_of(&args);
         if uri.starts_with("http://") || uri.starts_with("https://") {
