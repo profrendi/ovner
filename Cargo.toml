@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 tao = "0.37"
-wry = "0.57"
+wry = { version = "0.57", features = ["devtools"] }
 # Mesin pemblokir iklan Brave Shields (format EasyList/uBlock).
 adblock = "0.13"
 serde = { version = "1", features = ["derive"] }
