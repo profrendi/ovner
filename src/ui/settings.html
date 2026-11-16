@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Pengaturan</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+</head>
+<body>
+<div class="wrap">
+<h1>Pengaturan Ovner <span class="tag" id="ver"></span></h1>
+<p class="muted">Perubahan disimpan otomatis. Yang bertanda <span class="restart">berlaku setelah Ovner dibuka ulang</span> membutuhkan <button id="restart">Buka ulang Ovner</button></p>
+<div id="form"></div>
+<h2>Tentang</h2>
+<div class="card"><div class="row"><div class="lbl" id="about"></div><button id="update">Periksa update</button></div></div>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const R = '<span class="restart">Berlaku setelah Ovner dibuka ulang.</span>';
+  const schema = [
+    ["Tampilan", [
+      ["theme", "select", "Tema", "", [["system", "Ikuti Windows"], ["light", "Terang"], ["dark", "Gelap"]]],
+      ["bookmark_bar", "bool", "Tampilkan bilah bookmark", "Di bawah kolom alamat."],
+      ["home_button", "bool", "Tampilkan tombol beranda", ""],
+      ["home_url", "text", "Alamat beranda", "Kosong = halaman tab baru."],
+      ["newtab", "select", "Halaman tab baru", "", [["ovner", "Kotak cari Ovner"], ["blank", "Kosong (seperti Brave Origin)"]]],
+      ["default_zoom", "number", "Zoom bawaan (%)", "Untuk tab baru. Zoom tiap tab tetap bisa diubah dengan Ctrl + / −."],
+    ]],
+    ["Mesin pencari", [
+      ["search_engine", "text", "Mesin pencari", "google, duckduckgo, bing, brave, atau URL dengan %s (contoh: https://www.ecosia.org/search?q=%s). Ovner tidak mengirim saran pencarian saat mengetik."],
+    ]],
+    ["Shields (pemblokir iklan dan pelacak)", [
+      ["block_ads", "bool", "Blokir iklan dan pelacak", "Mesin adblock-rust milik Brave, daftar EasyList, EasyPrivacy, ABPindo, uBlock."],
+      ["cosmetic_filtering", "bool", "Sembunyikan kotak iklan yang kosong", "Aturan kosmetik EasyList (##)."],
+      ["strip_tracking_params", "bool", "Buang parameter pelacak dari alamat", "fbclid, gclid, utm_*, dan sejenisnya dihapus sebelum halaman dibuka."],
+      ["https_only", "bool", "Naikkan ke HTTPS", "Alamat http:// diubah ke https:// (alamat lokal dikecualikan)."],
+      ["gpc", "bool", "Kirim Global Privacy Control dan Do Not Track", "Tajuk Sec-GPC dan DNT di setiap permintaan."],
+      ["block_telemetry", "bool", "Blokir telemetri Microsoft Edge/Office", "Permintaan ke server telemetri Edge/WebView2 dan Office ditolak."],
+      ["auto_update_filters", "bool", "Perbarui daftar filter otomatis", "Seminggu sekali di latar."],
+      ["exceptions", "list", "Situs tanpa pemblokir", "Pisahkan dengan koma. Bisa juga lewat ikon tameng di toolbar."],
+    ]],
+    ["Privasi dan keamanan", [
+      ["save_history", "bool", "Simpan riwayat kunjungan", ""],
+      ["clear_on_exit", "bool", "Hapus cookie, cache, dan data situs saat keluar", "Anda akan keluar dari semua situs setiap kali Ovner ditutup."],
+      ["deny_sensitive_permissions", "bool", "Tolak kamera, mikrofon, lokasi, dan sensor", "Tanpa bertanya. Notifikasi dan clipboard tidak disentuh."],
+      ["webrtc_policy", "select", "Kebijakan WebRTC", R, [["default", "Bawaan"], ["proxy_only", "Sembunyikan IP lokal (hanya lewat proxy)"]]],
+      ["network_prediction", "bool", "Prediksi jaringan (prefetch DNS, preconnect)", "Brave Origin: mati. " + R],
+      ["autoplay", "bool", "Putar media otomatis", "Mati = video/audio menunggu klik. " + R],
+      ["password_manager", "bool", "Pengelola kata sandi bawaan Edge", "Brave Origin: mati. Berlaku untuk tab baru."],
+      ["autofill", "bool", "Isi otomatis alamat dan formulir", "Brave Origin: mati. Berlaku untuk tab baru."],
+      ["smartscreen", "bool", "SmartScreen", "Cek reputasi alamat ke Microsoft. " + R],
+      ["edge_tracking_prevention", "bool", "Tracking prevention bawaan Edge", "Pemblokir Ovner sudah menangani ini; mati = lebih ringan. " + R],
+      ["local_crash_reports", "bool", "Laporan crash disimpan lokal", "Tidak dikirim ke Microsoft. " + R],
+    ]],
+    ["Unduhan", [
+      ["download_dir", "text", "Folder unduhan", "Kosong = folder Downloads Windows. Berlaku untuk tab baru."],
+    ]],
+    ["Saat mulai", [
+      ["restore_tabs", "bool", "Buka lagi tab terakhir", "Semua tab tidur sampai diklik, jadi tidak memakan RAM."],
+      ["autostart", "bool", "Mulai bersama Windows (di tray)", ""],
+    ]],
+    ["Hemat RAM", [
+      ["sleep_tabs_minutes", "number", "Tidurkan tab setelah (menit)", "Tab yang tidak dibuka selama ini dibuang dari RAM dan dimuat lagi saat diklik. 0 = tidak pernah. Tab yang memutar suara tidak ditidurkan."],
+      ["suspend_hidden_tabs", "bool", "Tangguhkan tab di belakang", "JavaScript dan timer tab yang tidak terlihat dihentikan oleh WebView2; halaman tetap utuh dan langsung tampil saat diklik."],
+      ["close_to_tray", "bool", "Tombol X menyembunyikan Ovner ke tray", "Ovner tetap hidup di tray dengan RAM ditekan. Keluar lewat menu tray atau menu ☰."],
+      ["low_memory_when_hidden", "bool", "Mode memori rendah saat diminimalkan atau di tray", "WebView2 membuang cache dan menjalankan GC untuk semua tab."],
+      ["trim_when_hidden", "bool", "Rapikan RAM saat diminimalkan atau di tray", "Working set semua proses dikosongkan; angka di Task Manager langsung turun."],
+      ["trim_every_minutes", "number", "Rapikan ulang tiap (menit) selama tersembunyi", "0 = sekali saja."],
+      ["efficiency_mode", "bool", "Mode efisiensi Windows saat tersembunyi", "EcoQoS, prioritas CPU dan memori rendah untuk proses WebView2."],
+      ["simulate_memory_pressure", "bool", "Tekanan memori simulasi untuk tab tidak aktif", "Flag WebView2: tab yang tidak terlihat membersihkan dirinya sendiri. " + R],
+      ["low_end_mode", "bool", "Mode perangkat RAM kecil", "Cache gambar dan grafis Chromium lebih kecil. " + R],
+      ["v8_optimize_for_size", "bool", "JavaScript hemat memori", "V8 mengutamakan ukuran memori daripada kecepatan puncak. " + R],
+      ["site_isolation", "bool", "Isolasi situs", "Iframe lintas-situs dapat proses sendiri: lebih aman, lebih banyak RAM. " + R],
+      ["spare_renderer", "bool", "Proses renderer cadangan", "Tab baru terbuka sedikit lebih cepat, +30-60 MB. " + R],
+      ["no_gpu", "bool", "Matikan akselerasi GPU", "Hemat sekitar 50-80 MB; video jadi lebih berat ke CPU. " + R],
+      ["zero_copy", "bool", "Zero-copy rasterizer", "Saran Brave Origin. " + R],
+      ["parallel_downloading", "bool", "Unduhan paralel", "Saran Brave Origin. " + R],
+      ["extra_browser_args", "text", "Argumen tambahan WebView2", "Lanjutan, misalnya --renderer-process-limit=4. " + R],
+    ]],
+    ["Sistem", [
+      ["check_updates", "bool", "Periksa versi baru saat dibuka", "Dari GitHub Releases; dipasang otomatis dan aktif setelah dibuka ulang."],
+      ["devtools", "bool", "Izinkan DevTools (F12)", "Berlaku untuk tab baru."],
+      ["diagnostics", "bool", "Catat pemakaian RAM ke log", "Tiap 5 menit ke ovner.log di folder data."],
+    ]],
+  ];
+
+  let state = {};
+  const form = document.getElementById("form");
+  const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); for (const k in attrs) if (k === "html") e.innerHTML = attrs[k]; else e[k] = attrs[k]; e.append(...kids); return e; };
+
+  function build() {
+    form.textContent = "";
+    for (const [title, items] of schema) {
+      form.append(h("h2", { textContent: title }));
+      const card = h("div", { className: "card" });
+      for (const [key, kind, label, hint, opts] of items) {
+        const row = h("div", { className: "row" });
+        row.append(h("div", { className: "lbl", html: `${label}<small>${hint}</small>` }));
+        let ctl;
+        const v = state[key];
+        if (kind === "bool") {
+          const inp = h("input", { type: "checkbox", checked: !!v });
+          inp.onchange = () => post({ t: "set", key, value: inp.checked });
+          ctl = h("label", { className: "switch" }, inp, h("span", {}));
+        } else if (kind === "select") {
+          ctl = h("select", {});
+          for (const [val, text] of opts) ctl.append(h("option", { value: val, textContent: text, selected: val === v }));
+          ctl.onchange = () => post({ t: "set", key, value: ctl.value });
+        } else if (kind === "number") {
+          ctl = h("input", { type: "number", value: v ?? 0, min: 0 });
+          ctl.onchange = () => post({ t: "set", key, value: Number(ctl.value) || 0 });
+        } else if (kind === "list") {
+          ctl = h("input", { type: "text", value: (v || []).join(", ") });
+          ctl.onchange = () => post({ t: "set", key, value: ctl.value.split(",").map((s) => s.trim()).filter(Boolean) });
+        } else {
+          ctl = h("input", { type: "text", value: v ?? "" });
+          ctl.onchange = () => post({ t: "set", key, value: ctl.value });
+        }
+        row.append(ctl);
+        card.append(row);
+      }
+      form.append(card);
+    }
+  }
+
+  window.ovnerPage = (s) => {
+    state = s.settings;
+    document.documentElement.dataset.theme = state.theme === "system" ? "" : state.theme;
+    document.getElementById("ver").textContent = "v" + s.version;
+    document.getElementById("about").innerHTML = `Ovner ${s.version}<small>Mesin: Microsoft Edge WebView2 ${s.engine}<br>Pemblokir: adblock-rust (Brave), ${s.lists}<br>Folder data: ${s.data}<br><a href="https://github.com/profrendi/ovner">github.com/profrendi/ovner</a></small>`;
+    if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+    build();
+  };
+  document.getElementById("restart").onclick = () => post({ t: "restart" });
+  document.getElementById("update").onclick = () => post({ t: "check-update" });
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Task manager</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+</head>
+<body>
+<div class="wrap">
+<h1>Task manager Ovner</h1>
+<div class="bar"><span id="total" class="muted"></span><span style="flex:1"></span><button id="trim">Rapikan RAM sekarang</button><button id="sleepall">Tidurkan semua tab lain</button></div>
+<h2>Tab</h2>
+<div class="card"><table id="tabs"><thead><tr><th>Judul</th><th>Keadaan</th><th class="num">Diblokir</th><th class="num">Zoom</th><th></th></tr></thead><tbody></tbody></table></div>
+<h2>Proses (Ovner + WebView2)</h2>
+<div class="card"><table id="procs"><thead><tr><th>PID</th><th>Jenis</th><th class="num">RAM (working set)</th><th class="num">Commit</th></tr></thead><tbody></tbody></table></div>
+<p class="muted">RAM working set sama dengan kolom Memory di Task Manager Windows. WebView2 memakai beberapa proses (browser, renderer tiap situs, GPU, utility); tab yang tidur tidak punya proses. Diperbarui tiap 2 detik.</p>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const mb = (b) => (b / 1048576).toFixed(0) + " MB";
+  window.ovnerPage = (s) => {
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    const tb = document.querySelector("#tabs tbody"); tb.textContent = "";
+    for (const t of s.tabs) {
+      const tr = document.createElement("tr");
+      const state = t.active ? '<span class="tag on">aktif</span>' : t.sleeping ? '<span class="tag">tidur</span>' : t.suspended ? '<span class="tag">ditangguhkan</span>' : '<span class="tag">latar</span>';
+      tr.innerHTML = `<td></td><td>${state}${t.private ? ' <span class="tag">privat</span>' : ""}</td><td class="num">${t.blocked}</td><td class="num">${t.zoom}%</td><td></td>`;
+      tr.children[0].textContent = t.title || t.url;
+      if (!t.active) {
+        const b = document.createElement("button"); b.textContent = t.sleeping ? "Tutup" : "Tidurkan";
+        b.onclick = () => post({ t: t.sleeping ? "tab-close" : "tab-sleep", id: t.id });
+        tr.children[4].append(b);
+      }
+      tb.append(tr);
+    }
+    const pb = document.querySelector("#procs tbody"); pb.textContent = "";
+    let tw = 0, tc = 0;
+    for (const p of s.procs) {
+      tw += p.working; tc += p.commit;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${p.pid}</td><td>${p.is_self ? "Ovner" : "WebView2"}</td><td class="num">${mb(p.working)}</td><td class="num">${mb(p.commit)}</td>`;
+      pb.append(tr);
+    }
+    document.getElementById("total").textContent = `${s.procs.length} proses · total ${mb(tw)} (commit ${mb(tc)})`;
+  };
+  document.getElementById("trim").onclick = () => post({ t: "trim" });
+  document.getElementById("sleepall").onclick = () => post({ t: "sleep-all" });
+  post({ t: "page-ready" });
+  setInterval(() => post({ t: "page-ready" }), 2000);
+})();
+</script>
+</body>
+</html>

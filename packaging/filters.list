@@ -1,7 +1,0 @@
-# Daftar filter iklan/pelacak yang dipaketkan bersama Lumen (format EasyList/uBlock).
-# Format: <nama-berkas> <url>. Dipakai oleh workflow nightly dan skrip "Perbarui daftar blokir".
-easylist.txt     https://easylist.to/easylist/easylist.txt
-easyprivacy.txt  https://easylist.to/easylist/easyprivacy.txt
-abpindo.txt      https://raw.githubusercontent.com/ABPindo/indonesianadblockrules/master/subscriptions/abpindo.txt
-ublock-filters.txt  https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt
-ublock-privacy.txt  https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt

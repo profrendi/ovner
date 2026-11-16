@@ -1,5 +1,5 @@
 # Build Ovner (browser WebView2) untuk Windows dan terbitkan rilisnya.
-# Setiap versi baru di ovner/Cargo.toml yang di-push ke main otomatis menjadi rilis
+# Setiap versi baru di Cargo.toml yang di-push ke main otomatis menjadi rilis
 # `ovner-vX.Y.Z` berisi Ovner-Setup.exe, Ovner-Portable.zip, dan ovner-latest.json
 # (dibaca fitur update otomatis Ovner).
 name: Ovner
@@ -7,12 +7,7 @@ name: Ovner
 on:
   push:
     branches: [main]
-    paths:
-      - "ovner/**"
-      - ".github/workflows/ovner.yml"
   pull_request:
-    paths:
-      - "ovner/**"
   workflow_dispatch:
 
 permissions:
@@ -21,10 +16,6 @@ permissions:
 concurrency:
   group: ovner-${{ github.ref }}
   cancel-in-progress: false
-
-defaults:
-  run:
-    working-directory: ovner
 
 jobs:
   windows:
@@ -35,8 +26,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ovner
 
       - name: Uji
         run: cargo test
@@ -87,7 +76,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ovner-windows
-          path: ovner/dist/*
+          path: dist/*
 
       - name: Rilis otomatis
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -98,7 +87,7 @@ jobs:
           $tag = "ovner-v$env:OVNER_VERSION"
           gh release view $tag --repo "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) {
-            "Rilis $tag sudah ada, dilewati. Naikkan versi di ovner/Cargo.toml untuk rilis baru."
+            "Rilis $tag sudah ada, dilewati. Naikkan versi di Cargo.toml untuk rilis baru."
             exit 0
           }
           $notes = git log -1 --pretty=%B | Where-Object { $_ -notmatch '^(Co-Authored-By|Claude-Session):' }
