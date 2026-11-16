@@ -40,6 +40,29 @@ File `portable.txt` membuat semua data disimpan di folder `Data` di sebelah exe.
 Catatan: sandi dan cookie yang disimpan WebView2 dienkripsi dengan akun Windows, jadi login
 situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut.
 
+## Fitur baru di 0.5
+
+- **Pengelola bookmark seperti Brave** (☰ → Bookmark → Kelola, atau `ovner://bookmarks`):
+  pohon folder, daftar per folder, cari, urutkan berdasarkan nama, tambah bookmark/folder,
+  edit/pindah folder/ganti nama/hapus, impor dari Chrome/Edge/Brave atau berkas HTML, ekspor
+  HTML. Menu ☰ → Bookmark juga menampilkan semua bookmark dan foldernya.
+- **Ikon situs** (favicon) di tab, bilah bookmark, pengelola bookmark, dan saran alamat.
+- **Pengelola sandi** (☰ → Sandi dan isi otomatis, `ovner://passwords`): tawaran simpan dan
+  perbarui sandi di kanan atas, isi otomatis dan masuk otomatis, daftar per situs, lihat/salin/
+  edit/hapus, impor/ekspor CSV Brave/Chrome. Sandi dienkripsi DPAPI (terikat akun Windows).
+  Isi otomatis alamat dan kartu memakai fitur WebView2.
+- **Kolom alamat seperti Brave**: daftar saran di bawah kolom (pencarian, riwayat, bookmark),
+  panah atas/bawah, dan isi otomatis alamat saat mengetik (`sho` → `shopee.co.id`).
+- **Unduhan seperti Brave**: gelembung unduhan di kanan atas dengan progres, tombol unduhan di
+  toolbar, dan halaman `ovner://downloads` (Ctrl+J) dengan riwayat, buka berkas, tampilkan di
+  folder, salin tautan, batalkan.
+- **Task manager**: RAM per tab dan semua proses WebView2 kini terbaca; kesalahan tak terduga
+  dicatat ke `ovner.log`.
+- **YouTube**: level keamanan tidak lagi mematikan JIT JavaScript (penyebab video hitam/lambat
+  di preset Maksimal; kini setelan terpisah), referrer hanya dipangkas untuk navigasi, dan situs
+  video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
+  halaman ke CPU; untuk video tetap disarankan *Penuh*.
+
 ## Fitur baru di 0.4
 
 **Tingkat perlindungan**: tiga preset di atas halaman Pengaturan — **Seimbang** (bawaan),

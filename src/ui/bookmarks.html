@@ -1,47 +1,259 @@
 <!doctype html>
-<html lang="id">
+<html>
 <head>
 <meta charset="utf-8">
 <title>Bookmark</title>
 <link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  body { margin: 0; }
+  .shell { display: grid; grid-template-columns: 260px 1fr 210px; gap: 18px; padding: 18px 22px; min-height: 100vh; box-sizing: border-box; align-content: start; }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; }
+  header h1 { margin: 0; font-size: 22px; min-width: 240px; }
+  header input { flex: 1; max-width: 680px; }
+  .tree { font-size: 13.5px; }
+  .node { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 7px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .node.on { color: var(--accent); font-weight: 600; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .node svg, .row svg { flex: none; width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
+  .list { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; align-self: start; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 0 8px 0 16px; height: 40px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:last-child { border-bottom: 0; }
+  .row:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .row .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .u { color: var(--muted); font-size: 12px; max-width: 40%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fi { flex: none; width: 17px; height: 17px; border-radius: 4px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; background: center / 16px 16px no-repeat; }
+  .more { flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  .more:hover { background: var(--line); color: var(--text); }
+  .side { display: flex; flex-direction: column; gap: 2px; align-self: start; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 6px; }
+  .side button { text-align: left; border: 0; background: none; padding: 9px 12px; border-radius: 7px; font: inherit; color: var(--text); cursor: pointer; }
+  .side button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .side hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+  .menu { position: fixed; z-index: 10; min-width: 190px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px #0003; padding: 5px; }
+  .menu button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 8px 12px; border-radius: 6px; font: inherit; color: var(--text); cursor: pointer; }
+  .menu button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .menu button.danger { color: #d33; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); padding: 20px; width: min(460px, 90vw); }
+  dialog::backdrop { background: #0006; }
+  dialog label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4px; }
+  dialog input, dialog select { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+  dialog input:focus, dialog select:focus { outline: none; border-color: var(--accent); }
+  dialog .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .empty { padding: 26px; color: var(--muted); text-align: center; }
+  @media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .side { flex-direction: row; flex-wrap: wrap; } }
+</style>
 </head>
 <body>
-<div class="wrap">
-<h1 id="h1"></h1>
-<p class="muted" id="tip"></p>
-<div class="bar"><span style="flex:1"></span><button id="imp"></button></div>
-<div id="list"></div>
+<div class="shell">
+  <header><h1 id="h1"></h1><input type="search" id="q"></header>
+  <div class="tree" id="tree"></div>
+  <div class="list" id="list"></div>
+  <div class="side" id="side"></div>
 </div>
+<dialog id="dlg">
+  <h2 id="dlgTitle" style="margin:0"></h2>
+  <div id="dlgBody"></div>
+  <div class="acts"><button id="dlgCancel"></button><button class="primary" id="dlgOk"></button></div>
+</dialog>
+<input type="file" id="file" accept=".html,.htm" hidden>
 <script>
 (function () {
   const post = (o) => window.ipc.postMessage(JSON.stringify(o));
-  const list = document.getElementById("list");
+  const $ = (id) => document.getElementById(id);
   const W = {
-    id: { h1: "Bookmark", tip: "Tekan <b>Ctrl+D</b> atau klik bintang di kolom alamat untuk menyimpan halaman.", empty: "Belum ada bookmark.", ren: "Ubah nama", name: "Nama bookmark:", rm: "Hapus bookmark", imp: "Impor dari Chrome/Edge/Brave" },
-    en: { h1: "Bookmarks", tip: "Press <b>Ctrl+D</b> or click the star in the address bar to save a page.", empty: "No bookmarks yet.", ren: "Rename", name: "Bookmark name:", rm: "Remove bookmark", imp: "Import from Chrome/Edge/Brave" },
+    id: { h1: "Bookmark", q: "Cari bookmark", bar: "Bilah bookmark", other: "Bookmark lain", sort: "Urutkan berdasarkan nama", addBm: "Tambah bookmark baru", addFolder: "Tambah folder baru",
+      imp: "Impor bookmark (berkas HTML)", impFrom: "Impor dari", exp: "Ekspor bookmark", edit: "Edit", rename: "Ganti nama", copy: "Salin alamat", openNew: "Buka di tab baru",
+      del: "Hapus", empty: "Folder ini kosong.", noResult: "Tidak ada bookmark yang cocok.", name: "Nama", url: "Alamat", folder: "Folder", save: "Simpan", cancel: "Batal",
+      folderName: "Nama folder", confirmFolder: (n) => `Hapus folder "${n}" beserta seluruh isinya?` },
+    en: { h1: "Bookmarks", q: "Search bookmarks", bar: "Bookmarks bar", other: "Other bookmarks", sort: "Sort by name", addBm: "Add new bookmark", addFolder: "Add new folder",
+      imp: "Import bookmarks (HTML file)", impFrom: "Import from", exp: "Export bookmarks", edit: "Edit", rename: "Rename", copy: "Copy URL", openNew: "Open in new tab",
+      del: "Delete", empty: "This folder is empty.", noResult: "No matching bookmarks.", name: "Name", url: "URL", folder: "Folder", save: "Save", cancel: "Cancel",
+      folderName: "Folder name", confirmFolder: (n) => `Delete folder "${n}" and everything in it?` },
   };
-  document.getElementById("imp").onclick = () => post({ t: "import" });
-  window.ovnerPage = (s) => {
-    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
-    const w = W[s.lang] || W.id;
-    document.documentElement.lang = s.lang; document.title = w.h1;
-    document.getElementById("h1").textContent = w.h1; document.getElementById("tip").innerHTML = w.tip; document.getElementById("imp").textContent = w.imp;
-    list.textContent = "";
-    if (!s.bookmarks.length) { list.innerHTML = '<div class="card"><div class="empty"></div></div>'; list.querySelector(".empty").textContent = w.empty; return; }
-    const card = Object.assign(document.createElement("div"), { className: "card list" });
-    for (const b of s.bookmarks) {
-      const row = document.createElement("div"); row.className = "row";
-      const a = document.createElement("a"); a.href = b.url;
-      a.innerHTML = `<span class="t"></span><span class="u"></span>`;
-      a.querySelector(".t").textContent = b.title; a.querySelector(".u").textContent = b.url;
-      const ren = document.createElement("button"); ren.textContent = w.ren;
-      ren.onclick = () => { const t = prompt(w.name, b.title); if (t !== null) post({ t: "bookmark-rename", url: b.url, title: t }); };
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = w.rm;
-      x.onclick = () => post({ t: "bookmark-remove", url: b.url });
-      row.append(a, ren, x); card.append(row);
+  let w = W.id, S = { bookmarks: [], folders: [], icons: {}, browsers: [] }, cur = "";
+  const folderSvg = '<svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>';
+  const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); Object.assign(e, attrs || {}); e.append(...kids); return e; };
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+  const label = (f) => (f === "" ? w.bar : f === "@other" ? w.other : f.split("/").pop());
+  function icon(b) {
+    const e = h("span", { className: "fi" });
+    const ico = S.icons[hostOf(b.url)];
+    if (ico) { e.style.backgroundImage = `url("${ico}")`; return e; }
+    const host = hostOf(b.url) || b.title;
+    let n = 0; for (const c of host) n = (n * 31 + c.charCodeAt(0)) >>> 0;
+    e.style.background = `hsl(${n % 360} 55% 45%)`;
+    e.textContent = (host.match(/[a-z0-9]/i) || ["•"])[0].toUpperCase();
+    return e;
+  }
+  const kids = (path) => {
+    const pre = path ? path + "/" : "";
+    const out = [];
+    for (const f of S.folders) if (f.startsWith(pre) && f !== "@other" && !f.slice(pre.length).includes("/") && f.length > pre.length) out.push(f);
+    return out;
+  };
+
+  function renderTree() {
+    const t = $("tree"); t.textContent = "";
+    const add = (path, depth) => {
+      const n = h("div", { className: "node" + (cur === path ? " on" : "") });
+      n.style.paddingLeft = 8 + depth * 16 + "px";
+      n.innerHTML = folderSvg;
+      n.append(h("span", { textContent: label(path) }));
+      n.onclick = () => { cur = path; $("q").value = ""; render(); };
+      t.append(n);
+      for (const k of kids(path)) add(k, depth + 1);
+    };
+    add("", 0);
+    if (S.folders.includes("@other") || S.bookmarks.some((b) => b.folder === "@other")) {
+      add("@other", 0);
     }
-    list.append(card);
+  }
+
+  function closeMenu() { document.querySelectorAll(".menu").forEach((m) => m.remove()); }
+  function menu(x, y, items) {
+    closeMenu();
+    const m = h("div", { className: "menu" });
+    for (const [text, fn, cls] of items) {
+      const b = h("button", { textContent: text, className: cls || "" });
+      b.onclick = (e) => { e.stopPropagation(); closeMenu(); fn(); };
+      m.append(b);
+    }
+    document.body.append(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.min(x, innerWidth - r.width - 8) + "px";
+    m.style.top = Math.min(y, innerHeight - r.height - 8) + "px";
+  }
+  document.addEventListener("click", closeMenu);
+
+  function folderOptions(sel) {
+    const s = h("select", {});
+    const all = ["", ...S.folders.filter((f) => f !== "@other" && !f.startsWith("@other/")), "@other", ...S.folders.filter((f) => f.startsWith("@other/"))];
+    for (const f of all) {
+      const depth = f === "" || f === "@other" ? 0 : f.replace(/^@other\//, "").split("/").length - (f.startsWith("@other/") ? 0 : 0);
+      s.append(h("option", { value: f, textContent: "  ".repeat(f === "" || f === "@other" ? 0 : depth) + label(f), selected: f === sel }));
+    }
+    return s;
+  }
+  function dialog(title, fields, ok) {
+    $("dlgTitle").textContent = title;
+    const body = $("dlgBody"); body.textContent = "";
+    const inputs = {};
+    for (const [key, lab, el] of fields) { body.append(h("label", { textContent: lab }), el); inputs[key] = el; }
+    $("dlgOk").textContent = w.save; $("dlgCancel").textContent = w.cancel;
+    $("dlgOk").onclick = () => { ok(inputs); $("dlg").close(); };
+    $("dlgCancel").onclick = () => $("dlg").close();
+    body.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("dlgOk").click(); } };
+    $("dlg").showModal();
+    const first = body.querySelector("input"); if (first) { first.focus(); first.select(); }
+  }
+  function editBookmark(b) {
+    dialog(w.edit, [["title", w.name, h("input", { value: b ? b.title : "" })], ["url", w.url, h("input", { value: b ? b.url : "https://" })], ["folder", w.folder, folderOptions(b ? b.folder : cur)]],
+      (i) => post(b ? { t: "bm-edit", url: b.url, title: i.title.value, newUrl: i.url.value, folder: i.folder.value } : { t: "bm-add", title: i.title.value, url: i.url.value, folder: i.folder.value }));
+  }
+
+  function row(item) {
+    const r = h("div", { className: "row" });
+    if (item.folder !== undefined && item.url === undefined) {
+      const f = item.folder;
+      r.innerHTML = folderSvg;
+      r.append(h("span", { className: "t", textContent: label(f) }));
+      r.onclick = () => { cur = f; $("q").value = ""; render(); };
+      const m = h("button", { className: "more", textContent: "⋮" });
+      m.onclick = (e) => {
+        e.stopPropagation();
+        menu(e.clientX - 180, e.clientY, [
+          [w.rename, () => dialog(w.rename, [["name", w.folderName, h("input", { value: label(f) })]], (i) => post({ t: "folder-rename", path: f, name: i.name.value }))],
+          [w.del, () => { if (confirm(w.confirmFolder(label(f)))) post({ t: "folder-remove", path: f }); }, "danger"],
+        ]);
+      };
+      r.append(m);
+      return r;
+    }
+    const b = item;
+    r.append(icon(b), h("span", { className: "t", textContent: b.title }), h("span", { className: "u", textContent: hostOf(b.url) }));
+    r.title = b.url;
+    r.onclick = () => post({ t: "open", url: b.url });
+    r.onauxclick = (e) => { if (e.button === 1) post({ t: "open", url: b.url, newtab: true }); };
+    const m = h("button", { className: "more", textContent: "⋮" });
+    m.onclick = (e) => {
+      e.stopPropagation();
+      menu(e.clientX - 180, e.clientY, [
+        [w.edit, () => editBookmark(b)],
+        [w.copy, () => navigator.clipboard && navigator.clipboard.writeText(b.url)],
+        [w.openNew, () => post({ t: "open", url: b.url, newtab: true })],
+        [w.del, () => post({ t: "bookmark-remove", url: b.url }), "danger"],
+      ]);
+    };
+    r.append(m);
+    return r;
+  }
+
+  function renderList() {
+    const list = $("list"); list.textContent = "";
+    const q = $("q").value.trim().toLowerCase();
+    let items = [];
+    if (q) {
+      items = S.bookmarks.filter((b) => b.title.toLowerCase().includes(q) || b.url.toLowerCase().includes(q));
+    } else {
+      // Urutan seperti bilah bookmark: bookmark dan subfolder sesuai kemunculan pertama.
+      const seen = new Set();
+      const pre = cur ? cur + "/" : "";
+      for (const b of S.bookmarks) {
+        if (b.folder === cur) { items.push(b); continue; }
+        if (cur === "" && (b.folder === "@other" || b.folder.startsWith("@other/"))) continue;
+        if (b.folder.startsWith(pre) && b.folder.length > pre.length) {
+          const sub = pre + b.folder.slice(pre.length).split("/")[0];
+          if (!seen.has(sub)) { seen.add(sub); items.push({ folder: sub }); }
+        }
+      }
+      for (const f of kids(cur)) if (!seen.has(f)) items.push({ folder: f });
+    }
+    if (!items.length) { list.append(h("div", { className: "empty", textContent: q ? w.noResult : w.empty })); return; }
+    for (const it of items) list.append(row(it));
+  }
+
+  function renderSide() {
+    const s = $("side"); s.textContent = "";
+    const btn = (text, fn) => { const b = h("button", { textContent: text }); b.onclick = fn; s.append(b); };
+    btn(w.sort, () => post({ t: "bm-sort", folder: cur }));
+    s.append(h("hr"));
+    btn(w.addBm, () => editBookmark(null));
+    btn(w.addFolder, () => dialog(w.addFolder, [["name", w.folderName, h("input", { value: "" })]], (i) => {
+      const n = i.name.value.trim().replace(/\//g, "∕");
+      if (n) { post({ t: "folder-add", path: cur ? cur + "/" + n : n }); }
+    }));
+    s.append(h("hr"));
+    btn(w.imp, () => $("file").click());
+    for (const b of S.browsers) btn(`${w.impFrom} ${b.name}`, () => post({ t: "import", path: b.path }));
+    btn(w.exp, () => post({ t: "bm-export" }));
+  }
+
+  function render() {
+    if (cur && !S.folders.includes(cur)) cur = "";
+    renderTree(); renderList(); renderSide();
+  }
+
+  $("file").onchange = () => {
+    const f = $("file").files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => post({ t: "bm-import-html", html: String(r.result) });
+    r.readAsText(f);
+    $("file").value = "";
   };
+  // Dipanggil Ovner untuk ekspor: unduh berkas lewat tautan sementara.
+  window.ovnerSave = (name, type, text) => {
+    const a = h("a", { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+    document.body.append(a); a.click(); a.remove();
+  };
+  window.ovnerPage = (s) => {
+    S = s; w = W[s.lang] || W.id;
+    for (const b of S.bookmarks) b.folder = b.folder || "";
+    document.documentElement.lang = s.lang;
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    document.title = w.h1; $("h1").textContent = w.h1; $("q").placeholder = w.q;
+    render();
+  };
+  $("q").oninput = renderList;
   post({ t: "page-ready" });
 })();
 </script>

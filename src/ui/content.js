@@ -240,6 +240,105 @@
     };
   })();
 
+  // ---- Pengelola sandi: isi otomatis dan tawaran simpan (seperti Brave) ----
+  (function () {
+    let offers = [], asked = false, box = null, lastSent = "";
+    const visible = (e) => e && e.offsetParent !== null && !e.disabled && !e.readOnly;
+    const pwFields = () => [...document.querySelectorAll('input[type="password"]')].filter(visible);
+    // Kolom nama pengguna: input teks/email terakhir sebelum kolom sandi.
+    function userFieldFor(pw) {
+      const scope = pw.form || document;
+      const cands = [...scope.querySelectorAll('input:not([type]),input[type="text"],input[type="email"],input[type="tel"]')].filter(visible);
+      let best = null;
+      for (const c of cands) if (c.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING) best = c;
+      return best || cands.find((c) => /user|email|login|akun|nama/i.test(c.name + c.id + c.autocomplete)) || null;
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    function setVal(el, v) {
+      if (!el) return;
+      el.focus();
+      setter.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    function hide() { if (box) { box.remove(); box = null; } }
+    function show(anchor) {
+      hide();
+      if (!offers.length || !anchor) return;
+      const host = document.createElement("div");
+      const root = host.attachShadow({ mode: "closed" });
+      const r = anchor.getBoundingClientRect();
+      host.style.cssText = `position:fixed;z-index:2147483647;left:${r.left}px;top:${r.bottom + 2}px;min-width:${Math.max(220, r.width)}px`;
+      const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+      root.innerHTML = `<style>
+        .b{font:13px "Segoe UI",system-ui,sans-serif;background:${dark ? "#2b2f35" : "#fff"};color:${dark ? "#e8eaed" : "#1d2228"};
+          border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;}
+        .i{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer}
+        .i:hover{background:${dark ? "#3a4048" : "#eef1f4"}}
+        .k{width:16px;height:16px;flex:none;opacity:.7}
+        .s{font-size:11px;opacity:.65}</style><div class="b"></div>`;
+      const b = root.querySelector(".b");
+      for (const o of offers) {
+        const it = document.createElement("div"); it.className = "i";
+        it.innerHTML = '<svg class="k" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><div><div class="u"></div><div class="s">••••••••</div></div>';
+        it.querySelector(".u").textContent = o.user || "(tanpa nama)";
+        it.addEventListener("mousedown", (e) => { e.preventDefault(); hide(); post({ t: "pw-fill", id: o.id }); });
+        b.append(it);
+      }
+      document.documentElement.append(host);
+      box = host;
+    }
+    window.__ovnerPw = {
+      offer(list, auto) {
+        offers = list || [];
+        if (auto && offers.length === 1) post({ t: "pw-fill", id: offers[0].id });
+        const a = document.activeElement;
+        if (a && a.tagName === "INPUT" && (a.type === "password" || pwFields().some((p) => userFieldFor(p) === a))) show(a);
+      },
+      fill(user, pass) {
+        const pw = pwFields()[0];
+        if (!pw) return;
+        setVal(userFieldFor(pw), user);
+        setVal(pw, pass);
+        hide();
+      },
+    };
+    // Tanya Ovner sekali bila halaman punya kolom sandi.
+    function check() {
+      if (!asked && pwFields().length) { asked = true; post({ t: "pw-query" }); }
+    }
+    document.addEventListener("focusin", (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLInputElement)) return;
+      check();
+      if (offers.length && (el.type === "password" || pwFields().some((p) => userFieldFor(p) === el))) show(el); else hide();
+    }, true);
+    document.addEventListener("mousedown", (e) => { if (box && !e.composedPath().includes(box)) hide(); }, true);
+    // Tangkap login yang dikirim: submit formulir, klik tombol, atau Enter di kolom sandi.
+    function capture() {
+      const pw = pwFields().find((p) => p.value);
+      if (!pw) return;
+      const u = userFieldFor(pw);
+      const key = (u ? u.value : "") + "\u0000" + pw.value;
+      if (key === lastSent) return;
+      lastSent = key;
+      post({ t: "pw-capture", user: u ? u.value : "", pass: pw.value });
+    }
+    document.addEventListener("submit", capture, true);
+    document.addEventListener("click", (e) => {
+      const b = e.target instanceof Element && e.target.closest('button,input[type="submit"],[role="button"]');
+      if (b) setTimeout(capture, 0);
+    }, true);
+    document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target instanceof HTMLInputElement) capture(); }, true);
+    addEventListener("pagehide", capture);
+    onReady(() => {
+      check();
+      let n = 0;
+      const mo = new MutationObserver(() => { if (!asked && ++n < 400) check(); else if (asked) mo.disconnect(); });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    });
+  })();
+
   const notifyUrl = () => post({ t: "url" });
   for (const fn of ["pushState", "replaceState"]) {
     const orig = history[fn];

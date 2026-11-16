@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 fn zero() -> u32 {
     0
@@ -120,6 +120,9 @@ pub struct Settings {
     pub security_level: String,
     /// Situs yang tetap boleh menjalankan JavaScript di level "Paling aman".
     pub script_allowed: Vec<String>,
+    /// Matikan JIT JavaScript (lebih aman dari celah V8, tetapi YouTube dan situs berat jauh
+    /// lebih lambat karena WebAssembly ikut mati). Tidak termasuk preset.
+    pub disable_jit: bool,
     pub clear_on_exit: bool,
     pub save_history: bool,
     pub deny_sensitive_permissions: bool,
@@ -129,7 +132,11 @@ pub struct Settings {
     /// Secure DNS: "off", "cloudflare", "quad9", "adguard", atau URL DoH.
     pub secure_dns: String,
     pub autoplay: bool,
+    /// Tawarkan simpan sandi dan isi otomatis (pengelola sandi Ovner).
     pub password_manager: bool,
+    /// Isi login otomatis bila situs hanya punya satu login tersimpan ("Sign in automatically").
+    pub password_autosignin: bool,
+    /// Isi otomatis alamat dan kartu pembayaran (fitur WebView2/Edge).
     pub autofill: bool,
     pub spellcheck: bool,
     pub smartscreen: bool,
@@ -211,6 +218,7 @@ impl Default for Settings {
             always_private: false,
             security_level: "standard".into(),
             script_allowed: Vec::new(),
+            disable_jit: false,
             gpu_mode: "full".into(),
             youtube_h264: "auto".into(),
             language: "auto".into(),
@@ -252,8 +260,9 @@ impl Default for Settings {
             network_prediction: true,
             secure_dns: "off".into(),
             autoplay: true,
-            password_manager: false,
-            autofill: false,
+            password_manager: true,
+            password_autosignin: true,
+            autofill: true,
             spellcheck: false,
             smartscreen: false,
             edge_tracking_prevention: false,
@@ -395,6 +404,12 @@ impl Settings {
             self.newtab = "blank".into();
             self.devtools = false;
             self.spellcheck = false;
+        }
+        if self.schema < 3 {
+            // 0.5: pengelola sandi dan isi otomatis seperti Brave (diminta pengguna).
+            self.password_manager = true;
+            self.password_autosignin = true;
+            self.autofill = true;
         }
         if self.schema < 2 {
             // 0.3.1: "Matikan GPU" menjadi pilihan mode GPU.
@@ -594,8 +609,8 @@ impl Settings {
         if self.v8_optimize_for_size {
             js.push("--optimize-for-size");
         }
-        if self.security_level != "standard" {
-            // Seperti "Enhance security" Edge: JIT JavaScript mati (lebih aman, sedikit lebih lambat).
+        if self.disable_jit {
+            // Seperti "Enhance security" Edge: JIT JavaScript mati.
             js.push("--jitless");
         }
         if !js.is_empty() {
@@ -607,9 +622,9 @@ impl Settings {
         }
         match self.gpu_mode.as_str() {
             "off" => extra.push_str(" --disable-gpu"),
-            // GPU tetap untuk dekode video dan komposisi (video tajam dan lancar), tetapi
-            // gambar halaman dirender CPU dan anggaran memori GPU dibatasi.
-            "lite" => extra.push_str(" --disable-gpu-rasterization --disable-accelerated-2d-canvas --force-gpu-mem-available-mb=256"),
+            // GPU tetap untuk video, kanvas, dan komposisi (video tajam); hanya gambar halaman
+            // (teks, tata letak) yang dirender CPU.
+            "lite" => extra.push_str(" --disable-gpu-rasterization"),
             _ => {
                 if self.zero_copy {
                     extra.push_str(" --enable-zero-copy");
@@ -763,7 +778,9 @@ mod tests {
         assert_eq!(s.detect_preset(), "balanced");
         assert!(s.apply_preset("max"));
         assert_eq!((s.preset.as_str(), s.farbling.as_str(), s.security_level.as_str()), ("max", "strict", "safer"));
-        assert!(s.browser_args().contains("--jitless") && s.browser_args().contains("adblock.dns.mullvad.net"));
+        // Level keamanan tidak lagi mematikan JIT (YouTube jadi lambat/hitam); itu setelan sendiri.
+        assert!(!s.browser_args().contains("--jitless") && s.browser_args().contains("adblock.dns.mullvad.net"));
+        assert!(Settings { disable_jit: true, ..Settings::default() }.browser_args().contains("--jitless"));
         assert!(s.set("letterboxing", &serde_json::json!(false)));
         assert_eq!(s.preset, "custom");
         assert!(s.set("letterboxing", &serde_json::json!(true)));

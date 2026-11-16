@@ -14,6 +14,7 @@ mod install;
 #[cfg(windows)]
 mod netfilter;
 mod settings;
+mod vault;
 mod shields;
 mod store;
 mod update;
@@ -55,6 +56,23 @@ const BOOKMARKS_HTML: &str = include_str!("ui/bookmarks.html");
 const TASKS_HTML: &str = include_str!("ui/tasks.html");
 const SETUP_HTML: &str = include_str!("ui/setup.html");
 const HTTPS_HTML: &str = include_str!("ui/https.html");
+const PASSWORDS_HTML: &str = include_str!("ui/passwords.html");
+const DOWNLOADS_HTML: &str = include_str!("ui/downloads.html");
+
+/// Satu unduhan di riwayat unduhan.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Download {
+    #[serde(skip)]
+    id: u64,
+    url: String,
+    path: String,
+    name: String,
+    total: i64,
+    received: i64,
+    /// "progress", "done", atau "failed".
+    state: String,
+    time: u64,
+}
 const PAGE_CSS: &str = include_str!("ui/page.css");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
 /// `http://ovner.<nama>/` (WebView2 belum mendukung skema sendiri secara penuh).
@@ -210,6 +228,9 @@ enum UserEvent {
     Menu(String),
     /// Tab terakhir ditutup: tutup jendela seperti tombol X.
     CloseWindow,
+    /// Ikon situs (PNG) tab ini berubah.
+    Favicon(u64, Vec<u8>),
+    Download(win::DlEvent),
     TrayClick,
     Remote(Remote),
 }
@@ -258,6 +279,8 @@ struct SessionTab {
 
 struct Menus {
     main: Menu,
+    /// Submenu Bookmark di ☰: 4 item tetap, lalu daftar bookmark (diisi ulang tiap dibuka).
+    bookmarks: Submenu,
     tab: Menu,
     tray: Menu,
 }
@@ -265,6 +288,8 @@ struct Menus {
 struct App {
     window: Window,
     toolbar: WebView,
+    /// Permintaan daftar proses WebView2 yang sedang berjalan (task manager).
+    proc_req: Option<Instant>,
     /// Daftar tab vertikal di kiri (bila dinyalakan).
     sidebar: Option<WebView>,
     toolbar_ready: bool,
@@ -276,6 +301,15 @@ struct App {
     settings: Rc<RefCell<Settings>>,
     blocker: Rc<RefCell<Blocker>>,
     store: Store,
+    /// Brankas sandi (pengelola sandi Ovner).
+    vault: vault::Vault,
+    /// Unduhan (riwayat seperti brave://downloads) dan gelembung unduhan di kanan atas.
+    downloads: Vec<Download>,
+    dl_bubble: bool,
+    /// Tinggi tambahan toolbar saat dropdown/gelembung terbuka (menutupi halaman).
+    toolbar_over: f64,
+    /// Tawaran simpan/perbarui sandi yang sedang ditampilkan: (alamat, pengguna, sandi, perbarui?).
+    pw_offer: Option<(String, String, String, bool)>,
     web_context: WebContext,
     #[cfg(windows)]
     env: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment>,
@@ -333,6 +367,8 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "tasks" => page_response(TASKS_HTML),
         "setup" => page_response(SETUP_HTML),
         "https" => page_response(HTTPS_HTML),
+        "passwords" => page_response(PASSWORDS_HTML),
+        "downloads" => page_response(DOWNLOADS_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
 }
@@ -372,6 +408,7 @@ fn build_menus(lang: Lang) -> Menus {
         &item("bookmark-bar", "m.bookmark_bar"),
         &item("bookmarks", "m.bookmarks"),
         &item("import", "m.import"),
+        &PredefinedMenuItem::separator(),
     ]);
     let zoom = Submenu::new(t(lang, "m.zoom"), true);
     let _ = zoom.append_items(&[&item("zoom-out", "m.zoom_out"), &item("zoom-reset", "m.zoom_reset"), &item("zoom-in", "m.zoom_in")]);
@@ -395,6 +432,7 @@ fn build_menus(lang: Lang) -> Menus {
         &PredefinedMenuItem::separator(),
         &bookmarks,
         &item("history", "m.history"),
+        &item("passwords", "m.passwords"),
         &item("downloads", "m.downloads"),
         &PredefinedMenuItem::separator(),
         &zoom,
@@ -421,13 +459,16 @@ fn build_menus(lang: Lang) -> Menus {
     ]);
     let tray = Menu::new();
     let _ = tray.append_items(&[&item("show", "tray.show"), &item("newtab", "tray.newtab"), &PredefinedMenuItem::separator(), &item("quit", "m.quit")]);
-    Menus { main, tab, tray }
+    Menus { main, bookmarks, tab, tray }
 }
 
 impl App {
     fn toolbar_rect(&self) -> Rect {
         let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
-        Rect { position: WLogicalPosition::new(0.0, 0.0).into(), size: WLogicalSize::new(size.width.max(1.0), self.toolbar_h).into() }
+        // Saat dropdown alamat/gelembung terbuka, toolbar memanjang menutupi bagian atas
+        // halaman (overlay), tanpa menggeser halaman.
+        let h = (self.toolbar_h + self.toolbar_over).min(size.height.max(1.0));
+        Rect { position: WLogicalPosition::new(0.0, 0.0).into(), size: WLogicalSize::new(size.width.max(1.0), h).into() }
     }
 
     fn side_w(&self) -> f64 {
@@ -716,6 +757,12 @@ impl App {
                 }
                 let p_fail = self.proxy.clone();
                 win::on_process_failed(&wv, move |k| send(&p_fail, UserEvent::ProcFailed(id, k)));
+                let p_dl = self.proxy.clone();
+                win::on_download(&wv, move |ev| send(&p_dl, UserEvent::Download(ev)));
+                if !private {
+                    let p_icon = self.proxy.clone();
+                    win::on_favicon(&wv, move |png| send(&p_icon, UserEvent::Favicon(id, png)));
+                }
                 if s.extensions_enabled && !self.extensions_loaded && !private {
                     self.extensions_loaded = true;
                     win::load_extensions(&wv, &s.extension_dirs, log);
@@ -1059,6 +1106,7 @@ impl App {
             "homeButton": s.home_button,
             "bookmarkBar": s.bookmark_bar,
             "bookmarks": bookmarks,
+            "icons": self.store.icons_for(self.store.bookmarks.iter().map(|b| b.url.as_str()).chain(self.tabs.iter().map(|t| t.url.as_str()))),
             "bookmarked": tab.is_some_and(|t| self.store.is_bookmarked(&t.url)),
             "canBack": can_back,
             "canForward": can_forward,
@@ -1072,6 +1120,9 @@ impl App {
             "suggest": s.address_suggestions,
             "noSearch": s.no_search,
             "vertical": s.vertical_tabs,
+            "downloads": self.downloads.iter().rev().take(6).map(Self::download_view).collect::<Vec<_>>(),
+            "dlBubble": self.dl_bubble,
+            "pwOffer": self.pw_offer.as_ref().map(|(u, user, _, update)| json!({"site": vault::site_of(u), "user": user, "update": update})),
             "toolbarCss": s.toolbar_css,
         });
         drop(s);
@@ -1090,12 +1141,80 @@ impl App {
         self.last_render_key = text;
     }
 
-    fn set_toolbar_height(&mut self, h: f64) {
+    fn set_toolbar_height(&mut self, h: f64, over: f64) {
         let h = h.clamp(60.0, 640.0);
+        let over = over.clamp(0.0, 900.0);
         if (h - self.toolbar_h).abs() > 0.5 {
             self.toolbar_h = h;
+            self.toolbar_over = over;
             self.layout();
+        } else if (over - self.toolbar_over).abs() > 0.5 {
+            self.toolbar_over = over;
+            let _ = self.toolbar.set_bounds(self.toolbar_rect());
         }
+        if over > 0.0 {
+            win::raise(&self.toolbar);
+        }
+    }
+
+    fn download_view(d: &Download) -> Value {
+        json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
+            "exists": d.state == "done" && Path::new(&d.path).exists()})
+    }
+
+    fn save_downloads(&self) {
+        let keep: Vec<&Download> = self.downloads.iter().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+        if let Ok(t) = serde_json::to_string(&keep) {
+            let _ = std::fs::write(data_dir().join("downloads.json"), t);
+        }
+    }
+
+    fn on_download(&mut self, ev: win::DlEvent) {
+        match ev {
+            win::DlEvent::Started { id, url, path, total } => {
+                let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| url.clone());
+                self.downloads.push(Download { id, url, path, name, total, received: 0, state: "progress".into(), time: store::now() });
+                self.dl_bubble = true;
+            }
+            win::DlEvent::Progress { id, received, total } => {
+                if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
+                    d.received = received;
+                    d.total = total;
+                }
+            }
+            win::DlEvent::Done { id, ok, path, received } => {
+                if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
+                    d.state = if ok { "done".into() } else { "failed".into() };
+                    d.received = received;
+                    if !path.is_empty() {
+                        d.name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone());
+                        d.path = path;
+                    }
+                }
+                self.save_downloads();
+            }
+        }
+        self.refresh_pages("downloads");
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    fn download_action(&mut self, kind: &str, id: u64) {
+        let Some(pos) = self.downloads.iter().position(|d| d.id == id) else { return };
+        let path = self.downloads[pos].path.clone();
+        match kind {
+            "dl-open" if Path::new(&path).exists() => win::open_path(&path, false),
+            "dl-show" if Path::new(&path).exists() => win::open_path(&path, true),
+            "dl-cancel" => win::cancel_download(id),
+            "dl-remove" => {
+                self.downloads.remove(pos);
+                self.save_downloads();
+                self.refresh_pages("downloads");
+            }
+            _ => {}
+        }
+        self.last_render_key.clear();
+        self.render();
     }
 
     fn save_session(&self) {
@@ -1184,10 +1303,33 @@ impl App {
                 })
             }
             "newtab" => json!({ "theme": theme, "lang": lang }),
+            "downloads" => {
+                let list: Vec<Value> = self.downloads.iter().rev().map(Self::download_view).collect();
+                json!({ "theme": theme, "lang": lang, "downloads": list })
+            }
+            "passwords" => {
+                let s = self.settings.borrow();
+                let logins: Vec<Value> = self
+                    .vault
+                    .logins()
+                    .iter()
+                    .map(|l| json!({"id": l.id, "site": l.site, "url": l.url, "user": l.username, "note": l.note, "used": l.used}))
+                    .collect();
+                let icons = self.store.icons_for(self.vault.logins().iter().map(|l| l.url.as_str()));
+                json!({
+                    "theme": theme, "lang": lang, "logins": logins, "icons": icons,
+                    "settings": {"password_manager": s.password_manager, "password_autosignin": s.password_autosignin, "autofill": s.autofill},
+                })
+            }
             "history" => json!({ "theme": theme, "lang": lang, "history": self.store.search_history(&t.page_query, 500) }),
-            "bookmarks" => json!({ "theme": theme, "lang": lang, "bookmarks": self.store.bookmarks }),
+            "bookmarks" => {
+                let icons = self.store.icons_for(self.store.bookmarks.iter().map(|b| b.url.as_str()));
+                let browsers: Vec<Value> = import::detect().into_iter().map(|(n, p)| json!({"name": n, "path": p.display().to_string()})).collect();
+                json!({ "theme": theme, "lang": lang, "bookmarks": self.store.bookmarks, "folders": self.store.all_folders(), "icons": icons, "browsers": browsers })
+            }
             "tasks" => {
-                let snap = win::process_snapshot();
+                let pids: Vec<u32> = self.proc_infos.iter().map(|p| p.pid).collect();
+                let snap = win::process_snapshot(&pids);
                 let mem: HashMap<u32, (u64, u64)> = snap.iter().map(|p| (p.pid, (p.working, p.commit))).collect();
                 // RAM per tab: proses renderer yang melayani halaman tab itu (seperti task
                 // manager Chrome). Proses yang melayani beberapa tab ditandai "bersama".
@@ -1230,7 +1372,12 @@ impl App {
     }
 
     /// Minta daftar proses WebView2 terbaru (untuk task manager per tab).
-    fn refresh_proc_infos(&self) {
+    fn refresh_proc_infos(&mut self) {
+        // Paling sering tiap 5 detik, dan tidak menumpuk permintaan yang belum dijawab.
+        if self.proc_req.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.proc_req = Some(Instant::now());
         #[cfg(windows)]
         {
             use wry::WebViewExtWindows;
@@ -1319,6 +1466,14 @@ impl App {
             }
             "block_cookie_notices" | "custom_lists" => start_filter_update(self.proxy.clone(), s.clone()),
             // Skrip halaman dibuat saat tab dibangun: tandai semua tab untuk dibangun ulang.
+            "autofill" | "password_manager" | "password_autosignin" => {
+                for t in &self.tabs {
+                    if let Some(wv) = &t.webview {
+                        win::tune_webview(wv, &s);
+                    }
+                }
+                self.refresh_pages("passwords");
+            }
             "letterboxing" | "vertical_tabs" => {
                 self.ensure_sidebar();
                 self.layout();
@@ -1392,6 +1547,12 @@ impl App {
         self.render();
     }
 
+    fn bookmarks_changed(&mut self) {
+        self.refresh_pages("bookmarks");
+        self.last_render_key.clear();
+        self.render();
+    }
+
     /// Impor bookmark dari berkas Bookmarks browser lain.
     fn import_bookmarks(&mut self, path: Option<&str>) -> String {
         let found = import::detect();
@@ -1425,7 +1586,7 @@ impl App {
             log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill") {
             return false;
         }
         match kind {
@@ -1476,6 +1637,93 @@ impl App {
             "pick" => {
                 if let Some(sel) = msg["sel"].as_str() {
                     self.add_hide_rule(i, sel);
+                }
+            }
+            // ---- Pengelola sandi: halaman web ----
+            // Alamat selalu diambil dari WebView (bukan dari pesan), jadi situs hanya bisa
+            // meminta login untuk dirinya sendiri.
+            "pw-query" => {
+                if !self.settings.borrow().password_manager || self.tabs[i].private {
+                    return false;
+                }
+                let list: Vec<Value> = self.vault.for_url(&current_url).iter().map(|l| json!({"id": l.id, "user": l.username})).collect();
+                if !list.is_empty() {
+                    let auto = self.settings.borrow().password_autosignin && list.len() == 1;
+                    if let Some(wv) = &self.tabs[i].webview {
+                        let _ = wv.evaluate_script(&format!("window.__ovnerPw && __ovnerPw.offer({}, {auto})", Value::Array(list)));
+                    }
+                }
+            }
+            "pw-fill" => {
+                let id = msg["id"].as_u64().unwrap_or(0);
+                let found = self.vault.for_url(&current_url).iter().find(|l| l.id == id).map(|l| (l.username.clone(), l.password.clone()));
+                if let Some((u, p)) = found {
+                    self.vault.touch(id);
+                    if let Some(wv) = &self.tabs[i].webview {
+                        let args = json!([u, p]);
+                        let _ = wv.evaluate_script(&format!("window.__ovnerPw && __ovnerPw.fill({}, {})", args[0], args[1]));
+                    }
+                }
+            }
+            "pw-capture" => {
+                if !self.settings.borrow().password_manager || self.tabs[i].private || !current_url.starts_with("http") {
+                    return false;
+                }
+                let user = msg["user"].as_str().unwrap_or("").trim().to_string();
+                let pass = msg["pass"].as_str().unwrap_or("").to_string();
+                if let Some(update) = self.vault.offer_for(&current_url, &user, &pass) {
+                    self.pw_offer = Some((current_url.clone(), user, pass, update));
+                    self.last_render_key.clear();
+                    self.render();
+                }
+            }
+            // ---- Pengelola sandi: halaman ovner://passwords ----
+            "pw-reveal" => {
+                let id = msg["id"].as_u64().unwrap_or(0);
+                if let (Some(l), Some(wv)) = (self.vault.get(id), &self.tabs[i].webview) {
+                    let _ = wv.evaluate_script(&format!("window.ovnerReveal && ovnerReveal({id}, {})", Value::String(l.password.clone())));
+                }
+            }
+            "pw-add" => {
+                let url = to_url(msg["url"].as_str().unwrap_or(""), &self.settings.borrow()).unwrap_or_default();
+                let (u, p) = (msg["user"].as_str().unwrap_or(""), msg["pass"].as_str().unwrap_or(""));
+                if !vault::site_of(&url).is_empty() && !p.is_empty() {
+                    self.vault.upsert(&url, u, p);
+                }
+                self.push_page_state(i);
+            }
+            "pw-edit" => {
+                let s = |k: &str| msg[k].as_str().unwrap_or("").to_string();
+                self.vault.edit(msg["id"].as_u64().unwrap_or(0), &s("user"), &s("pass"), &s("note"));
+                self.push_page_state(i);
+            }
+            "pw-delete" => {
+                self.vault.remove(msg["id"].as_u64().unwrap_or(0));
+                self.push_page_state(i);
+            }
+            "pw-import-csv" => {
+                let n = self.vault.import_csv(msg["csv"].as_str().unwrap_or(""));
+                win::info(&tf(self.lang, "d.pw_imported", &[("n", &n.to_string())]));
+                self.push_page_state(i);
+            }
+            "pw-export" => {
+                if win::confirm(t(self.lang, "d.pw_export")) {
+                    let csv = Value::String(self.vault.export_csv());
+                    if let Some(wv) = &self.tabs[i].webview {
+                        let _ = wv.evaluate_script(&format!("window.ovnerSave && ovnerSave('Ovner Passwords.csv', 'text/csv', {csv})"));
+                    }
+                }
+            }
+            "dl-open" | "dl-show" | "dl-remove" | "dl-cancel" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
+            "dl-clear" => {
+                self.downloads.retain(|d| d.state == "progress");
+                self.save_downloads();
+                self.push_page_state(i);
+            }
+            "pw-clear" => {
+                if win::confirm(t(self.lang, "d.pw_clear")) {
+                    self.vault.clear();
+                    self.push_page_state(i);
                 }
             }
             "allow-http" => {
@@ -1543,9 +1791,55 @@ impl App {
             }
             "bookmark-remove" => {
                 self.store.remove_bookmark(msg["url"].as_str().unwrap_or(""));
-                self.refresh_pages("bookmarks");
-                self.last_render_key.clear();
-                self.render();
+                self.bookmarks_changed();
+            }
+            "bm-add" => {
+                let s = |k: &str| msg[k].as_str().unwrap_or("").to_string();
+                let url = to_url(&s("url"), &self.settings.borrow()).unwrap_or_default();
+                self.store.add_bookmark(&s("title"), &url, &s("folder"));
+                self.bookmarks_changed();
+            }
+            "bm-edit" => {
+                let s = |k: &str| msg[k].as_str().unwrap_or("").to_string();
+                let url = to_url(&s("newUrl"), &self.settings.borrow()).unwrap_or_default();
+                self.store.edit_bookmark(&s("url"), &s("title"), &url, &s("folder"));
+                self.bookmarks_changed();
+            }
+            "folder-add" => {
+                self.store.add_folder(msg["path"].as_str().unwrap_or(""));
+                self.bookmarks_changed();
+            }
+            "folder-rename" => {
+                self.store.rename_folder(msg["path"].as_str().unwrap_or(""), msg["name"].as_str().unwrap_or(""));
+                self.bookmarks_changed();
+            }
+            "folder-remove" => {
+                self.store.remove_folder(msg["path"].as_str().unwrap_or(""));
+                self.bookmarks_changed();
+            }
+            "bm-sort" => {
+                self.store.sort_folder(msg["folder"].as_str().unwrap_or(""));
+                self.bookmarks_changed();
+            }
+            "bm-import-html" => {
+                let items = store::parse_bookmarks_html(msg["html"].as_str().unwrap_or(""));
+                let n = self.store.add_bookmarks(&items);
+                win::info(&tf(self.lang, "d.imported", &[("n", &n.to_string()), ("b", "HTML")]));
+                self.bookmarks_changed();
+            }
+            "bm-export" => {
+                let html = serde_json::to_string(&self.store.export_html()).unwrap_or_default();
+                if let Some(wv) = &self.tabs[i].webview {
+                    let _ = wv.evaluate_script(&format!("window.ovnerSave && ovnerSave('bookmarks.html', 'text/html', {html})"));
+                }
+            }
+            "open" => {
+                let url = msg["url"].as_str().unwrap_or("").to_string();
+                if msg["newtab"].as_bool().unwrap_or(false) {
+                    self.open_tab(&url, true, false);
+                } else {
+                    self.navigate_active(&url, false);
+                }
             }
             "trim" => {
                 self.trim_now();
@@ -1629,7 +1923,8 @@ impl App {
     fn on_toolbar(&mut self, body: &str) -> bool {
         let Ok(msg) = serde_json::from_str::<Value>(body) else { return false };
         let id = msg["id"].as_u64().unwrap_or(0);
-        match msg["cmd"].as_str().unwrap_or("") {
+        let cmd = msg["cmd"].as_str().unwrap_or("").to_string();
+        match cmd.as_str() {
             "ready" => {
                 self.toolbar_ready = true;
                 self.last_render_key.clear();
@@ -1637,8 +1932,18 @@ impl App {
             }
             "height" => {
                 if let Some(h) = msg["h"].as_f64() {
-                    self.set_toolbar_height(h);
+                    self.set_toolbar_height(h, msg["over"].as_f64().unwrap_or(0.0));
                 }
+            }
+            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" => self.download_action(&cmd, id),
+            "dl-toggle" => {
+                self.dl_bubble = !self.dl_bubble;
+                self.last_render_key.clear();
+                self.render();
+            }
+            "dl-all" => {
+                self.dl_bubble = false;
+                self.open_internal("downloads");
             }
             "go" => {
                 let url = to_url(msg["text"].as_str().unwrap_or(""), &self.search_settings());
@@ -1672,6 +1977,27 @@ impl App {
                 }
             }
             "split-close" => self.stop_split(),
+            "pw-save" => {
+                if let Some((url, u, p, _)) = self.pw_offer.take() {
+                    self.vault.upsert(&url, &u, &p);
+                    self.refresh_pages("passwords");
+                }
+                self.last_render_key.clear();
+                self.render();
+            }
+            "pw-never" => {
+                if let Some((url, ..)) = self.pw_offer.take() {
+                    self.vault.add_never(&url);
+                }
+                self.last_render_key.clear();
+                self.render();
+            }
+            "bubble-close" => {
+                self.pw_offer = None;
+                self.dl_bubble = false;
+                self.last_render_key.clear();
+                self.render();
+            }
             "open" => {
                 let url = msg["url"].as_str().unwrap_or("").to_string();
                 if msg["newtab"].as_bool().unwrap_or(false) {
@@ -1859,6 +2185,40 @@ impl App {
         }
     }
 
+    /// Isi akar bilah bookmark (bookmark dan folder tingkat pertama sesuai urutan), lalu
+    /// "Bookmark lain".
+    fn fill_bookmark_root(&self, push: &mut dyn FnMut(&dyn IsMenuItem)) {
+        let mut seen: Vec<String> = Vec::new();
+        for (i, b) in self.store.bookmarks.iter().enumerate() {
+            if b.folder.is_empty() {
+                push(&MenuItem::with_id(format!("bmo:{i}"), menu_label(&b.title), true, None));
+                continue;
+            }
+            let top = b.folder.split('/').next().unwrap_or("").to_string();
+            if top == "@other" || seen.contains(&top) {
+                continue;
+            }
+            seen.push(top.clone());
+            let sm = Submenu::new(menu_label(&top), true);
+            self.fill_bookmark_folder(&top, &mut |it| {
+                let _ = sm.append(it);
+            });
+            push(&sm);
+        }
+        for f in self.store.all_folders() {
+            if !f.contains('/') && f != "@other" && !seen.contains(&f) {
+                push(&Submenu::new(menu_label(&f), true));
+            }
+        }
+        if self.store.bookmarks.iter().any(|b| b.folder == "@other" || b.folder.starts_with("@other/")) {
+            let sm = Submenu::new(menu_label(&self.folder_label("@other")), true);
+            self.fill_bookmark_folder("@other", &mut |it| {
+                let _ = sm.append(it);
+            });
+            push(&sm);
+        }
+    }
+
     /// Isi satu folder bookmark: subfolder sebagai submenu, lalu bookmark-nya.
     fn fill_bookmark_folder(&self, path: &str, push: &mut dyn FnMut(&dyn IsMenuItem)) {
         let prefix = format!("{path}/");
@@ -1921,6 +2281,16 @@ impl App {
     }
 
     fn show_menu(&self, tab_menu: bool, x: f64, y: f64) {
+        if !tab_menu {
+            // Daftar bookmark di submenu ☰ → Bookmark, seperti Brave.
+            let sm = &self.menus.bookmarks;
+            while sm.items().len() > 5 {
+                sm.remove_at(5);
+            }
+            self.fill_bookmark_root(&mut |it| {
+                let _ = sm.append(it);
+            });
+        }
         #[cfg(windows)]
         {
             use tao::platform::windows::WindowExtWindows;
@@ -1996,7 +2366,7 @@ impl App {
                 self.last_render_key.clear();
                 self.render();
             }
-            "bookmarks" | "history" | "settings" | "tasks" => self.open_internal(id),
+            "bookmarks" | "history" | "settings" | "tasks" | "passwords" => self.open_internal(id),
             "shield-settings" => self.open_internal("settings"),
             "shield-allow-js" => {
                 let host = self.tabs.get(self.active).and_then(|t| host_of(&t.url));
@@ -2071,12 +2441,7 @@ impl App {
                     }
                 }
             }
-            "downloads" => {
-                #[cfg(windows)]
-                if let Some(wv) = self.active_webview() {
-                    netfilter::open_downloads(wv);
-                }
-            }
+            "downloads" => self.open_internal("downloads"),
             "zoom-in" => self.zoom_active(1),
             "zoom-out" => self.zoom_active(-1),
             "zoom-reset" => self.zoom_active(0),
@@ -2381,6 +2746,11 @@ fn run_uninstall(exe: &Path, portable: bool) {
 }
 
 fn main() {
+    // Catat panic ke ovner.log sebelum proses berhenti, supaya penyebab "Ovner tiba-tiba
+    // tertutup" bisa dilacak.
+    std::panic::set_hook(Box::new(|info| {
+        log(&format!("PANIC: {info}"));
+    }));
     let args = parse_args();
     let exe = std::env::current_exe().unwrap_or_default();
     let portable = install::is_portable(&exe, args.portable);
@@ -2549,6 +2919,11 @@ fn main() {
         settings: Rc::new(RefCell::new(settings)),
         blocker,
         store: Store::load(data_dir()),
+        vault: vault::Vault::load(data_dir()),
+        pw_offer: None,
+        downloads: std::fs::read_to_string(data_dir().join("downloads.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
+        dl_bubble: false,
+        toolbar_over: 0.0,
         web_context,
         #[cfg(windows)]
         env,
@@ -2573,8 +2948,13 @@ fn main() {
         proc_infos: Vec::new(),
         last_unresponsive: HashMap::new(),
         extensions_loaded: false,
+        proc_req: None,
     };
     app.ensure_sidebar();
+    // Unduhan dari riwayat mendapat id sendiri (id unduhan baru dimulai dari 1).
+    for (k, d) in app.downloads.iter_mut().enumerate() {
+        d.id = (1 << 40) + k as u64;
+    }
 
     // Pulihkan tab terakhir: hanya tab aktif yang dimuat, sisanya tidur sampai diklik.
     let restore = app.settings.borrow().restore_tabs;
@@ -2645,7 +3025,8 @@ fn main() {
                 }
                 if app.settings.borrow().diagnostics && app.last_diag.elapsed() >= DIAG_EVERY {
                     app.last_diag = Instant::now();
-                    let procs = win::process_snapshot();
+                    let pids: Vec<u32> = app.proc_infos.iter().map(|p| p.pid).collect();
+                    let procs = win::process_snapshot(&pids);
                     let total: u64 = procs.iter().map(|p| p.working).sum();
                     log(&format!("RAM: {} MB working set, {} proses, {} tab ({} hidup)", total / 1_048_576, procs.len(), app.tabs.len(), app.tabs.iter().filter(|t| t.webview.is_some()).count()));
                 }
@@ -2732,6 +3113,16 @@ fn main() {
                         }
                     }
                 }
+                UserEvent::Download(ev) => app.on_download(ev),
+                UserEvent::Favicon(id, png) => {
+                    if let Some(i) = app.tab_index(id) {
+                        let url = app.tabs[i].webview.as_ref().and_then(|w| w.url().ok()).unwrap_or_default();
+                        if url.starts_with("http") && internal_page(&url).is_none() {
+                            app.store.set_icon(&url, &png);
+                            app.render();
+                        }
+                    }
+                }
                 UserEvent::CloseWindow => {
                     if app.settings.borrow().close_to_tray && app._tray.is_some() {
                         app.hide_to_tray();
@@ -2750,6 +3141,7 @@ fn main() {
                     }
                 }
                 UserEvent::ProcInfos(v) => {
+                    app.proc_req = None;
                     app.proc_infos = v;
                     app.refresh_pages("tasks");
                 }

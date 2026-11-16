@@ -43,21 +43,106 @@ fn write<T: Serialize>(p: &Path, v: &T) {
 pub struct Store {
     history_path: PathBuf,
     bookmarks_path: PathBuf,
+    folders_path: PathBuf,
+    icons_path: PathBuf,
     pub history: Vec<Visit>,
     pub bookmarks: Vec<Bookmark>,
+    /// Folder yang dibuat sendiri (boleh kosong); folder lain tersirat dari bookmark.
+    pub folders: Vec<String>,
+    /// Ikon situs: host → data URL PNG kecil.
+    pub icons: std::collections::HashMap<String, String>,
     dirty_history: bool,
+    dirty_icons: bool,
+}
+
+/// Host tanpa "www." untuk kunci ikon.
+pub fn icon_key(url: &str) -> String {
+    url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_default()
+}
+
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn unesc_html(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+}
+
+/// Bookmark dari berkas HTML (format Netscape: ekspor Chrome, Edge, Brave, Firefox):
+/// (judul, alamat, folder "A/B"). Folder "Bookmarks bar"/"Bilah bookmark" teratas diratakan.
+pub fn parse_bookmarks_html(html: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending: Option<String> = None;
+    let lower = html.to_ascii_lowercase();
+    let mut i = 0;
+    while let Some(off) = lower[i..].find('<') {
+        let at = i + off;
+        let rest = &lower[at..];
+        if rest.starts_with("<h3") {
+            let start = html[at..].find('>').map(|p| at + p + 1).unwrap_or(at);
+            let end = lower[start..].find("</h3>").map(|p| start + p).unwrap_or(start);
+            pending = Some(unesc_html(html[start..end].trim()));
+            i = end;
+        } else if rest.starts_with("<dl") {
+            stack.push(pending.take().unwrap_or_default());
+            i = at + 3;
+        } else if rest.starts_with("</dl") {
+            stack.pop();
+            i = at + 4;
+        } else if rest.starts_with("<a ") {
+            let tag_end = html[at..].find('>').map(|p| at + p).unwrap_or(at);
+            let tag = &html[at..tag_end];
+            let href = tag
+                .to_ascii_lowercase()
+                .find("href=\"")
+                .map(|p| p + 6)
+                .and_then(|p| tag[p..].find('"').map(|q| unesc_html(&tag[p..p + q])))
+                .unwrap_or_default();
+            let close = lower[tag_end..].find("</a>").map(|p| tag_end + p).unwrap_or(tag_end);
+            let title = unesc_html(html[(tag_end + 1).min(close)..close].trim());
+            if href.starts_with("http://") || href.starts_with("https://") {
+                // Lewati folder akar dokumen dan folder "bilah bookmark" bawaan browser.
+                let parts: Vec<&String> = stack.iter().skip(1).filter(|f| !f.is_empty()).collect();
+                let mut parts: Vec<String> = parts.iter().map(|f| f.replace('/', "\u{2215}")).collect();
+                if parts.first().is_some_and(|f| {
+                    let f = f.to_lowercase();
+                    f.contains("bookmarks bar") || f.contains("bilah bookmark") || f.contains("favorites bar") || f == "bookmarks toolbar"
+                }) {
+                    parts.remove(0);
+                } else if parts.first().is_some_and(|f| {
+                    let f = f.to_lowercase();
+                    f.contains("other bookmarks") || f.contains("bookmark lain") || f.contains("other favorites")
+                }) {
+                    parts[0] = "@other".into();
+                }
+                out.push((title, href, parts.join("/")));
+            }
+            i = close;
+        } else {
+            i = at + 1;
+        }
+    }
+    out
 }
 
 impl Store {
     pub fn load(data_dir: &Path) -> Store {
         let history_path = data_dir.join("history.json");
         let bookmarks_path = data_dir.join("bookmarks.json");
+        let folders_path = data_dir.join("bookmark-folders.json");
+        let icons_path = data_dir.join("favicons.json");
         Store {
             history: read(&history_path),
             bookmarks: read(&bookmarks_path),
+            folders: read(&folders_path),
+            icons: read(&icons_path),
             history_path,
             bookmarks_path,
+            folders_path,
+            icons_path,
             dirty_history: false,
+            dirty_icons: false,
         }
     }
 
@@ -222,11 +307,189 @@ impl Store {
         write(&self.bookmarks_path, &self.bookmarks);
     }
 
-    /// Simpan riwayat bila berubah (dipanggil berkala dan saat keluar).
+    fn save_bookmarks(&self) {
+        write(&self.bookmarks_path, &self.bookmarks);
+        write(&self.folders_path, &self.folders);
+    }
+
+    /// Semua folder (dibuat sendiri + tersirat dari bookmark), termasuk induknya, sesuai urutan.
+    pub fn all_folders(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |f: &str| {
+            let mut acc = String::new();
+            for part in f.split('/').filter(|p| !p.is_empty()) {
+                if !acc.is_empty() {
+                    acc.push('/');
+                }
+                acc.push_str(part);
+                if !out.contains(&acc) {
+                    out.push(acc.clone());
+                }
+            }
+        };
+        for b in &self.bookmarks {
+            add(&b.folder);
+        }
+        for f in &self.folders {
+            add(f);
+        }
+        out
+    }
+
+    /// Tambah bookmark baru, atau perbarui judul/folder bila alamatnya sudah ada.
+    pub fn add_bookmark(&mut self, title: &str, url: &str, folder: &str) {
+        if url.trim().is_empty() {
+            return;
+        }
+        let title = if title.trim().is_empty() { url.trim().to_string() } else { title.trim().to_string() };
+        if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url.trim()) {
+            b.title = title;
+            b.folder = folder.to_string();
+        } else {
+            self.bookmarks.push(Bookmark { url: url.trim().to_string(), title, added: now(), folder: folder.to_string() });
+        }
+        self.save_bookmarks();
+    }
+
+    /// Ubah judul, alamat, dan folder bookmark `old_url`.
+    pub fn edit_bookmark(&mut self, old_url: &str, title: &str, url: &str, folder: &str) {
+        let url = url.trim();
+        if url.is_empty() {
+            return;
+        }
+        if url != old_url {
+            self.bookmarks.retain(|b| b.url != url);
+        }
+        if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == old_url) {
+            b.url = url.to_string();
+            b.title = if title.trim().is_empty() { url.to_string() } else { title.trim().to_string() };
+            b.folder = folder.to_string();
+            self.save_bookmarks();
+        }
+    }
+
+    pub fn add_folder(&mut self, path: &str) {
+        let p = path.trim_matches('/').to_string();
+        if !p.is_empty() && !self.all_folders().contains(&p) {
+            self.folders.push(p);
+            self.save_bookmarks();
+        }
+    }
+
+    /// Ganti nama folder (dan semua isinya ikut pindah).
+    pub fn rename_folder(&mut self, path: &str, name: &str) {
+        let name = name.trim().replace('/', "\u{2215}");
+        if name.is_empty() || path.is_empty() || path == "@other" {
+            return;
+        }
+        let new = match path.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/{name}"),
+            None => name,
+        };
+        let swap = |f: &mut String| {
+            if f == path {
+                *f = new.clone();
+            } else if let Some(rest) = f.strip_prefix(&format!("{path}/")) {
+                *f = format!("{new}/{rest}");
+            }
+        };
+        self.bookmarks.iter_mut().for_each(|b| swap(&mut b.folder));
+        self.folders.iter_mut().for_each(swap);
+        self.save_bookmarks();
+    }
+
+    /// Hapus folder beserta isinya.
+    pub fn remove_folder(&mut self, path: &str) {
+        let inside = |f: &str| f == path || f.starts_with(&format!("{path}/"));
+        self.bookmarks.retain(|b| !inside(&b.folder));
+        self.folders.retain(|f| !inside(f));
+        self.save_bookmarks();
+    }
+
+    /// Urutkan isi satu folder berdasarkan nama (seperti "Sort by name" Brave).
+    pub fn sort_folder(&mut self, folder: &str) {
+        let mut idx: Vec<usize> = (0..self.bookmarks.len()).filter(|&i| self.bookmarks[i].folder == folder).collect();
+        let mut sorted: Vec<Bookmark> = idx.iter().map(|&i| self.bookmarks[i].clone()).collect();
+        sorted.sort_by_key(|b| b.title.to_lowercase());
+        idx.sort();
+        for (slot, b) in idx.into_iter().zip(sorted) {
+            self.bookmarks[slot] = b;
+        }
+        self.folders.sort_by_key(|f| f.to_lowercase());
+        self.save_bookmarks();
+    }
+
+    /// Ekspor ke HTML format Netscape (bisa diimpor Brave, Chrome, Edge, Firefox).
+    pub fn export_html(&self) -> String {
+        fn emit(store: &Store, path: &str, depth: usize, out: &mut String) {
+            let pad = "    ".repeat(depth);
+            let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
+            let mut subs: Vec<String> = Vec::new();
+            for f in store.all_folders() {
+                if let Some(rest) = f.strip_prefix(&prefix) {
+                    if !rest.contains('/') && !rest.is_empty() && rest != "@other" && !subs.contains(&rest.to_string()) {
+                        subs.push(rest.to_string());
+                    }
+                }
+            }
+            for s in subs {
+                out.push_str(&format!("{pad}<DT><H3>{}</H3>\n{pad}<DL><p>\n", esc_html(&s.replace('\u{2215}', "/"))));
+                emit(store, &format!("{prefix}{s}"), depth + 1, out);
+                out.push_str(&format!("{pad}</DL><p>\n"));
+            }
+            for b in store.bookmarks.iter().filter(|b| b.folder == path) {
+                out.push_str(&format!("{pad}<DT><A HREF=\"{}\" ADD_DATE=\"{}\">{}</A>\n", esc_html(&b.url), b.added, esc_html(&b.title)));
+            }
+        }
+        let mut body = String::new();
+        body.push_str("    <DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3>\n    <DL><p>\n");
+        emit(self, "", 2, &mut body);
+        body.push_str("    </DL><p>\n");
+        if self.all_folders().iter().any(|f| f == "@other") {
+            body.push_str("    <DT><H3>Other bookmarks</H3>\n    <DL><p>\n");
+            emit(self, "@other", 2, &mut body);
+            body.push_str("    </DL><p>\n");
+        }
+        format!(
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n{body}</DL><p>\n"
+        )
+    }
+
+    /// Simpan ikon situs (PNG) untuk host halaman ini.
+    pub fn set_icon(&mut self, url: &str, png: &[u8]) {
+        use base64::Engine as _;
+        let key = icon_key(url);
+        if key.is_empty() || png.is_empty() || png.len() > 24 * 1024 {
+            return;
+        }
+        let data = format!("data:image/png;base64,{}", base64::prelude::BASE64_STANDARD.encode(png));
+        if self.icons.get(&key) != Some(&data) {
+            self.icons.insert(key, data);
+            self.dirty_icons = true;
+        }
+    }
+
+    /// Ikon untuk daftar alamat (host yang punya ikon saja).
+    pub fn icons_for<'a>(&self, urls: impl Iterator<Item = &'a str>) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        for u in urls {
+            let k = icon_key(u);
+            if let Some(d) = self.icons.get(&k) {
+                m.insert(k, serde_json::Value::String(d.clone()));
+            }
+        }
+        m
+    }
+
+    /// Simpan riwayat dan ikon bila berubah (dipanggil berkala dan saat keluar).
     pub fn flush(&mut self) {
         if self.dirty_history {
             write(&self.history_path, &self.history);
             self.dirty_history = false;
+        }
+        if self.dirty_icons {
+            write(&self.icons_path, &self.icons);
+            self.dirty_icons = false;
         }
     }
 }
@@ -234,6 +497,32 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folders_and_html_roundtrip() {
+        let d = std::env::temp_dir().join(format!("ovner-store-html-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut s = Store::load(&d);
+        s.add_bookmark("Google", "https://google.com/", "");
+        s.add_bookmark("HR", "https://hr.kantor.id/", "Kerja");
+        s.add_bookmark("Absen", "https://absen.kantor.id/", "Kerja/Harian");
+        s.add_folder("Kosong");
+        assert_eq!(s.all_folders(), vec!["Kerja", "Kerja/Harian", "Kosong"]);
+        s.rename_folder("Kerja", "Kantor & HR");
+        assert_eq!(s.bookmarks[2].folder, "Kantor & HR/Harian");
+        let html = s.export_html();
+        assert!(html.contains("<H3>Kantor &amp; HR</H3>") && html.contains("HREF=\"https://absen.kantor.id/\""));
+        let parsed = parse_bookmarks_html(&html);
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed.contains(&("Absen".into(), "https://absen.kantor.id/".into(), "Kantor & HR/Harian".into())));
+        assert!(parsed.contains(&("Google".into(), "https://google.com/".into(), String::new())));
+        s.edit_bookmark("https://hr.kantor.id/", "HR baru", "https://hr2.kantor.id/", "Kosong");
+        assert_eq!((s.bookmarks[1].url.as_str(), s.bookmarks[1].folder.as_str()), ("https://hr2.kantor.id/", "Kosong"));
+        s.remove_folder("Kantor & HR");
+        assert_eq!(s.bookmarks.len(), 2);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 
     fn tmp() -> PathBuf {
         let d = std::env::temp_dir().join(format!("ovner-store-{}", std::process::id()));

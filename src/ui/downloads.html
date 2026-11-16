@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Unduhan</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  .head { display: flex; align-items: center; gap: 14px; margin: 6px 0 18px; }
+  .head input { flex: 1; }
+  .day { margin: 22px 0 8px; color: var(--muted); font-size: 13px; }
+  .dl { display: flex; align-items: center; gap: 16px; padding: 14px 16px; margin-bottom: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .dl.gone { opacity: .55; }
+  .ico { flex: none; width: 34px; height: 40px; border-radius: 4px; display: grid; place-items: end center; padding-bottom: 5px; box-sizing: border-box; font: 700 9px/1 "Segoe UI", sans-serif; color: #fff; text-transform: uppercase; }
+  .info { flex: 1; min-width: 0; }
+  .info a { color: var(--accent); font-weight: 600; text-decoration: underline; cursor: pointer; word-break: break-all; }
+  .dl.gone .info a { text-decoration: line-through; color: var(--muted); cursor: default; }
+  .info .u { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+  .info .st { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .acts { display: flex; gap: 4px; }
+  .acts button { width: 34px; height: 34px; padding: 0; border: 0; background: none; border-radius: 50%; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+  .acts button:hover { background: var(--line); color: var(--text); }
+  .acts svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="h1"></h1>
+  <div class="head"><input type="search" id="q"><button id="clear"></button></div>
+  <div id="list"></div>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const $ = (id) => document.getElementById(id);
+  const W = {
+    id: { h1: "Unduhan", q: "Cari riwayat unduhan", clear: "Hapus semua dari daftar", empty: "Belum ada unduhan.", today: "Hari ini", yday: "Kemarin", loc: "id-ID",
+      deleted: "Dihapus", failed: "Gagal / dibatalkan", copy: "Salin tautan", show: "Tampilkan di folder", remove: "Hapus dari daftar", cancel: "Batalkan" },
+    en: { h1: "Downloads", q: "Search download history", clear: "Clear all", empty: "No downloads yet.", today: "Today", yday: "Yesterday", loc: "en-US",
+      deleted: "Deleted", failed: "Failed / cancelled", copy: "Copy link", show: "Show in folder", remove: "Remove from list", cancel: "Cancel" },
+  };
+  let w = W.id, items = [];
+  const svg = {
+    link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
+    folder: '<svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>',
+    x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  };
+  const size = (b) => b <= 0 ? "" : b < 1048576 ? (b / 1024).toFixed(0) + " KB" : (b / 1048576).toFixed(1) + " MB";
+  const color = (ext) => ({ exe: "#3b6fd6", msi: "#3b6fd6", zip: "#c48a1a", rar: "#8a4fbf", "7z": "#222", pdf: "#d33b2b", csv: "#1e7a45", xlsx: "#1e7a45", xls: "#1e7a45",
+    docx: "#2b5fb8", doc: "#2b5fb8", wav: "#6a5acd", mp3: "#6a5acd", mp4: "#c2185b", jpg: "#00897b", png: "#00897b", txt: "#607080" })[ext] || "#708090";
+  function day(t) {
+    const d = new Date(t * 1000), n = new Date();
+    if (d.toDateString() === n.toDateString()) return w.today;
+    const y = new Date(n); y.setDate(n.getDate() - 1);
+    if (d.toDateString() === y.toDateString()) return w.yday;
+    return d.toLocaleDateString(w.loc, { day: "numeric", month: "long", year: "numeric" });
+  }
+  function render() {
+    const list = $("list"); list.textContent = "";
+    const q = $("q").value.trim().toLowerCase();
+    const shown = items.filter((d) => !q || d.name.toLowerCase().includes(q) || d.url.toLowerCase().includes(q));
+    if (!shown.length) { list.innerHTML = '<div class="card"><div class="empty"></div></div>'; list.querySelector(".empty").textContent = w.empty; return; }
+    let cur = null;
+    for (const d of shown) {
+      const dd = day(d.time);
+      if (dd !== cur) { cur = dd; const h = document.createElement("div"); h.className = "day"; h.textContent = dd; list.append(h); }
+      const gone = d.state === "done" && !d.exists;
+      const el = document.createElement("div");
+      el.className = "dl" + (gone || d.state === "failed" ? " gone" : "");
+      const ext = (d.name.split(".").pop() || "").toLowerCase().slice(0, 4);
+      el.innerHTML = `<div class="ico"></div><div class="info"><a></a><div class="u"></div><div class="st"></div></div><div class="acts"></div>`;
+      el.querySelector(".ico").textContent = ext;
+      el.querySelector(".ico").style.background = color(ext);
+      el.querySelector("a").textContent = d.name;
+      el.querySelector(".u").textContent = d.url;
+      const st = el.querySelector(".st");
+      if (d.state === "progress") {
+        st.textContent = size(d.received) + (d.total > 0 ? " / " + size(d.total) : "");
+        const bar = document.createElement("div"); bar.className = "bar";
+        bar.innerHTML = `<i style="width:${d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30}%"></i>`;
+        el.querySelector(".info").append(bar);
+      } else st.textContent = gone ? w.deleted : d.state === "failed" ? w.failed : size(d.received || d.total);
+      if (!gone && d.state === "done") el.querySelector("a").onclick = () => post({ t: "dl-open", id: d.id });
+      const acts = el.querySelector(".acts");
+      const btn = (icon, title, fn) => { const b = document.createElement("button"); b.innerHTML = svg[icon]; b.title = title; b.onclick = fn; acts.append(b); };
+      btn("link", w.copy, () => navigator.clipboard && navigator.clipboard.writeText(d.url));
+      if (!gone && d.state === "done") btn("folder", w.show, () => post({ t: "dl-show", id: d.id }));
+      if (d.state === "progress") btn("x", w.cancel, () => post({ t: "dl-cancel", id: d.id }));
+      else btn("x", w.remove, () => post({ t: "dl-remove", id: d.id }));
+      list.append(el);
+    }
+  }
+  window.ovnerPage = (s) => {
+    items = s.downloads || []; w = W[s.lang] || W.id;
+    document.documentElement.lang = s.lang;
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    document.title = w.h1; $("h1").textContent = w.h1; $("q").placeholder = w.q; $("clear").textContent = w.clear;
+    render();
+  };
+  $("q").oninput = render;
+  $("clear").onclick = () => post({ t: "dl-clear" });
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

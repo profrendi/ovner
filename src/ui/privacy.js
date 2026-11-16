@@ -8,6 +8,9 @@
   const cfg = window.__ovnerCfg || {};
   const internal = /^(ovner:|https?:\/\/ovner\.)/.test(location.href);
   if (internal) return;
+  // Situs video: jangan ubah rasio piksel, ukuran layar, dan timer (pemutar memilih
+  // resolusi dan menjadwalkan bingkai dari nilai-nilai ini).
+  const media = /(^|\.)(youtube|youtube-nocookie|googlevideo|ytimg|twitch|netflix|primevideo|disneyplus|hotstar|vidio|viu|iq|wetv|dailymotion|vimeo)\.(com|tv|id)$/.test(location.hostname);
   const def = (obj, prop, value) => {
     try { Object.defineProperty(obj, prop, { get: () => value, configurable: true }); } catch (e) {}
   };
@@ -27,7 +30,7 @@
 
   // ---- Referrer ----
   if (window.top === window && cfg.referrer && cfg.referrer !== "default") {
-    const policy = cfg.referrer === "none" ? "same-origin" : "strict-origin";
+    const policy = "strict-origin";
     const add = () => {
       const root = document.head || document.documentElement;
       if (!root) return false;
@@ -51,19 +54,23 @@
       "LinearAccelerationSensor", "GravitySensor", "AmbientLightSensor"]) {
       try { delete window[n]; } catch (e) {}
     }
-    // Timer dibulatkan ke 1 ms (Mullvad: 1000 mikrodetik).
-    const now = Performance.prototype.now;
-    Performance.prototype.now = function () { return Math.floor(now.call(this)); };
+    // Timer dibulatkan ke 1 ms (Mullvad: 1000 mikrodetik), kecuali situs video.
+    if (!media) {
+      const now = Performance.prototype.now;
+      Performance.prototype.now = function () { return Math.floor(now.call(this)); };
+    }
     // Layar dilaporkan sebesar jendela, dibulatkan ke kelipatan 200×100.
     const SP = Screen.prototype;
     const w = () => Math.max(200, Math.floor(window.innerWidth / 200) * 200);
     const h = () => Math.max(100, Math.floor(window.innerHeight / 100) * 100);
-    for (const [p, f] of [["width", w], ["availWidth", w], ["height", h], ["availHeight", h]]) {
-      try { Object.defineProperty(SP, p, { get: f, configurable: true }); } catch (e) {}
+    if (!media) {
+      for (const [p, f] of [["width", w], ["availWidth", w], ["height", h], ["availHeight", h]]) {
+        try { Object.defineProperty(SP, p, { get: f, configurable: true }); } catch (e) {}
+      }
+      def(window, "devicePixelRatio", 1);
     }
     def(SP, "colorDepth", 24);
     def(SP, "pixelDepth", 24);
-    def(window, "devicePixelRatio", 1);
   }
 
   // ---- Samarkan WebView2 ----

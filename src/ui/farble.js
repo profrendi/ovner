@@ -20,7 +20,10 @@
   top = (top || "").replace(/^www\./, "").toLowerCase();
   const off = (cfg.farbleOff || []).some((h) => top === h || top.endsWith("." + h));
   if (off || !top) return;
-  const strict = cfg.farbling === "strict";
+  // Situs video memakai mode standar: perubahan ukuran elemen dan merek GPU di mode ketat
+  // bisa membuat pemutar video hitam/tidak jalan.
+  const media = /(^|\.)(youtube|youtube-nocookie|googlevideo|twitch|netflix|primevideo|disneyplus|hotstar|vidio|vimeo|dailymotion)\.(com|tv|id)$/.test(top);
+  const strict = cfg.farbling === "strict" && !media;
 
   // Domain dasar (perkiraan eTLD+1) supaya sub-domain satu situs berbagi benih.
   const parts = top.split(".");

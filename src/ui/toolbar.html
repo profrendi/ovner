@@ -28,6 +28,7 @@
   .tab .ic { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
     font-size: 10px; font-weight: 700; color: #fff; background: var(--accent); }
   .tab.private .ic { background: var(--private); }
+  .tab .ic.img, .bm .fi.img { background: center / 16px 16px no-repeat; }
   .tab.sleep .ic { background: var(--muted); }
   .tab.sleep .t { color: var(--muted); font-style: italic; }
   .tab .t { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -79,11 +80,46 @@
   #findq:focus { border-color: var(--accent); }
   .line { height: 1px; background: var(--line); }
   .tab.split { box-shadow: inset 0 -2px 0 var(--accent); }
+  html, body { overflow: hidden; }
+  #ov { position: absolute; left: 0; right: 0; }
+  #omni { position: absolute; display: none; background: var(--bar); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 12px 12px;
+    box-shadow: 0 10px 24px #0004; padding: 4px 0 6px; }
+  #omni.show { display: block; }
+  .om { display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 14px; cursor: default; }
+  .om.sel, .om:hover { background: var(--field); }
+  .om .oi { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--muted); background: center / 16px 16px no-repeat; border-radius: 3px; }
+  .om .oi svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .om .ot { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+  .om .ou { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font-size: 12.5px; }
+  #bubble { position: absolute; right: 8px; top: 4px; width: 360px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 10px 28px #0005; padding: 12px 14px; }
+  #bubble.show { display: block; }
+  #bubble h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; justify-content: space-between; }
+  #bubble .xb { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  .bb { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .bb button { height: 30px; padding: 0 14px; border-radius: 15px; border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
+  .bb button.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pwf { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; font-size: 13px; }
+  .pwf .k { color: var(--muted); }
+  .di { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-radius: 8px; }
+  .di:hover { background: var(--field); }
+  .di .dn { flex: 1; min-width: 0; }
+  .di .dn b { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .di .ds { font-size: 11.5px; color: var(--muted); }
+  .di .pb { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .di .pb i { display: block; height: 100%; background: var(--accent); }
+  .di .db { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 6px; }
+  .di .db:hover { background: var(--line); color: var(--text); }
+  .dall { display: block; width: 100%; margin-top: 6px; padding: 8px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--accent); font: inherit; cursor: pointer; text-align: center; }
+  #dlbtn { display: none; position: relative; }
+  #dlbtn.show { display: grid; }
+  #dlbtn.busy svg { color: var(--accent); }
   #splitbox { display: none; gap: 2px; }
   #splitbox.show { display: flex; }
 </style>
 </head>
 <body>
+<div id="base">
 <div id="tabs"><button id="new">+</button></div>
 <div id="bar">
   <button class="b" id="back" title="Kembali (Alt+←)"><svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
@@ -91,8 +127,7 @@
   <button class="b" id="reload" title="Muat ulang (F5)"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg></button>
   <button class="b hidden" id="home" title="Beranda"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg></button>
   <div id="addrwrap">
-    <input id="addr" spellcheck="false" autocomplete="off" list="sug">
-    <datalist id="sug"></datalist>
+    <input id="addr" spellcheck="false" autocomplete="off">
     <button class="b" id="star" title="Bookmark halaman ini (Ctrl+D)"><svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg></button>
   </div>
   <span id="splitbox">
@@ -100,6 +135,7 @@
     <button class="b" id="unsplit"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M15 9l-3 3 3 3"/></svg></button>
   </span>
   <button id="upd"></button>
+  <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
   <button class="b" id="menu" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </div>
@@ -111,6 +147,8 @@
   <button class="b" id="findclose" title="Tutup (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
 </div>
 <div class="line"></div>
+</div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -119,13 +157,13 @@
       back: "Kembali (Alt+←)", fwd: "Maju (Alt+→)", reload: "Muat ulang (F5)", stop: "Hentikan (Esc)", home: "Beranda", addr: "Cari atau ketik alamat",
       addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
       find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
-      swap: "Pindah ke sisi lain", other: "Bookmark lain", more: "Bookmark lainnya", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      swap: "Pindah ke sisi lain", other: "Bookmark lain", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
       addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
       find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
-      swap: "Switch side", other: "Other bookmarks", more: "More bookmarks", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      swap: "Switch side", other: "Other bookmarks", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -167,7 +205,10 @@
       const el = tabEl(t.id);
       el.className = "tab" + (t.active ? " active" : "") + (t.sleeping ? " sleep" : "") + (t.loading ? " loading" : "") + (t.private ? " private" : "") + (t.split ? " split" : "");
       el.title = (t.title || W.newtab) + (t.private ? W.priv : "") + (t.sleeping ? W.sleep : "");
-      el.children[0].textContent = letter(t);
+      const ico = state.icons && state.icons[hostOf(t.url)];
+      el.children[0].className = "ic" + (ico ? " img" : "");
+      el.children[0].style.backgroundImage = ico ? `url("${ico}")` : "";
+      el.children[0].textContent = ico ? "" : letter(t);
       el.children[1].textContent = t.title || W.newtab;
       el.children[2].title = W.close;
       if (el.nextSibling !== plus && tabsEl.lastChild !== el) { /* urutan diperbaiki di bawah */ }
@@ -182,6 +223,8 @@
     const h = hostOf(u) || title || "?";
     let n = 0; for (const c of h) n = (n * 31 + c.charCodeAt(0)) >>> 0;
     const el = document.createElement("span"); el.className = "fi";
+    const ico = state.icons && state.icons[hostOf(u)];
+    if (ico) { el.classList.add("img"); el.style.backgroundImage = `url("${ico}")`; return el; }
     el.style.background = `hsl(${n % 360} 55% 45%)`;
     el.textContent = (h.match(/[a-z0-9]/i) || ["•"])[0].toUpperCase();
     return el;
@@ -192,7 +235,7 @@
     bar.classList.toggle("show", !!state.bookmarkBar);
     if (!state.bookmarkBar) return;
     const list = state.bookmarks || [];
-    const key = JSON.stringify(list) + W.other;
+    const key = JSON.stringify(list) + W.other + Object.keys(state.icons || {}).length;
     if (key === bmKey) { fitBookmarks(); return; }
     bmKey = key;
     const box = $("bmitems"); box.textContent = "";
@@ -294,17 +337,17 @@
       u.classList.toggle("show", !!s.update);
       u.textContent = s.update ? "Update " + s.update : "";
       $("find").classList.toggle("show", !!s.find);
-      send({ cmd: "height", h: document.body.scrollHeight });
+      renderBubble();
+      const dl = $("dlbtn");
+      dl.classList.toggle("show", (s.downloads || []).length > 0);
+      dl.classList.toggle("busy", (s.downloads || []).some((d) => d.state === "progress"));
+      dl.title = W.dlTitle;
+      sendHeight();
     },
     focusAddress() { addr.focus(); addr.select(); },
     suggestions(r) {
-      if (r.text !== addr.value.trim()) return;
-      const dl = $("sug"); dl.textContent = "";
-      for (const it of r.items || []) {
-        const o = document.createElement("option");
-        o.value = it.url; o.label = (it.bm ? W.bm : "") + (it.title || it.url);
-        dl.append(o);
-      }
+      if (r.text !== typed) return;
+      showOmni(r);
     },
     focusFind() { findq.focus(); findq.select(); },
   };
@@ -317,32 +360,141 @@
     findq.placeholder = W.find;
   }
   let sugTimer = 0, picked = false, typing = false, activeId = null;
-  addr.addEventListener("input", (e) => {
-    // Pilihan dari daftar saran: langsung buka.
-    if (!e.inputType || e.inputType === "insertReplacementText") {
-      const text = addr.value.trim();
-      if (text) { picked = true; send({ cmd: "go", text }); addr.blur(); }
-      return;
+  // ---- Kolom alamat: saran (bookmark, riwayat, pencarian) dan isi otomatis alamat ----
+  let typed = "", omniItems = [], omniSel = -1, autoOk = false;
+  const strip = (u) => u.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
+  const iconSvg = {
+    search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>',
+    star: '<svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg>',
+    clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
+    globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 3 2.5 13 0 16M12 4c-2.5 3-2.5 13 0 16"/></svg>',
+  };
+  function hideOmni() { $("omni").classList.remove("show"); omniItems = []; omniSel = -1; sendHeight(); }
+  function pickOmni(i) {
+    omniSel = i;
+    [...$("omni").children].forEach((e, k) => e.classList.toggle("sel", k === i));
+    if (i >= 0 && omniItems[i]) addr.value = omniItems[i].go;
+  }
+  function showOmni(r) {
+    const box = $("omni"); box.textContent = "";
+    omniItems = [];
+    const looksUrl = /^[^\s]+\.[a-z]{2,}(\/|$)|^https?:|^localhost/i.test(typed);
+    if (!state.noSearch && !looksUrl) omniItems.push({ go: typed, title: typed, sub: r.bang ? "!bang" : W.searchWith, icon: "search" });
+    for (const it of r.items || []) omniItems.push({ go: it.url, title: it.title || strip(it.url), sub: strip(it.url), icon: it.bm ? "star" : "clock", url: it.url });
+    if (looksUrl && !omniItems.length) omniItems.push({ go: typed, title: typed, sub: "", icon: "globe" });
+    // Isi otomatis alamat: saran pertama yang alamatnya diawali teks yang diketik.
+    if (autoOk && typed && !/\s/.test(typed) && addr.selectionStart === addr.value.length) {
+      const hit = (r.items || []).find((it) => strip(it.url).toLowerCase().startsWith(typed.toLowerCase()));
+      if (hit) {
+        const full = strip(hit.url);
+        const host = full.split("/")[0];
+        const done = host.toLowerCase().startsWith(typed.toLowerCase()) && host.length > typed.length ? host : full;
+        addr.value = typed + done.slice(typed.length);
+        addr.setSelectionRange(typed.length, addr.value.length);
+      }
     }
+    const rect = $("addrwrap").getBoundingClientRect();
+    box.style.left = rect.left + "px"; box.style.width = rect.width + "px";
+    omniItems.forEach((it, k) => {
+      const row = document.createElement("div"); row.className = "om";
+      const ic = document.createElement("span"); ic.className = "oi";
+      const ico = it.url && state.icons && state.icons[hostOf(it.url)];
+      if (ico) ic.style.backgroundImage = `url("${ico}")`; else ic.innerHTML = iconSvg[it.icon];
+      const t = document.createElement("span"); t.className = "ot"; t.textContent = it.title;
+      const u = document.createElement("span"); u.className = "ou"; u.textContent = it.sub ? " — " + it.sub : "";
+      row.append(ic, t, u);
+      row.addEventListener("mousedown", (e) => { e.preventDefault(); go(it.go, e.button === 1 || e.ctrlKey); });
+      row.addEventListener("mousemove", () => { if (omniSel !== k) [...box.children].forEach((e2, j) => e2.classList.toggle("sel", j === k)); });
+      box.append(row);
+    });
+    box.classList.toggle("show", omniItems.length > 0 && document.activeElement === addr);
+    sendHeight();
+  }
+  function go(text, newtab) {
+    text = (text || "").trim();
+    if (text) send({ cmd: "go", text, newtab: !!newtab });
+    typing = false; hideOmni(); addr.blur();
+  }
+  addr.addEventListener("input", (e) => {
     typing = true;
-    if (!state.suggest) return;
+    // Isi otomatis hanya saat mengetik di akhir, tidak saat menghapus.
+    autoOk = e.inputType === "insertText" || e.inputType === "insertFromPaste";
+    typed = addr.value.trim();
     clearTimeout(sugTimer);
-    const text = addr.value.trim();
-    if (!text) { $("sug").textContent = ""; return; }
-    sugTimer = setTimeout(() => send({ cmd: "suggest", text }), 120);
+    if (!typed) { hideOmni(); return; }
+    sugTimer = setTimeout(() => send({ cmd: "suggest", text: typed }), 60);
   });
-  addr.addEventListener("blur", () => { $("sug").textContent = ""; if (!addr.value.trim()) typing = false; });
+  addr.addEventListener("blur", () => { hideOmni(); if (!addr.value.trim()) typing = false; });
   addr.addEventListener("focus", () => setTimeout(() => addr.select(), 0));
   addr.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
-      const text = addr.value.trim();
-      if (text) send({ cmd: "go", text, newtab: e.altKey });
-      typing = false;
-      addr.blur();
+      go(addr.value, e.altKey);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!omniItems.length) return;
+      e.preventDefault();
+      const n = omniItems.length;
+      pickOmni(e.key === "ArrowDown" ? (omniSel + 1) % n : (omniSel - 1 + n) % n);
     } else if (e.key === "Escape") {
+      if ($("omni").classList.contains("show")) { addr.value = typed; hideOmni(); return; }
       typing = false; addr.value = state.url; addr.blur(); send({ cmd: "focus-page" });
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      autoOk = false;
     }
   });
+
+  // ---- Gelembung kanan atas: tawaran simpan sandi dan unduhan (seperti Brave) ----
+  const sizeOf = (b) => b <= 0 ? "" : b < 1048576 ? (b / 1024).toFixed(0) + " KB" : (b / 1048576).toFixed(1) + " MB";
+  let bubbleKey = "";
+  function renderBubble() {
+    const b = $("bubble");
+    const pw = state.pwOffer, dl = state.dlBubble && (state.downloads || []).length;
+    const key = JSON.stringify([pw, dl ? state.downloads : null, state.lang]);
+    if (key === bubbleKey) return;
+    bubbleKey = key;
+    b.textContent = "";
+    if (pw) {
+      b.innerHTML = `<h3><span></span><button class="xb">×</button></h3><div class="pwf"><span class="k"></span><span class="u"></span><span class="k"></span><span>••••••••</span></div>
+        <div class="bb"><button class="nv"></button><button class="pri sv"></button></div>`;
+      b.querySelector("h3 span").textContent = (pw.update ? W.pwUpdate : W.pwSave) + " " + pw.site + "?";
+      const ks = b.querySelectorAll(".k"); ks[0].textContent = W.pwUser; ks[1].textContent = W.pwPass;
+      b.querySelector(".u").textContent = pw.user || "—";
+      b.querySelector(".nv").textContent = W.pwNever; b.querySelector(".sv").textContent = pw.update ? W.pwDoUpdate : W.pwDoSave;
+      b.querySelector(".nv").onclick = () => send({ cmd: "pw-never" });
+      b.querySelector(".sv").onclick = () => send({ cmd: "pw-save" });
+      b.querySelector(".xb").onclick = () => send({ cmd: "bubble-close" });
+    } else if (dl) {
+      b.innerHTML = `<h3><span></span><button class="xb">×</button></h3><div class="dls"></div><button class="dall"></button>`;
+      b.querySelector("h3 span").textContent = W.dlTitle;
+      b.querySelector(".xb").onclick = () => send({ cmd: "bubble-close" });
+      b.querySelector(".dall").textContent = W.dlAll;
+      b.querySelector(".dall").onclick = () => send({ cmd: "dl-all" });
+      const box = b.querySelector(".dls");
+      for (const d of state.downloads) {
+        const it = document.createElement("div"); it.className = "di";
+        const pct = d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30;
+        it.innerHTML = `<div class="dn"><b></b><div class="ds"></div>${d.state === "progress" ? `<div class="pb"><i style="width:${pct}%"></i></div>` : ""}</div><button class="db"></button>`;
+        it.querySelector("b").textContent = d.name;
+        it.querySelector(".ds").textContent = d.state === "progress" ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}`
+          : d.state === "failed" ? W.dlFailed : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+        const act = it.querySelector(".db");
+        if (d.state === "progress") { act.textContent = "✕"; act.title = W.dlCancel; act.onclick = () => send({ cmd: "dl-cancel", id: d.id }); }
+        else if (d.exists) { act.textContent = "📂"; act.title = W.dlShow; act.onclick = () => send({ cmd: "dl-show", id: d.id }); it.querySelector("b").onclick = () => send({ cmd: "dl-open", id: d.id }); }
+        else act.remove();
+        box.append(it);
+      }
+    }
+    b.classList.toggle("show", !!(pw || dl));
+  }
+  function sendHeight() {
+    const base = $("base").offsetHeight;
+    $("ov").style.top = base + "px";
+    const om = $("omni").classList.contains("show") ? $("omni").offsetHeight : 0;
+    const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
+    send({ cmd: "height", h: base, over: Math.max(om, bu) });
+  }
+  // Bagian kosong lapisan overlay menutup gelembung.
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov") { hideOmni(); send({ cmd: "bubble-close" }); } });
+  $("dlbtn").onclick = () => send({ cmd: "dl-toggle" });
   findq.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); send({ cmd: "find", text: findq.value, back: e.shiftKey }); }
     else if (e.key === "Escape") send({ cmd: "find-close" });

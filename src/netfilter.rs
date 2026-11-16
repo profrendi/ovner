@@ -128,8 +128,13 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                         let _ = h.SetHeader(&HSTRING::from("Sec-GPC"), &HSTRING::from("1"));
                         let _ = h.SetHeader(&HSTRING::from("DNT"), &HSTRING::from("1"));
                     }
-                    // Referrer ke situs lain dipangkas (seperti LibreWolf/Waterfox).
-                    if referrer != "default" && !page_host.is_empty() && base_domain(&host) != base_domain(&page_host) {
+                    // Referrer ke situs lain dipangkas (seperti LibreWolf/Waterfox), hanya untuk
+                    // navigasi dan iframe: permintaan video/API (googlevideo.com dari YouTube)
+                    // butuh referrer asal situs agar tetap diputar.
+                    let mut kind = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
+                    let _ = args.ResourceContext(&mut kind);
+                    let navigation = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+                    if navigation && referrer != "default" && !page_host.is_empty() && base_domain(&host) != base_domain(&page_host) {
                         let name = HSTRING::from("Referer");
                         let mut has = BOOL(0);
                         if h.Contains(&name, &mut has).is_ok() && has.as_bool() {

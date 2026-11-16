@@ -20,6 +20,7 @@
   .tab.active { background: var(--active); box-shadow: 0 1px 2px #0002; }
   .tab .ic { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; background: var(--accent); }
   .tab.private .ic { background: var(--private); }
+  .tab .ic.img { background: center / 16px 16px no-repeat; }
   .tab.sleep .ic { background: var(--muted); }
   .tab.sleep .t { color: var(--muted); font-style: italic; }
   .tab.split { box-shadow: inset 3px 0 0 var(--accent); }
@@ -72,7 +73,11 @@
         const e = el(t.id);
         e.className = "tab" + (t.active ? " active" : "") + (t.sleeping ? " sleep" : "") + (t.loading ? " loading" : "") + (t.private ? " private" : "") + (t.split ? " split" : "");
         e.title = (t.title || w.nt) + "\n" + (t.url || "");
-        e.children[0].textContent = letter(t);
+        let host = ""; try { host = new URL(t.url).hostname.replace(/^www\./, ""); } catch (x) {}
+        const ico = s.icons && s.icons[host];
+        e.children[0].className = "ic" + (ico ? " img" : "");
+        e.children[0].style.backgroundImage = ico ? `url("${ico}")` : "";
+        e.children[0].textContent = ico ? "" : letter(t);
         e.children[1].textContent = t.title || w.nt;
         e.children[2].title = w.close;
         list.append(e);

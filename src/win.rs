@@ -18,6 +18,15 @@ pub struct Proc {
     pub is_self: bool,
 }
 
+/// Kejadian unduhan (seperti panel unduhan Brave).
+#[derive(Debug, Clone)]
+pub enum DlEvent {
+    Started { id: u64, url: String, path: String, total: i64 },
+    Progress { id: u64, received: i64, total: i64 },
+    /// Selesai (`ok`), gagal/dibatalkan (`!ok`).
+    Done { id: u64, ok: bool, path: String, received: i64 },
+}
+
 /// Satu proses WebView2 beserta halaman (bingkai utama) yang dilayaninya.
 #[derive(Clone, Debug, Default)]
 pub struct ProcExt {
@@ -202,13 +211,21 @@ mod imp {
     }
 
     /// Snapshot RAM proses ini + semua proses WebView2-nya.
-    pub fn process_snapshot() -> Vec<Proc> {
+    /// RAM proses Ovner dan WebView2. `extra`: PID dari API WebView2 (proses WebView2 tidak
+    /// selalu tercatat sebagai anak Ovner, jadi pohon proses saja tidak cukup).
+    pub fn process_snapshot(extra: &[u32]) -> Vec<Proc> {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2};
         use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
         let me = unsafe { GetCurrentProcessId() };
         let mut out = Vec::new();
-        for pid in tree_pids() {
+        let mut pids = tree_pids();
+        for &p in extra {
+            if !pids.contains(&p) {
+                pids.push(p);
+            }
+        }
+        for pid in pids {
             unsafe {
                 let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { continue };
                 let mut p = Proc { pid, is_self: pid == me, ..Default::default() };
@@ -315,6 +332,164 @@ mod imp {
 
     /// Pengaturan WebView2 per tab yang tidak disediakan wry: pengelola kata sandi, isi
     /// otomatis, SmartScreen, folder unduhan, dan penolakan izin sensitif.
+    thread_local! {
+        static DOWNLOADS: std::cell::RefCell<std::collections::HashMap<u64, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    static NEXT_DL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    /// Lacak unduhan tab ini sendiri; panel unduhan bawaan WebView2 disembunyikan.
+    pub fn on_download(webview: &wry::WebView, cb: impl Fn(DlEvent) + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use webview2_com::{take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler};
+        use wry::WebViewExtWindows;
+        let Ok(w4) = webview.webview().cast::<ICoreWebView2_4>() else { return };
+        let cb = std::rc::Rc::new(cb);
+        let handler = DownloadStartingEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let _ = args.SetHandled(true);
+                let op = args.DownloadOperation()?;
+                let id = NEXT_DL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut p = windows::core::PWSTR::null();
+                let url = if op.Uri(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                let mut p = windows::core::PWSTR::null();
+                let path = if args.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                let mut total = 0i64;
+                let _ = op.TotalBytesToReceive(&mut total);
+                cb(DlEvent::Started { id, url, path, total });
+                DOWNLOADS.with(|d| d.borrow_mut().insert(id, op.clone()));
+                let (cb1, cb2) = (cb.clone(), cb.clone());
+                let last = std::cell::Cell::new(std::time::Instant::now());
+                let progress = BytesReceivedChangedEventHandler::create(Box::new(move |op, _| {
+                    if let Some(op) = op {
+                        if last.get().elapsed() >= std::time::Duration::from_millis(300) {
+                            last.set(std::time::Instant::now());
+                            let (mut r, mut t) = (0i64, 0i64);
+                            let _ = op.BytesReceived(&mut r);
+                            let _ = op.TotalBytesToReceive(&mut t);
+                            cb1(DlEvent::Progress { id, received: r, total: t });
+                        }
+                    }
+                    Ok(())
+                }));
+                let state = StateChangedEventHandler::create(Box::new(move |op, _| {
+                    if let Some(op) = op {
+                        let mut st = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                        let _ = op.State(&mut st);
+                        if st != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+                            let mut p = windows::core::PWSTR::null();
+                            let path = if op.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                            let mut r = 0i64;
+                            let _ = op.BytesReceived(&mut r);
+                            DOWNLOADS.with(|d| d.borrow_mut().remove(&id));
+                            cb2(DlEvent::Done { id, ok: st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, path, received: r });
+                        }
+                    }
+                    Ok(())
+                }));
+                let mut token = 0i64;
+                let _ = op.add_BytesReceivedChanged(&progress, &mut token);
+                let _ = op.add_StateChanged(&state, &mut token);
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = w4.add_DownloadStarting(&handler, &mut token);
+        }
+    }
+
+    pub fn cancel_download(id: u64) {
+        DOWNLOADS.with(|d| {
+            if let Some(op) = d.borrow().get(&id) {
+                unsafe {
+                    let _ = op.Cancel();
+                }
+            }
+        });
+    }
+
+    /// Buka berkas dengan aplikasinya, atau tampilkan di Explorer.
+    pub fn open_path(path: &str, reveal: bool) {
+        let mut c = std::process::Command::new("explorer.exe");
+        if reveal {
+            c.arg(format!("/select,{path}"));
+        } else {
+            c.arg(path);
+        }
+        let _ = c.spawn();
+    }
+
+    /// Bawa jendela anak WebView ini ke paling atas (overlay toolbar di atas halaman).
+    pub fn raise(webview: &wry::WebView) {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+        use wry::WebViewExtWindows;
+        unsafe {
+            let _ = SetWindowPos(webview.hwnd(), Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
+    /// Panggil `cb(png)` setiap ikon situs di tab ini berubah (FaviconChanged + GetFavicon).
+    pub fn on_favicon(webview: &wry::WebView, cb: impl Fn(Vec<u8>) + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_15, COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG};
+        use webview2_com::{FaviconChangedEventHandler, GetFaviconCompletedHandler};
+        use wry::WebViewExtWindows;
+        let cb = std::rc::Rc::new(cb);
+        let Ok(w15) = webview.webview().cast::<ICoreWebView2_15>() else { return };
+        let target = w15.clone();
+        let handler = FaviconChangedEventHandler::create(Box::new(move |_, _| {
+            let cb = cb.clone();
+            let done = GetFaviconCompletedHandler::create(Box::new(move |res, stream| {
+                if let (Ok(()), Some(stream)) = (res, stream) {
+                    let mut out = Vec::new();
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        let mut n = 0u32;
+                        let hr = unsafe { stream.Read(buf.as_mut_ptr() as *mut _, buf.len() as u32, Some(&mut n)) };
+                        if hr.is_err() || n == 0 || out.len() > 64 * 1024 {
+                            break;
+                        }
+                        out.extend_from_slice(&buf[..n as usize]);
+                    }
+                    if !out.is_empty() {
+                        cb(out);
+                    }
+                }
+                Ok(())
+            }));
+            unsafe {
+                let _ = target.GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, &done);
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = w15.add_FaviconChanged(&handler, &mut token);
+        }
+    }
+
+    /// Enkripsi data dengan DPAPI (terikat akun Windows ini), seperti Chrome/Edge menyimpan sandi.
+    pub fn protect(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
+        use windows::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB::default();
+        unsafe {
+            let ok = if encrypt {
+                CryptProtectData(&input, &HSTRING::from("Ovner"), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            } else {
+                CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            };
+            if ok.is_err() || out.pbData.is_null() {
+                return None;
+            }
+            let v = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+            let _ = LocalFree(Some(HLOCAL(out.pbData as *mut _)));
+            Some(v)
+        }
+    }
+
     /// Salin teks ke clipboard Windows.
     pub fn set_clipboard(text: &str) {
         use windows::Win32::Foundation::HANDLE;
@@ -380,7 +555,8 @@ mod imp {
         unsafe {
             if let Ok(st) = wv.Settings().and_then(|s| s.cast::<ICoreWebView2Settings4>()) {
                 let _ = st.SetIsGeneralAutofillEnabled(s.autofill);
-                let _ = st.SetIsPasswordAutosaveEnabled(s.password_manager);
+                // Sandi dikelola brankas Ovner sendiri (bisa dilihat dan diekspor), bukan WebView2.
+                let _ = st.SetIsPasswordAutosaveEnabled(false);
             }
             if let Ok(st) = wv.Settings().and_then(|s| s.cast::<ICoreWebView2Settings8>()) {
                 let _ = st.SetIsReputationCheckingRequired(s.smartscreen);
@@ -625,7 +801,7 @@ mod imp {
         Ok(())
     }
     /// Linux: hanya proses ini sendiri (dari /proc), cukup untuk menguji halaman task manager.
-    pub fn process_snapshot() -> Vec<Proc> {
+    pub fn process_snapshot(_extra: &[u32]) -> Vec<Proc> {
         let rss = std::fs::read_to_string("/proc/self/statm")
             .ok()
             .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()))
@@ -642,6 +818,18 @@ mod imp {
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}
     pub fn cdp(_webview: &wry::WebView, _method: &str, _params: &str) {}
     pub fn set_clipboard(_text: &str) {}
+    pub fn on_download(_webview: &wry::WebView, _cb: impl Fn(DlEvent) + 'static) {}
+    pub fn cancel_download(_id: u64) {}
+    pub fn open_path(path: &str, reveal: bool) {
+        let p = if reveal { std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default() } else { path.to_string() };
+        let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+    }
+    pub fn raise(_webview: &wry::WebView) {}
+    /// Linux (pengembangan): tanpa enkripsi.
+    pub fn protect(data: &[u8], _encrypt: bool) -> Option<Vec<u8>> {
+        Some(data.to_vec())
+    }
+    pub fn on_favicon(_webview: &wry::WebView, _cb: impl Fn(Vec<u8>) + 'static) {}
     pub fn user_agent(_webview: &wry::WebView) -> String {
         String::new()
     }
