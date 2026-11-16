@@ -1,7 +1,8 @@
-# Build Ovner (browser WebView2) untuk Windows dan terbitkan rilisnya.
-# Setiap versi baru di Cargo.toml yang di-push ke main otomatis menjadi rilis
-# `ovner-vX.Y.Z` berisi Ovner-Setup.exe, Ovner-Portable.zip, dan ovner-latest.json
-# (dibaca fitur update otomatis Ovner).
+# Build Ovner (browser WebView2) untuk Windows dan terbitkan rilisnya, dua kanal:
+# - Stabil: setiap versi baru di Cargo.toml yang di-push ke main menjadi rilis `ovner-vX.Y.Z`.
+# - Nightly: setiap push ke main memperbarui prarilis `ovner-nightly`.
+# Keduanya berisi Ovner-Setup.exe, Ovner-Portable.zip, dan ovner-latest.json (dibaca fitur
+# update otomatis Ovner sesuai kanal yang dipilih di Pengaturan).
 name: Ovner
 
 on:
@@ -31,6 +32,9 @@ jobs:
         run: cargo test
 
       - name: Build
+        env:
+          OVNER_BUILD: ${{ github.run_number }}
+          OVNER_CHANNEL: stable
         run: cargo build --release
 
       # Runtime Visual C++ sudah ditanam di exe (crt-static, lihat .cargo/config.toml), jadi Ovner
@@ -50,28 +54,41 @@ jobs:
           '@ | Set-Content check_imports.py
           python check_imports.py
 
-      - name: Kemas
+      - name: Kemas (stabil)
         shell: pwsh
         run: |
           $ver = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           "OVNER_VERSION=$ver" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          New-Item -ItemType Directory -Force dist, dist/Ovner | Out-Null
-          Copy-Item target/release/ovner.exe dist/Ovner-Setup.exe
-
+          @'
+          param($dir, $tag, $ver, $build)
+          New-Item -ItemType Directory -Force $dir, "$dir/Ovner" | Out-Null
+          Copy-Item target/release/ovner.exe "$dir/Ovner-Setup.exe"
           # Versi portabel: exe + penanda portable.txt, semua data di folder Data di sebelahnya.
-          Copy-Item target/release/ovner.exe dist/Ovner/ovner.exe
-          "File ini membuat Ovner berjalan portabel: semua data disimpan di folder Data di sebelah ovner.exe." |
-            Set-Content -Encoding utf8 dist/Ovner/portable.txt
-          Copy-Item README.md dist/Ovner/README.md
-          Compress-Archive -Path dist/Ovner -DestinationPath dist/Ovner-Portable.zip -CompressionLevel Optimal
-          Remove-Item -Recurse dist/Ovner
+          Copy-Item target/release/ovner.exe "$dir/Ovner/ovner.exe"
+          "File ini membuat Ovner berjalan portabel: semua data disimpan di folder Data di sebelah ovner.exe.`r`nThis file makes Ovner portable: all data is kept in the Data folder next to ovner.exe." |
+            Set-Content -Encoding utf8 "$dir/Ovner/portable.txt"
+          Copy-Item README.md "$dir/Ovner/README.md"
+          Compress-Archive -Path "$dir/Ovner" -DestinationPath "$dir/Ovner-Portable.zip" -CompressionLevel Optimal
+          Remove-Item -Recurse "$dir/Ovner"
+          $hash = (Get-FileHash "$dir/Ovner-Setup.exe" -Algorithm SHA256).Hash.ToLower()
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/Ovner-Setup.exe"
+          [ordered]@{ version = $ver; url = $url; sha256 = $hash; build = [int]$build } |
+            ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$dir/ovner-latest.json"
+          Get-Content "$dir/ovner-latest.json"
+          Get-ChildItem $dir | ForEach-Object { "{0,-24} {1,10:N0} KB" -f $_.Name, ($_.Length / 1KB) }
+          '@ | Set-Content package.ps1
+          ./package.ps1 dist "ovner-v$ver" $ver ${{ github.run_number }}
 
-          $hash = (Get-FileHash dist/Ovner-Setup.exe -Algorithm SHA256).Hash.ToLower()
-          $url = "https://github.com/${{ github.repository }}/releases/download/ovner-v$ver/Ovner-Setup.exe"
-          [ordered]@{ version = $ver; url = $url; sha256 = $hash } |
-            ConvertTo-Json | Set-Content -Encoding utf8NoBOM dist/ovner-latest.json
-          Get-Content dist/ovner-latest.json
-          Get-ChildItem dist | ForEach-Object { "{0,-24} {1,10:N0} KB" -f $_.Name, ($_.Length / 1KB) }
+      - name: Build dan kemas (nightly)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          OVNER_BUILD: ${{ github.run_number }}
+          OVNER_CHANNEL: nightly
+        run: |
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "Build nightly gagal" }
+          ./package.ps1 dist-nightly ovner-nightly $env:OVNER_VERSION ${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -100,3 +117,34 @@ jobs:
             --latest
           if ($LASTEXITCODE -ne 0) { throw "Gagal membuat rilis $tag" }
           "Rilis $tag diterbitkan."
+
+      - name: Rilis nightly
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "${{ github.repository }}"
+          # Prarilis lama dibuang lalu dibuat ulang, supaya tag menunjuk commit terbaru.
+          gh release delete ovner-nightly --repo $repo --cleanup-tag --yes *> $null
+          # Sisa rilis "nightly" Lumen dari masa repo ini masih berisi Lumen.
+          gh release delete nightly --repo $repo --cleanup-tag --yes *> $null
+          $global:LASTEXITCODE = 0
+          $subject = git log -1 --pretty=%s
+          @"
+          Build nightly #${{ github.run_number }} dari commit ${{ github.sha }}.
+
+          $subject
+
+          Pilih kanal Nightly di Pengaturan → Sistem → Kanal update agar Ovner memperbarui diri dari sini.
+          Choose the Nightly channel in Settings → System → Update channel to auto-update from here.
+          "@ | Set-Content -Encoding utf8NoBOM nightly-notes.md
+          gh release create ovner-nightly dist-nightly/Ovner-Setup.exe dist-nightly/Ovner-Portable.zip dist-nightly/ovner-latest.json `
+            --repo $repo `
+            --target "${{ github.sha }}" `
+            --title "Ovner nightly $env:OVNER_VERSION (build ${{ github.run_number }})" `
+            --notes-file nightly-notes.md `
+            --prerelease `
+            --latest=false
+          if ($LASTEXITCODE -ne 0) { throw "Gagal membuat rilis nightly" }
+          "Rilis nightly diterbitkan."

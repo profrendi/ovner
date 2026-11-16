@@ -8,6 +8,9 @@ mod icon;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/icon.rs");
+    // Nomor build dan kanal (stable/nightly) diisi oleh CI lewat option_env!.
+    println!("cargo:rerun-if-env-changed=OVNER_BUILD");
+    println!("cargo:rerun-if-env-changed=OVNER_CHANNEL");
 
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

@@ -13,7 +13,7 @@ use adblock::request::Request;
 use adblock::Engine;
 use url::Url;
 
-/// Daftar yang diunduh: (nama file, URL).
+/// Daftar utama yang selalu diunduh: (nama file, URL).
 pub const FILTER_LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     ("easyprivacy.txt", "https://easylist.to/easylist/easyprivacy.txt"),
@@ -21,6 +21,63 @@ pub const FILTER_LISTS: &[(&str, &str)] = &[
     ("ublock-filters.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt"),
     ("ublock-privacy.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt"),
 ];
+
+/// Daftar popup persetujuan cookie (seperti "cookie consent blocking" Brave).
+pub const COOKIE_LISTS: &[(&str, &str)] = &[
+    ("ublock-cookies.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances-cookies.txt"),
+    ("easylist-cookie.txt", "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt"),
+];
+
+/// Berkas aturan sendiri pengguna (dari Pengaturan dan pemilih elemen).
+pub const CUSTOM_RULES_FILE: &str = "zz-aturan-saya.txt";
+
+/// Semua daftar yang diinginkan menurut setelan: (nama file, URL).
+pub fn wanted_lists(s: &crate::settings::Settings) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = FILTER_LISTS.iter().map(|(n, u)| (n.to_string(), u.to_string())).collect();
+    if s.block_cookie_notices {
+        v.extend(COOKIE_LISTS.iter().map(|(n, u)| (n.to_string(), u.to_string())));
+    }
+    for u in &s.custom_lists {
+        if u.starts_with("https://") || u.starts_with("http://") {
+            v.push((format!("kustom-{:08x}.txt", fnv(u)), u.clone()));
+        }
+    }
+    v
+}
+
+fn fnv(s: &str) -> u32 {
+    let mut h: u32 = 2166136261;
+    for b in s.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    h
+}
+
+/// Hapus berkas daftar yang tidak lagi diinginkan (mis. daftar cookie dimatikan).
+/// Mengembalikan true bila ada yang dihapus.
+pub fn prune_lists(data_dir: &Path, wanted: &[(String, String)]) -> bool {
+    let mut removed = false;
+    for f in list_files(data_dir) {
+        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if name != CUSTOM_RULES_FILE && !wanted.iter().any(|(n, _)| *n == name) {
+            removed |= std::fs::remove_file(&f).is_ok();
+        }
+    }
+    removed
+}
+
+/// Tulis aturan sendiri ke berkasnya. Mengembalikan true bila isinya berubah.
+pub fn write_custom_rules(data_dir: &Path, rules: &str) -> bool {
+    let dir = filters_dir(data_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join(CUSTOM_RULES_FILE);
+    let text = format!("! Aturan sendiri Ovner\n{}\n", rules.trim());
+    if std::fs::read_to_string(&p).ok().as_deref() == Some(text.as_str()) {
+        return false;
+    }
+    std::fs::write(&p, text).is_ok()
+}
 
 /// Daftar diperbarui bila sudah lebih tua dari ini.
 pub const REFRESH_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -135,20 +192,24 @@ pub fn engine_from_bytes(body: &[u8]) -> Option<Engine> {
 }
 
 /// Apakah ada daftar yang belum ada atau sudah lebih tua dari `REFRESH_AFTER`.
-pub fn lists_need_refresh(data_dir: &Path) -> bool {
+pub fn lists_need_refresh(data_dir: &Path, wanted: &[(String, String)]) -> bool {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    FILTER_LISTS.iter().any(|(name, _)| {
+    wanted.iter().any(|(name, _)| {
         let p = filters_dir(data_dir).join(name);
         !p.is_file() || now.saturating_sub(mtime_secs(&p)) > REFRESH_AFTER.as_secs()
     })
 }
 
-/// Unduh semua daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berhasil.
-pub fn download_lists(data_dir: &Path) -> usize {
+/// Unduh daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berhasil.
+/// `only_missing`: hanya unduh yang belum ada (mis. daftar baru dinyalakan).
+pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing: bool) -> usize {
     let dir = filters_dir(data_dir);
     let _ = std::fs::create_dir_all(&dir);
     let mut ok = 0;
-    for (name, url) in FILTER_LISTS {
+    for (name, url) in wanted {
+        if only_missing && dir.join(name).is_file() {
+            continue;
+        }
         let tmp = dir.join(format!("{name}.unduh"));
         let _ = std::fs::remove_file(&tmp);
         match crate::win::download(url, &tmp) {
@@ -209,6 +270,16 @@ impl Blocker {
             Ok(req) => self.engine.check_network_request(&req).should_block(),
             Err(_) => false,
         }
+    }
+
+    /// Pemeriksaan CNAME uncloaking: blokir bila nama asli (CNAME) host ini cocok dengan
+    /// daftar, walau host-nya sendiri subdomain situs (pelacak yang menyamar).
+    pub fn should_block_cname(&self, url: &str, cname: &str, source: &str, request_type: &str) -> bool {
+        let Ok(mut u) = Url::parse(url) else { return false };
+        if u.set_host(Some(cname.trim_end_matches('.'))).is_err() {
+            return false;
+        }
+        self.should_block(u.as_str(), source, request_type)
     }
 
     /// CSS penyembunyi kotak iklan khusus situs ini (aturan `situs##selektor`).
@@ -305,6 +376,9 @@ mod tests {
         let cached = Blocker::new(load_cached(&d).unwrap(), true);
         assert!(cached.should_block("https://lain.id/iklan/banner.js", PAGE, "script"));
 
+        // CNAME: subdomain situs yang aslinya pelacak.
+        assert!(cached.should_block_cname("https://metrik.contoh.id/t.js", "pelacak.example", PAGE, "script"));
+        assert!(!cached.should_block_cname("https://cdn.contoh.id/a.js", "cdn.cloudflare.net", PAGE, "script"));
         let (css, exc, generichide) = cached.page_cosmetics("https://www.contoh.id/berita");
         assert!(css.contains(".kotak-iklan{display:none!important}"));
         assert!(!generichide);
@@ -317,11 +391,23 @@ mod tests {
     #[test]
     fn refresh_needed_when_lists_missing() {
         let d = tmp("refresh");
-        assert!(lists_need_refresh(&d));
-        for (name, _) in FILTER_LISTS {
+        let s = crate::settings::Settings::default();
+        let wanted = wanted_lists(&s);
+        assert_eq!(wanted.len(), FILTER_LISTS.len() + COOKIE_LISTS.len());
+        assert!(lists_need_refresh(&d, &wanted));
+        for (name, _) in &wanted {
             std::fs::write(filters_dir(&d).join(name), "! daftar\n").unwrap();
         }
-        assert!(!lists_need_refresh(&d));
+        assert!(!lists_need_refresh(&d, &wanted));
+        // Daftar cookie dimatikan: berkasnya dibuang, aturan sendiri tetap.
+        assert!(write_custom_rules(&d, "contoh.id##.iklan"));
+        assert!(!write_custom_rules(&d, "contoh.id##.iklan"));
+        let s2 = crate::settings::Settings { block_cookie_notices: false, custom_lists: vec!["https://x.id/l.txt".into()], ..s };
+        let w2 = wanted_lists(&s2);
+        assert!(w2.iter().any(|(n, _)| n.starts_with("kustom-")));
+        assert!(prune_lists(&d, &w2));
+        assert!(!filters_dir(&d).join("ublock-cookies.txt").exists());
+        assert!(filters_dir(&d).join(CUSTOM_RULES_FILE).exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 

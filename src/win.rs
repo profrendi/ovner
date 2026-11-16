@@ -18,6 +18,28 @@ pub struct Proc {
     pub is_self: bool,
 }
 
+/// Satu proses WebView2 beserta halaman (bingkai utama) yang dilayaninya.
+#[derive(Clone, Debug, Default)]
+pub struct ProcExt {
+    pub pid: u32,
+    /// "browser", "renderer", "gpu", "utility", "lainnya".
+    pub kind: &'static str,
+    /// Alamat bingkai utama halaman yang memakai proses ini.
+    pub mains: Vec<String>,
+}
+
+/// Jenis kegagalan proses WebView2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProcFail {
+    /// Seluruh mesin WebView2 berhenti: semua tab mati.
+    Browser,
+    /// Proses halaman tab ini berhenti (crash).
+    Render,
+    /// Halaman tidak merespons.
+    Unresponsive,
+    Other,
+}
+
 /// Buka folder di Explorer.
 pub fn open_folder(path: &Path) {
     let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(path).spawn();
@@ -263,6 +285,7 @@ mod imp {
         browser_args: &str,
         tracking_prevention: bool,
         local_crash_reports: bool,
+        extensions: bool,
     ) -> Result<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment, String> {
         use webview2_com::Microsoft::Web::WebView2::Win32::{CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2EnvironmentOptions};
         use webview2_com::{CoreWebView2EnvironmentOptions, CreateCoreWebView2EnvironmentCompletedHandler};
@@ -271,7 +294,7 @@ mod imp {
         let options = CoreWebView2EnvironmentOptions::default();
         unsafe {
             options.set_additional_browser_arguments(browser_args.to_string());
-            options.set_are_browser_extensions_enabled(false);
+            options.set_are_browser_extensions_enabled(extensions);
             options.set_enable_tracking_prevention(tracking_prevention);
             options.set_is_custom_crash_reporting_enabled(local_crash_reports);
             options.set_allow_single_sign_on_using_os_primary_account(false);
@@ -359,6 +382,166 @@ mod imp {
             let _ = unsafe { wv3.Resume() };
         }
     }
+
+    /// Nyalakan/matikan JavaScript untuk navigasi berikutnya di tab ini.
+    pub fn set_script_enabled(webview: &wry::WebView, enabled: bool) {
+        use wry::WebViewExtWindows;
+        unsafe {
+            if let Ok(st) = webview.webview().Settings() {
+                let _ = st.SetIsScriptEnabled(enabled);
+            }
+        }
+    }
+
+    /// Panggil `cb` bila proses WebView2 tab ini crash atau macet.
+    pub fn on_process_failed(webview: &wry::WebView, cb: impl Fn(ProcFail) + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use webview2_com::ProcessFailedEventHandler;
+        use wry::WebViewExtWindows;
+        let handler = ProcessFailedEventHandler::create(Box::new(move |_wv, args| {
+            if let Some(a) = args {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                unsafe {
+                    a.ProcessFailedKind(&mut kind)?;
+                }
+                cb(if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
+                    ProcFail::Browser
+                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                    ProcFail::Render
+                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE {
+                    ProcFail::Unresponsive
+                } else {
+                    ProcFail::Other
+                });
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.webview().add_ProcessFailed(&handler, &mut token);
+        }
+    }
+
+    /// Muat ekstensi dari folder (unpacked). Hasilnya dicatat lewat `log`.
+    pub fn load_extensions(webview: &wry::WebView, dirs: &[String], log: fn(&str)) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
+        use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
+        use wry::WebViewExtWindows;
+        let profile = unsafe { webview.webview().cast::<ICoreWebView2_13>().and_then(|w| w.Profile()).and_then(|p| p.cast::<ICoreWebView2Profile7>()) };
+        let Ok(profile) = profile else {
+            log("ekstensi: WebView2 terlalu lama (butuh Profile7)");
+            return;
+        };
+        for dir in dirs {
+            let d = dir.clone();
+            let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |res, _ext| {
+                log(&format!("ekstensi {d}: {}", if res.is_ok() { "dimuat".to_string() } else { format!("gagal {res:?}") }));
+                Ok(())
+            }));
+            unsafe {
+                if let Err(e) = profile.AddBrowserExtension(&HSTRING::from(dir.as_str()), &handler) {
+                    log(&format!("ekstensi {dir}: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Minta daftar proses WebView2 beserta halaman yang dilayani tiap proses (asinkron).
+    pub fn request_process_infos(
+        env: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment,
+        cb: impl FnOnce(Vec<ProcExt>) + 'static,
+    ) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use webview2_com::{take_pwstr, GetProcessExtendedInfosCompletedHandler};
+        use windows::core::{BOOL, PWSTR};
+        let Ok(env13) = env.cast::<ICoreWebView2Environment13>() else { return };
+        let cb = std::cell::RefCell::new(Some(cb));
+        let handler = GetProcessExtendedInfosCompletedHandler::create(Box::new(move |res, coll| {
+            let mut out = Vec::new();
+            if let (Ok(()), Some(coll)) = (res, coll) {
+                unsafe {
+                    let mut n = 0u32;
+                    let _ = coll.Count(&mut n);
+                    for i in 0..n {
+                        let Ok(info) = coll.GetValueAtIndex(i) else { continue };
+                        let Ok(pi) = info.ProcessInfo() else { continue };
+                        let (mut pid, mut kind) = (0i32, COREWEBVIEW2_PROCESS_KIND::default());
+                        let _ = pi.ProcessId(&mut pid);
+                        let _ = pi.Kind(&mut kind);
+                        let kind = if kind == COREWEBVIEW2_PROCESS_KIND_BROWSER {
+                            "browser"
+                        } else if kind == COREWEBVIEW2_PROCESS_KIND_RENDERER {
+                            "renderer"
+                        } else if kind == COREWEBVIEW2_PROCESS_KIND_GPU {
+                            "gpu"
+                        } else if kind == COREWEBVIEW2_PROCESS_KIND_UTILITY {
+                            "utility"
+                        } else {
+                            "lainnya"
+                        };
+                        let mut mains = Vec::new();
+                        if let Ok(it) = info.AssociatedFrameInfos().and_then(|f| f.GetIterator()) {
+                            let mut has = BOOL::default();
+                            while it.HasCurrent(&mut has).is_ok() && has.as_bool() {
+                                if let Ok(mut fr) = it.GetCurrent() {
+                                    // Naik ke bingkai utama (halaman tab).
+                                    for _ in 0..16 {
+                                        match fr.cast::<ICoreWebView2FrameInfo2>().and_then(|f2| f2.ParentFrameInfo()) {
+                                            Ok(p) => fr = p,
+                                            Err(_) => break,
+                                        }
+                                    }
+                                    let mut src = PWSTR::null();
+                                    if fr.Source(&mut src).is_ok() {
+                                        let s = take_pwstr(src);
+                                        if !s.is_empty() && !mains.contains(&s) {
+                                            mains.push(s);
+                                        }
+                                    }
+                                }
+                                let mut more = BOOL::default();
+                                if it.MoveNext(&mut more).is_err() || !more.as_bool() {
+                                    break;
+                                }
+                            }
+                        }
+                        out.push(ProcExt { pid: pid as u32, kind, mains });
+                    }
+                }
+            }
+            if let Some(cb) = cb.borrow_mut().take() {
+                cb(out);
+            }
+            Ok(())
+        }));
+        unsafe {
+            let _ = env13.GetProcessExtendedInfos(&handler);
+        }
+    }
+
+    /// Nama asli (CNAME terakhir) sebuah host, bila ada. Memblokir: panggil dari thread latar.
+    pub fn cname_of(host: &str) -> Option<String> {
+        use windows::Win32::NetworkManagement::Dns::{DnsFree, DnsFreeRecordList, DnsQuery_W, DNS_QUERY_STANDARD, DNS_RECORDA, DNS_RECORDW, DNS_TYPE_CNAME};
+        let mut results: *mut DNS_RECORDA = std::ptr::null_mut();
+        unsafe {
+            let err = DnsQuery_W(&HSTRING::from(host), DNS_TYPE_CNAME, DNS_QUERY_STANDARD, None, &mut results, None);
+            if err.0 != 0 || results.is_null() {
+                return None;
+            }
+            let mut last = None;
+            let mut rec = results as *mut DNS_RECORDW;
+            while !rec.is_null() {
+                if (*rec).wType == DNS_TYPE_CNAME.0 {
+                    if let Ok(s) = (*rec).Data.CNAME.pNameHost.to_string() {
+                        last = Some(s.to_ascii_lowercase());
+                    }
+                }
+                rec = (*rec).pNext;
+            }
+            DnsFree(Some(results as *const core::ffi::c_void), DnsFreeRecordList);
+            last
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -408,6 +591,12 @@ mod imp {
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}
     pub fn try_suspend(_webview: &wry::WebView) {}
     pub fn resume(_webview: &wry::WebView) {}
+    pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}
+    pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail) + 'static) {}
+    pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
+    pub fn cname_of(_host: &str) -> Option<String> {
+        None
+    }
 }
 
 pub use imp::*;

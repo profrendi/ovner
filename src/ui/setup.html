@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ovner</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  .hero { display: flex; align-items: center; gap: 14px; margin: 10px 0 6px; }
+  .hero svg { width: 54px; height: 54px; }
+  .hero h1 { margin: 0; }
+  .big { width: 100%; padding: 12px; font-size: 15px; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1863dc"/><stop offset="1" stop-color="#0ea6a0"/></linearGradient></defs>
+      <circle cx="24" cy="24" r="23" fill="url(#g)"/><circle cx="24" cy="24" r="13.5" fill="none" stroke="#fff" stroke-width="4.5"/>
+      <circle cx="34.5" cy="34.5" r="9" fill="#fff"/><circle cx="34.5" cy="34.5" r="7" fill="#ff8c1a"/>
+    </svg>
+    <h1 id="title"></h1>
+  </div>
+  <p class="muted" id="lead"></p>
+  <div id="form"></div>
+  <button class="primary big" id="done"></button>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  let L = "id", st = {}, browsers = [];
+  const T = (p) => p[L === "id" ? 0 : 1];
+  const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); for (const k in attrs) if (k === "html") e.innerHTML = attrs[k]; else e[k] = attrs[k]; e.append(...kids); return e; };
+  const steps = [
+    ["language", "select", ["Bahasa", "Language"], "", [["auto", "Ikuti Windows", "Follow Windows"], ["id", "Bahasa Indonesia", "Bahasa Indonesia"], ["en", "English", "English"]]],
+    ["search_engine", "select", ["Mesin pencari", "Search engine"], ["Bisa diganti kapan saja di Pengaturan.", "You can change it any time in Settings."], [["google", "Google", "Google"], ["duckduckgo", "DuckDuckGo", "DuckDuckGo"], ["brave", "Brave Search", "Brave Search"], ["bing", "Bing", "Bing"]]],
+    ["block_ads", "bool", ["Blokir iklan dan pelacak", "Block ads and trackers"], ["Mesin pemblokir Brave dengan daftar EasyList dan ABPindo.", "Brave's blocking engine with EasyList and ABPindo."]],
+    ["block_cookie_notices", "bool", ["Blokir popup persetujuan cookie", "Block cookie consent pop-ups"], ""],
+    ["farbling", "select", ["Acak sidik jari", "Randomize fingerprint"], ["Standar: situs tidak bisa mengenali Anda dari ciri komputer, hampir tanpa efek samping.", "Standard: sites can't recognize you from your computer's traits, with almost no side effects."], [["off", "Mati", "Off"], ["standard", "Standar", "Standard"], ["strict", "Ketat", "Strict"]]],
+    ["close_to_tray", "bool", ["Tombol X menyembunyikan ke tray (hemat RAM)", "Close button hides to the tray (saves RAM)"], ""],
+    ["autostart", "bool", ["Mulai bersama Windows", "Start with Windows"], ""],
+  ];
+  function build() {
+    const f = document.getElementById("form"); f.textContent = "";
+    const card = h("div", { className: "card" });
+    for (const [key, kind, label, hint, opts] of steps) {
+      const row = h("div", { className: "row" }, h("div", { className: "lbl", html: `${T(label)}<small>${hint ? T(hint) : ""}</small>` }));
+      let c;
+      if (kind === "bool") {
+        const inp = h("input", { type: "checkbox", checked: !!st[key] });
+        inp.onchange = () => post({ t: "set", key, value: inp.checked });
+        c = h("label", { className: "switch" }, inp, h("span", {}));
+      } else {
+        c = h("select", {});
+        for (const [v, id, en] of opts) c.append(h("option", { value: v, textContent: L === "id" ? id : en, selected: v === st[key] }));
+        c.onchange = () => post({ t: "set", key, value: c.value });
+      }
+      row.append(c); card.append(row);
+    }
+    f.append(card);
+    f.append(h("h2", { textContent: T(["Bawa bookmark Anda", "Bring your bookmarks"]) }));
+    const ic = h("div", { className: "card" });
+    if (!browsers.length) ic.append(h("div", { className: "row" }, h("div", { className: "lbl muted", textContent: T(["Tidak ada browser lain yang ditemukan.", "No other browser found."]) })));
+    for (const b of browsers) {
+      const btn = h("button", { textContent: T(["Impor", "Import"]) });
+      btn.onclick = () => post({ t: "import", path: b.path });
+      ic.append(h("div", { className: "row" }, h("div", { className: "lbl", textContent: b.name }), btn));
+    }
+    f.append(ic);
+  }
+  window.ovnerPage = (s) => {
+    L = s.lang; st = s.settings; browsers = s.browsers || [];
+    document.documentElement.lang = L;
+    document.documentElement.dataset.theme = st.theme === "system" ? "" : st.theme;
+    document.title = T(["Selamat datang", "Welcome"]);
+    document.getElementById("title").textContent = T(["Selamat datang di Ovner", "Welcome to Ovner"]);
+    document.getElementById("lead").textContent = T(["Atur beberapa hal penting. Semuanya bisa diubah lagi di menu ☰ → Pengaturan.", "Set up a few essentials. Everything can be changed later in ☰ → Settings."]);
+    document.getElementById("done").textContent = T(["Mulai menjelajah", "Start browsing"]);
+    build();
+  };
+  document.getElementById("done").onclick = () => post({ t: "setup-done" });
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

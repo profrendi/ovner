@@ -31,10 +31,25 @@
     </svg>
     Ovner
   </div>
-  <form id="f"><input id="q" placeholder="Cari di web atau ketik alamat" autocomplete="off" spellcheck="false"></form>
-  <p>Iklan dan pelacak diblokir otomatis. Tab yang lama tidak dibuka akan ditidurkan supaya RAM tetap lega.</p>
+  <form id="f"><input id="q" autocomplete="off" spellcheck="false"></form>
+  <p id="tip"></p>
 </main>
 <script>
+  const NT = {
+    id: ["Tab baru", "Cari di web atau ketik alamat", "Iklan dan pelacak diblokir otomatis. Tab yang lama tidak dibuka akan ditidurkan supaya RAM tetap lega. Coba !w, !yt, atau !gh di depan kata kunci."],
+    en: ["New tab", "Search the web or type an address", "Ads and trackers are blocked automatically. Tabs you haven't opened in a while go to sleep to keep RAM free. Try !w, !yt or !gh before a query."],
+  };
+  function setLang(l) {
+    const w = NT[l] || NT.en;
+    document.documentElement.lang = l; document.title = w[0];
+    document.getElementById("q").placeholder = w[1]; document.getElementById("tip").textContent = w[2];
+  }
+  setLang((navigator.language || "id").toLowerCase().startsWith("id") ? "id" : "en");
+  window.ovnerPage = (s) => {
+    setLang(s.lang);
+    if (s.theme === "dark" || s.theme === "light") document.documentElement.style.colorScheme = s.theme;
+  };
+  window.ipc.postMessage(JSON.stringify({ t: "page-ready" }));
   document.getElementById("f").addEventListener("submit", (e) => {
     e.preventDefault();
     const text = document.getElementById("q").value.trim();

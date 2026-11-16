@@ -7,23 +7,26 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod blocker;
+mod i18n;
 mod icon;
+mod import;
 mod install;
 #[cfg(windows)]
 mod netfilter;
 mod settings;
+mod shields;
 mod store;
 mod update;
 mod win;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -32,13 +35,14 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Icon, Window, WindowBuilder};
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::dpi::{LogicalPosition as WLogicalPosition, LogicalSize as WLogicalSize};
 use wry::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse, Rect, WebContext, WebView, WebViewBuilder};
 
 use blocker::Blocker;
-use settings::Settings;
+use i18n::{t, tf, Lang};
+use settings::{host_in, toggle_host, Settings};
 use store::Store;
 
 const TOOLBAR_HTML: &str = include_str!("ui/toolbar.html");
@@ -47,8 +51,8 @@ const SETTINGS_HTML: &str = include_str!("ui/settings.html");
 const HISTORY_HTML: &str = include_str!("ui/history.html");
 const BOOKMARKS_HTML: &str = include_str!("ui/bookmarks.html");
 const TASKS_HTML: &str = include_str!("ui/tasks.html");
+const SETUP_HTML: &str = include_str!("ui/setup.html");
 const PAGE_CSS: &str = include_str!("ui/page.css");
-const CONTENT_JS: &str = include_str!("ui/content.js");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
 /// `http://ovner.<nama>/` (WebView2 belum mendukung skema sendiri secara penuh).
 #[cfg(windows)]
@@ -105,33 +109,41 @@ fn is_local_host(host: &str) -> bool {
         || host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_private() || ip.is_loopback() || ip.is_link_local())
 }
 
-/// Teks dari kolom alamat menjadi URL: alamat apa adanya, domain diberi https://,
-/// alamat lokal diberi http://, selain itu dicari dengan mesin pencari.
-fn to_url(text: &str, settings: &Settings) -> String {
+/// Teks dari kolom alamat menjadi URL: !bang, alamat apa adanya, domain diberi https://,
+/// alamat lokal diberi http://, selain itu dicari dengan mesin pencari. None bila teks bukan
+/// alamat dan pencarian dimatikan ("No Search").
+fn to_url(text: &str, settings: &Settings) -> Option<String> {
     let t = text.trim();
     let lower = t.to_ascii_lowercase();
     if lower.starts_with("ovner://") {
-        return internal_url(lower.trim_start_matches("ovner://").trim_end_matches('/'));
+        return Some(internal_url(lower.trim_start_matches("ovner://").trim_end_matches('/')));
     }
     if ["http://", "https://", "file://", "about:", "edge://", "view-source:"].iter().any(|p| lower.starts_with(p)) {
-        return t.to_string();
+        return Some(t.to_string());
     }
+    if let Some(u) = shields::expand_bang(t, settings) {
+        return Some(u);
+    }
+    let search = |q: &str| (!settings.no_search).then(|| settings.search_url(q));
     if t.contains(char::is_whitespace) || t.is_empty() {
-        return settings.search_url(t);
+        return search(t);
     }
     let host = lower.split(['/', '?', '#']).next().unwrap_or("");
     let host_no_port = host.rsplit_once(':').map(|(h, p)| if p.chars().all(|c| c.is_ascii_digit()) { h } else { host }).unwrap_or(host);
     if is_local_host(host_no_port) {
-        return format!("http://{t}");
+        return Some(format!("http://{t}"));
     }
     let looks_like_domain = host_no_port.contains('.')
         && !host_no_port.starts_with('.')
         && !host_no_port.ends_with('.')
         && host_no_port.rsplit('.').next().is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
     if looks_like_domain || host_no_port.parse::<std::net::Ipv4Addr>().is_ok() {
-        format!("https://{t}")
+        Some(format!("https://{t}"))
+    } else if settings.no_search && !host_no_port.is_empty() && !host_no_port.contains('/') {
+        // No Search: kata tunggal dianggap nama situs.
+        Some(format!("https://{t}.com"))
     } else {
-        settings.search_url(t)
+        search(t)
     }
 }
 
@@ -142,7 +154,9 @@ fn display_url(url: &str) -> String {
     } else if let Some(name) = internal_page(url) {
         format!("ovner://{name}")
     } else {
-        url.to_string()
+        // Nama domain internasional ditampilkan sebagai punycode (perlindungan dari alamat
+        // tiruan yang hurufnya mirip, seperti ungoogled-chromium).
+        url::Url::parse(url).map(|u| u.to_string()).unwrap_or_else(|_| url.to_string())
     }
 }
 
@@ -177,6 +191,12 @@ enum UserEvent {
     /// Jendela baru diminta halaman tab `opener`.
     NewTab(u64, String),
     Navigate(u64, String),
+    /// Navigasi ulang dengan JavaScript dinyalakan/dimatikan (shields per situs).
+    ScriptNav(u64, String, bool),
+    /// Proses WebView2 tab ini crash/macet.
+    ProcFailed(u64, win::ProcFail),
+    /// Hasil daftar proses WebView2 (task manager per tab).
+    ProcInfos(Vec<win::ProcExt>),
     /// Navigasi halaman utama selesai (berhasil?, kode galat WebView2).
     NavDone(u64, bool, i32),
     /// Alamat http:// di tab ini baru saja dinaikkan ke https.
@@ -213,6 +233,10 @@ struct Tab {
     upgraded_from: Option<String>,
     /// Kata kunci pencarian di halaman riwayat.
     page_query: String,
+    /// JavaScript menyala untuk navigasi berikutnya di tab ini.
+    scripts_on: Rc<Cell<bool>>,
+    /// Generasi skrip halaman saat tab ini dibangun (dibangun ulang bila setelan berubah).
+    script_gen: u64,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -257,6 +281,18 @@ struct App {
     menus: Menus,
     menu_tab: Option<u64>,
     _tray: Option<TrayIcon>,
+    lang: Lang,
+    /// Kunci sesi untuk farbling.
+    session_key: u64,
+    /// Naik setiap setelan yang memengaruhi skrip halaman berubah.
+    script_gen: u64,
+    /// Tab yang tampil di sisi kanan (split view).
+    split: Option<u64>,
+    /// Cache CNAME bersama untuk semua tab.
+    cname: Arc<Mutex<HashMap<String, Option<String>>>>,
+    proc_infos: Vec<win::ProcExt>,
+    last_unresponsive: HashMap<u64, Instant>,
+    extensions_loaded: bool,
     /// Tersembunyi di tray.
     in_tray: bool,
     /// Sedang dalam keadaan hemat (tray atau diminimalkan).
@@ -288,6 +324,7 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "history" => page_response(HISTORY_HTML),
         "bookmarks" => page_response(BOOKMARKS_HTML),
         "tasks" => page_response(TASKS_HTML),
+        "setup" => page_response(SETUP_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
 }
@@ -302,58 +339,62 @@ fn set_memory_low(wv: &WebView, low: bool) {
     let _ = (wv, low);
 }
 
-fn build_menus() -> Menus {
-    let item = |id: &str, text: &str| MenuItem::with_id(id, text, true, None);
+fn build_menus(lang: Lang) -> Menus {
+    let item = |id: &str, key: &str| MenuItem::with_id(id, t(lang, key), true, None);
     let main = Menu::new();
-    let bookmarks = Submenu::new("Bookmark", true);
+    let bookmarks = Submenu::new(t(lang, "m.bookmarks_menu"), true);
     let _ = bookmarks.append_items(&[
-        &item("bookmark", "Bookmark halaman ini\tCtrl+D"),
-        &item("bookmark-bar", "Tampilkan/sembunyikan bilah bookmark"),
-        &item("bookmarks", "Semua bookmark"),
+        &item("bookmark", "m.bookmark"),
+        &item("bookmark-bar", "m.bookmark_bar"),
+        &item("bookmarks", "m.bookmarks"),
+        &item("import", "m.import"),
     ]);
-    let zoom = Submenu::new("Zoom", true);
-    let _ = zoom.append_items(&[&item("zoom-out", "Perkecil\tCtrl+−"), &item("zoom-reset", "Normal (100%)\tCtrl+0"), &item("zoom-in", "Perbesar\tCtrl++")]);
-    let tools = Submenu::new("Alat lain", true);
+    let zoom = Submenu::new(t(lang, "m.zoom"), true);
+    let _ = zoom.append_items(&[&item("zoom-out", "m.zoom_out"), &item("zoom-reset", "m.zoom_reset"), &item("zoom-in", "m.zoom_in")]);
+    let tools = Submenu::new(t(lang, "m.tools"), true);
     let _ = tools.append_items(&[
-        &item("tasks", "Task manager\tShift+Esc"),
-        &item("sleep-all", "Tidurkan semua tab lain"),
-        &item("trim", "Rapikan RAM sekarang"),
+        &item("tasks", "m.tasks"),
+        &item("sleep-all", "m.sleep_all"),
+        &item("trim", "m.trim"),
         &PredefinedMenuItem::separator(),
-        &item("filters", "Perbarui daftar filter iklan"),
-        &item("clear", "Hapus data penjelajahan..."),
-        &item("data", "Buka folder data"),
-        &item("devtools", "DevTools\tF12"),
+        &item("pick", "m.pick"),
+        &item("filters", "m.filters"),
+        &item("clear", "m.clear"),
+        &item("data", "m.data"),
+        &item("devtools", "m.devtools"),
     ]);
     let _ = main.append_items(&[
-        &item("newtab", "Tab baru\tCtrl+T"),
-        &item("private", "Tab privat baru\tCtrl+Shift+N"),
-        &item("reopen", "Buka lagi tab yang ditutup\tCtrl+Shift+T"),
+        &item("newtab", "m.newtab"),
+        &item("private", "m.private"),
+        &item("reopen", "m.reopen"),
         &PredefinedMenuItem::separator(),
         &bookmarks,
-        &item("history", "Riwayat\tCtrl+H"),
-        &item("downloads", "Unduhan\tCtrl+J"),
+        &item("history", "m.history"),
+        &item("downloads", "m.downloads"),
         &PredefinedMenuItem::separator(),
         &zoom,
-        &item("print", "Cetak...\tCtrl+P"),
-        &item("findbar", "Cari di halaman...\tCtrl+F"),
+        &item("print", "m.print"),
+        &item("findbar", "m.find"),
+        &item("split", "m.split"),
         &tools,
         &PredefinedMenuItem::separator(),
-        &item("settings", "Pengaturan"),
-        &item("about", "Tentang Ovner"),
-        &item("hide", "Sembunyikan ke tray"),
-        &item("quit", "Keluar"),
+        &item("settings", "m.settings"),
+        &item("about", "m.about"),
+        &item("hide", "m.hide"),
+        &item("quit", "m.quit"),
     ]);
     let tab = Menu::new();
     let _ = tab.append_items(&[
-        &item("tab-reload", "Muat ulang"),
-        &item("tab-duplicate", "Duplikat tab"),
-        &item("tab-sleep", "Tidurkan tab"),
+        &item("tab-reload", "tm.reload"),
+        &item("tab-duplicate", "tm.duplicate"),
+        &item("tab-sleep", "tm.sleep"),
+        &item("tab-split", "tm.split"),
         &PredefinedMenuItem::separator(),
-        &item("tab-close", "Tutup tab"),
-        &item("tab-close-others", "Tutup tab lain"),
+        &item("tab-close", "tm.close"),
+        &item("tab-close-others", "tm.close_others"),
     ]);
     let tray = Menu::new();
-    let _ = tray.append_items(&[&item("show", "Buka Ovner"), &item("newtab", "Tab baru"), &PredefinedMenuItem::separator(), &item("quit", "Keluar")]);
+    let _ = tray.append_items(&[&item("show", "tray.show"), &item("newtab", "tray.newtab"), &PredefinedMenuItem::separator(), &item("quit", "m.quit")]);
     Menus { main, tab, tray }
 }
 
@@ -394,6 +435,8 @@ impl App {
             allow_http: Rc::new(RefCell::new(None)),
             upgraded_from: None,
             page_query: String::new(),
+            scripts_on: Rc::new(Cell::new(true)),
+            script_gen: 0,
         }
     }
 
@@ -405,21 +448,46 @@ impl App {
         }
     }
 
+    /// Kotak untuk tab `i`: penuh, atau separuh kiri/kanan saat split view.
+    fn rect_for(&self, i: usize) -> Rect {
+        let full = self.content_rect();
+        let Some(partner) = self.split.and_then(|id| self.tab_index(id)) else { return full };
+        if i != self.active && i != partner {
+            return full;
+        }
+        let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
+        let half = (size.width / 2.0).floor();
+        let h = (size.height - self.toolbar_h).max(1.0);
+        if i == partner {
+            Rect { position: WLogicalPosition::new(half + 1.0, self.toolbar_h).into(), size: WLogicalSize::new((size.width - half - 1.0).max(1.0), h).into() }
+        } else {
+            Rect { position: WLogicalPosition::new(0.0, self.toolbar_h).into(), size: WLogicalSize::new(half.max(1.0), h).into() }
+        }
+    }
+
+    /// Tab `i` sedang tampil (aktif atau pasangan split).
+    fn is_shown(&self, i: usize) -> bool {
+        i == self.active || self.split.is_some_and(|id| self.tabs.get(i).is_some_and(|t| t.id == id))
+    }
+
     /// Buat WebView untuk tab `i` (tab baru atau tab yang dibangunkan).
     fn wake(&mut self, i: usize) {
         if self.tabs[i].webview.is_some() {
             return;
         }
-        let rect = self.content_rect();
+        let rect = self.rect_for(i);
         let s = self.settings.borrow().clone();
         let tab = &self.tabs[i];
         let (id, private) = (tab.id, tab.private);
         let url = if tab.url.is_empty() { self.newtab_url() } else { tab.url.clone() };
         let (blocked, page) = (tab.blocked.clone(), tab.page.clone());
         *page.borrow_mut() = url.clone();
-        let visible = i == self.active && !self.in_tray;
+        let visible = self.is_shown(i) && !self.in_tray;
         let zoom = tab.zoom;
         let allow_http = tab.allow_http.clone();
+        let scripts_on = tab.scripts_on.clone();
+        scripts_on.set(true);
+        let init = shields::page_scripts(&s, self.session_key, private);
 
         let p_ipc = self.proxy.clone();
         let p_title = self.proxy.clone();
@@ -427,29 +495,33 @@ impl App {
         let p_nav = self.proxy.clone();
         let p_new = self.proxy.clone();
         let (nav_blocked, nav_page) = (blocked.clone(), page.clone());
-        let (https_only, strip, deny_perm, autoplay) = (s.https_only, s.strip_tracking_params, s.deny_sensitive_permissions, s.autoplay);
+        let nav_settings = self.settings.clone();
+        let (deny_perm, autoplay, popups_to_tabs) = (s.deny_sensitive_permissions, s.autoplay, s.popups_to_tabs);
 
         let mut builder = if private { WebViewBuilder::new().with_incognito(true) } else { WebViewBuilder::new_with_web_context(&mut self.web_context) };
         builder = builder
             .with_url(url)
             .with_bounds(rect)
             .with_visible(visible)
-            .with_focused(visible)
+            .with_focused(visible && i == self.active)
             .with_hotkeys_zoom(true)
             .with_autoplay(autoplay)
             .with_devtools(s.devtools)
-            .with_initialization_script(CONTENT_JS)
+            .with_initialization_script(&init)
             .with_custom_protocol("ovner".into(), |_, req| serve_internal(req))
             .with_ipc_handler(move |req| send(&p_ipc, UserEvent::Content(id, req.body().clone())))
             .with_document_title_changed_handler(move |t| send(&p_title, UserEvent::Title(id, t)))
             .with_on_page_load_handler(move |ev, url| send(&p_load, UserEvent::PageLoad(id, ev, url)))
             .with_navigation_handler(move |url| {
-                // Parameter pelacak dibuang dan http:// dinaikkan sebelum halaman dibuka.
-                let mut target = None;
-                if strip {
-                    target = blocker::strip_tracking_params(&url);
+                let s = nav_settings.borrow();
+                // 1. Debounce dan de-AMP, 2. buang parameter pelacak, 3. naikkan ke HTTPS.
+                let mut target = shields::rewrite_navigation(&url, &s);
+                if s.strip_tracking_params {
+                    if let Some(t) = blocker::strip_tracking_params(target.as_deref().unwrap_or(&url)) {
+                        target = Some(t);
+                    }
                 }
-                if https_only && allow_http.borrow().as_deref() != Some(url.as_str()) {
+                if s.https_only && allow_http.borrow().as_deref() != Some(url.as_str()) {
                     if let Some(up) = upgrade_https(target.as_deref().unwrap_or(&url)) {
                         send(&p_nav, UserEvent::Upgraded(id, target.clone().unwrap_or_else(|| url.clone())));
                         target = Some(up);
@@ -459,14 +531,21 @@ impl App {
                     send(&p_nav, UserEvent::Navigate(id, t));
                     return false;
                 }
+                // 4. Blokir JavaScript per situs: setelan berlaku untuk navigasi berikutnya,
+                //    jadi navigasi ini dibatalkan lalu diulang dengan setelan yang benar.
+                let want = internal_page(&url).is_some() || !host_of(&url).is_some_and(|h| host_in(&s.script_blocked, &h));
+                if want != scripts_on.get() {
+                    send(&p_nav, UserEvent::ScriptNav(id, url, want));
+                    return false;
+                }
                 *nav_page.borrow_mut() = url;
                 nav_blocked.set(0);
                 true
             })
             .with_new_window_req_handler(move |url, features| {
                 // Jendela kecil berukuran tertentu (login Google/Microsoft, pembayaran) dibiarkan
-                // sebagai jendela sendiri; tautan biasa dibuka di tab baru.
-                if features.size.is_some() {
+                // sebagai jendela sendiri, kecuali "pop-up jadi tab" dinyalakan.
+                if features.size.is_some() && !popups_to_tabs {
                     NewWindowResponse::Allow
                 } else {
                     send(&p_new, UserEvent::NewTab(id, url));
@@ -505,6 +584,7 @@ impl App {
                         settings: self.settings.clone(),
                         blocked: blocked.clone(),
                         page: page.clone(),
+                        cname: self.cname.clone(),
                     };
                     if let Err(e) = netfilter::attach(&wv, ctx) {
                         log(&format!("pemblokir tidak terpasang: {e}"));
@@ -512,13 +592,36 @@ impl App {
                     let p_done = self.proxy.clone();
                     netfilter::on_navigation_completed(&wv, move |ok, status| send(&p_done, UserEvent::NavDone(id, ok, status)));
                 }
+                let p_fail = self.proxy.clone();
+                win::on_process_failed(&wv, move |k| send(&p_fail, UserEvent::ProcFailed(id, k)));
+                if s.extensions_enabled && !self.extensions_loaded && !private {
+                    self.extensions_loaded = true;
+                    win::load_extensions(&wv, &s.extension_dirs, log);
+                }
                 if zoom != 100 {
                     let _ = wv.zoom(zoom as f64 / 100.0);
                 }
                 self.tabs[i].webview = Some(wv);
                 self.tabs[i].suspended = false;
+                self.tabs[i].script_gen = self.script_gen;
             }
             Err(e) => log(&format!("gagal membuat tab: {e}")),
+        }
+    }
+
+    /// Bangun ulang tab `i` (setelan skrip halaman berubah). Tab tersembunyi cukup ditidurkan.
+    fn rebuild_tab(&mut self, i: usize) {
+        let Some(t) = self.tabs.get_mut(i) else { return };
+        let Some(wv) = t.webview.take() else { return };
+        if let Ok(u) = wv.url() {
+            if !u.is_empty() {
+                t.url = u;
+            }
+        }
+        drop(wv);
+        t.loading = false;
+        if self.is_shown(i) {
+            self.wake(i);
         }
     }
 
@@ -548,17 +651,37 @@ impl App {
             return;
         }
         let now = Instant::now();
+        // Mengklik tab pasangan split: tukar sisi.
+        if self.split == Some(self.tabs[i].id) {
+            self.split = self.tabs.get(self.active).map(|t| t.id);
+        }
         if let Some(old) = self.tabs.get_mut(self.active) {
             old.last_active = now;
         }
         self.active = i;
+        // Setelan skrip halaman berubah sejak tab ini dibangun: bangun ulang.
+        if self.tabs[i].webview.is_some() && self.tabs[i].script_gen != self.script_gen {
+            self.rebuild_tab(i);
+        }
         self.wake(i);
+        let partner = self.split.and_then(|id| self.tab_index(id)).filter(|&p| p != i);
+        if self.split.is_some() && partner.is_none() {
+            self.split = None;
+        }
+        if let Some(p) = partner {
+            if self.tabs[p].webview.is_some() && self.tabs[p].script_gen != self.script_gen {
+                self.rebuild_tab(p);
+            }
+            self.wake(p);
+        }
         let suspend = self.settings.borrow().suspend_hidden_tabs;
         let low = self.settings.borrow().low_memory_when_hidden;
+        let rects: Vec<Rect> = (0..self.tabs.len()).map(|j| self.rect_for(j)).collect();
         for (j, t) in self.tabs.iter_mut().enumerate() {
             if let Some(wv) = &t.webview {
-                let on = j == i;
+                let on = j == i || Some(j) == partner;
                 if on {
+                    let _ = wv.set_bounds(rects[j]);
                     win::resume(wv);
                     t.suspended = false;
                     set_memory_low(wv, false);
@@ -575,11 +698,9 @@ impl App {
                 }
             }
         }
-        let rect = self.content_rect();
         let t = &mut self.tabs[i];
         t.last_active = now;
         if let Some(wv) = &t.webview {
-            let _ = wv.set_bounds(rect);
             let _ = wv.focus();
         }
         self.find_open = false;
@@ -592,6 +713,9 @@ impl App {
             return;
         }
         let t = self.tabs.remove(i);
+        if self.split == Some(t.id) {
+            self.split = None;
+        }
         if !is_newtab(&t.url) && !t.private {
             self.closed.push(t.url.clone());
             if self.closed.len() > 25 {
@@ -613,8 +737,11 @@ impl App {
 
     /// Tidurkan tab `i`: WebView dibuang, dimuat ulang saat diklik.
     fn sleep_tab(&mut self, i: usize) {
+        if self.is_shown(i) {
+            return;
+        }
         let Some(t) = self.tabs.get_mut(i) else { return };
-        if i == self.active || t.webview.is_none() {
+        if t.webview.is_none() {
             return;
         }
         if let Some(wv) = &t.webview {
@@ -710,16 +837,9 @@ impl App {
         if self.settings.borrow().efficiency_mode {
             win::set_background_mode(false);
         }
+        // activate() membangunkan tab aktif (dan pasangan split) dan menampilkannya lagi.
         let a = self.active;
-        if let Some(t) = self.tabs.get_mut(a) {
-            if let Some(wv) = &t.webview {
-                win::resume(wv);
-                t.suspended = false;
-                set_memory_low(wv, false);
-                let _ = wv.set_visible(true);
-                let _ = wv.focus();
-            }
-        }
+        self.activate(a);
     }
 
     fn hide_to_tray(&mut self) {
@@ -754,7 +874,7 @@ impl App {
         let mut changed = false;
         for j in 0..self.tabs.len() {
             let t = &self.tabs[j];
-            if j == self.active || t.webview.is_none() || t.last_active.elapsed() < limit {
+            if self.is_shown(j) || t.webview.is_none() || t.last_active.elapsed() < limit {
                 continue;
             }
             #[cfg(windows)]
@@ -789,6 +909,7 @@ impl App {
                     "sleeping": t.webview.is_none() && j != self.active,
                     "loading": t.loading,
                     "private": t.private,
+                    "split": self.split == Some(t.id),
                 })
             })
             .collect();
@@ -796,6 +917,7 @@ impl App {
         let url = tab.map(|t| display_url(&t.url)).unwrap_or_default();
         let host = tab.and_then(|t| host_of(&t.url));
         let shield_on = s.block_ads && !host.as_deref().is_some_and(|h| s.is_exception(h));
+        let site = host.as_deref().filter(|_| tab.is_some_and(|t| internal_page(&t.url).is_none())).unwrap_or("");
         let (can_back, can_forward) = tab.and_then(|t| t.webview.as_ref()).map(nav_state).unwrap_or((false, false));
         let bookmarks: Vec<Value> = self.store.bookmarks.iter().map(|b| json!({"title": b.title, "url": b.url})).collect();
         let state = json!({
@@ -815,6 +937,14 @@ impl App {
             "canBack": can_back,
             "canForward": can_forward,
             "find": self.find_open,
+            "lang": self.lang.code(),
+            "split": self.split.is_some(),
+            "site": settings::norm_host(site),
+            "siteScriptsBlocked": !site.is_empty() && host_in(&s.script_blocked, site),
+            "siteFarbling": if site.is_empty() { "off" } else { s.farbling_for(site) },
+            "farbling": s.farbling,
+            "suggest": s.address_suggestions,
+            "noSearch": s.no_search,
         });
         drop(s);
         let text = state.to_string();
@@ -830,7 +960,7 @@ impl App {
     }
 
     fn set_toolbar_height(&mut self, h: f64) {
-        let h = h.clamp(60.0, 160.0);
+        let h = h.clamp(60.0, 640.0);
         if (h - self.toolbar_h).abs() > 0.5 {
             self.toolbar_h = h;
             self.layout();
@@ -838,7 +968,7 @@ impl App {
     }
 
     fn save_session(&self) {
-        let keep = |t: &Tab| !is_newtab(&t.url) && !t.private && internal_page(&t.url) != Some("tasks");
+        let keep = |t: &Tab| !is_newtab(&t.url) && !t.private && !matches!(internal_page(&t.url), Some("tasks" | "setup"));
         let s = Session {
             tabs: self.tabs.iter().filter(|t| keep(t)).map(|t| SessionTab { url: t.url.clone(), title: t.title.clone() }).collect(),
             active: self.tabs.iter().take(self.active).filter(|t| keep(t)).count(),
@@ -850,12 +980,32 @@ impl App {
 
     fn layout(&mut self) {
         let _ = self.toolbar.set_bounds(self.toolbar_rect());
-        let rect = self.content_rect();
-        for t in &self.tabs {
-            if let Some(wv) = &t.webview {
-                let _ = wv.set_bounds(rect);
+        for i in 0..self.tabs.len() {
+            let r = self.rect_for(i);
+            if let Some(wv) = &self.tabs[i].webview {
+                let _ = wv.set_bounds(r);
             }
         }
+    }
+
+    /// Mulai split view: tab aktif di kiri, `partner` di kanan.
+    fn start_split(&mut self, partner: usize) {
+        if partner == self.active || partner >= self.tabs.len() {
+            return;
+        }
+        self.split = Some(self.tabs[partner].id);
+        let a = self.active;
+        self.activate(a);
+    }
+
+    fn stop_split(&mut self) {
+        if let Some(p) = self.split.take().and_then(|id| self.tab_index(id)) {
+            if let Some(wv) = &self.tabs[p].webview {
+                let _ = wv.set_visible(false);
+            }
+        }
+        let a = self.active;
+        self.activate(a);
     }
 
     fn inject_css(&self, i: usize, css: &str) {
@@ -881,36 +1031,78 @@ impl App {
     fn push_page_state(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
         let Some(name) = internal_page(&t.url).map(str::to_string) else { return };
-        let theme = self.settings.borrow().theme.clone();
+        let (theme, lang) = (self.settings.borrow().theme.clone(), self.lang.code());
         let state = match name.as_str() {
-            "settings" => json!({
-                "settings": &*self.settings.borrow(),
-                "version": env!("CARGO_PKG_VERSION"),
-                "engine": wry::webview_version().unwrap_or_else(|_| "?".into()),
-                "lists": if self.blocker.borrow().full { "daftar lengkap (EasyList, EasyPrivacy, ABPindo, uBlock)" } else { "daftar bawaan (daftar lengkap sedang diunduh)" },
-                "data": data_dir().display().to_string(),
-            }),
-            "history" => json!({ "theme": theme, "history": self.store.search_history(&t.page_query, 500) }),
-            "bookmarks" => json!({ "theme": theme, "bookmarks": self.store.bookmarks }),
+            "settings" | "setup" => {
+                let browsers: Vec<Value> = if name == "setup" || name == "settings" {
+                    import::detect().into_iter().map(|(n, p)| json!({"name": n, "path": p.display().to_string()})).collect()
+                } else {
+                    Vec::new()
+                };
+                json!({
+                    "settings": &*self.settings.borrow(),
+                    "lang": lang,
+                    "version": update::display_version(),
+                    "engine": wry::webview_version().unwrap_or_else(|_| "?".into()),
+                    "lists": i18n::t(self.lang, if self.blocker.borrow().full { "d.lists_full" } else { "d.lists_builtin" }),
+                    "data": data_dir().display().to_string(),
+                    "browsers": browsers,
+                })
+            }
+            "newtab" => json!({ "theme": theme, "lang": lang }),
+            "history" => json!({ "theme": theme, "lang": lang, "history": self.store.search_history(&t.page_query, 500) }),
+            "bookmarks" => json!({ "theme": theme, "lang": lang, "bookmarks": self.store.bookmarks }),
             "tasks" => {
+                let snap = win::process_snapshot();
+                let mem: HashMap<u32, (u64, u64)> = snap.iter().map(|p| (p.pid, (p.working, p.commit))).collect();
+                // RAM per tab: proses renderer yang melayani halaman tab itu (seperti task
+                // manager Chrome). Proses yang melayani beberapa tab ditandai "bersama".
+                let same = |a: &str, b: &str| a == b || (host_of(a).is_some() && host_of(a) == host_of(b));
                 let tabs: Vec<Value> = self
                     .tabs
                     .iter()
                     .enumerate()
                     .map(|(j, t)| {
+                        let procs: Vec<&win::ProcExt> = if t.webview.is_some() {
+                            self.proc_infos.iter().filter(|p| p.kind == "renderer" && p.mains.iter().any(|m| same(m, &t.url))).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let ram: u64 = procs.iter().filter_map(|p| mem.get(&p.pid)).map(|m| m.0).sum();
+                        let shared = procs.iter().any(|p| p.mains.len() > 1);
                         json!({
-                            "id": t.id, "title": t.title, "url": display_url(&t.url), "active": j == self.active,
+                            "id": t.id, "title": t.title, "url": display_url(&t.url), "active": self.is_shown(j),
                             "sleeping": t.webview.is_none(), "suspended": t.suspended, "blocked": t.blocked.get(),
-                            "zoom": t.zoom, "private": t.private,
+                            "zoom": t.zoom, "private": t.private, "ram": ram, "shared": shared,
+                            "pids": procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
                         })
                     })
                     .collect();
-                json!({ "theme": theme, "tabs": tabs, "procs": win::process_snapshot() })
+                let kinds: HashMap<u32, &str> = self.proc_infos.iter().map(|p| (p.pid, p.kind)).collect();
+                let procs: Vec<Value> = snap
+                    .iter()
+                    .map(|p| {
+                        let kind = if p.is_self { "ovner" } else { kinds.get(&p.pid).copied().unwrap_or("webview2") };
+                        json!({"pid": p.pid, "working": p.working, "commit": p.commit, "kind": kind})
+                    })
+                    .collect();
+                json!({ "theme": theme, "lang": lang, "tabs": tabs, "procs": procs })
             }
             _ => return,
         };
         if let Some(wv) = &self.tabs[i].webview {
             let _ = wv.evaluate_script(&format!("window.ovnerPage && ovnerPage({state})"));
+        }
+    }
+
+    /// Minta daftar proses WebView2 terbaru (untuk task manager per tab).
+    fn refresh_proc_infos(&self) {
+        #[cfg(windows)]
+        {
+            use wry::WebViewExtWindows;
+            let env = self.env.clone().unwrap_or_else(|| self.toolbar.environment());
+            let p = self.proxy.clone();
+            win::request_process_infos(&env, move |v| send(&p, UserEvent::ProcInfos(v)));
         }
     }
 
@@ -976,10 +1168,104 @@ impl App {
                     let _ = wv.reload();
                 }
             }
+            "language" => {
+                self.lang = i18n::resolve(&s.language);
+                self.menus = build_menus(self.lang);
+                if let Some(tray) = &self._tray {
+                    let _ = tray.set_menu(Some(Box::new(self.menus.tray.clone())));
+                }
+                for name in ["settings", "history", "bookmarks", "tasks", "setup"] {
+                    self.refresh_pages(name);
+                }
+            }
+            "custom_rules" => {
+                if blocker::write_custom_rules(data_dir(), &s.custom_rules) {
+                    start_filter_update(self.proxy.clone(), s.clone());
+                }
+            }
+            "block_cookie_notices" | "custom_lists" => start_filter_update(self.proxy.clone(), s.clone()),
+            // Skrip halaman dibuat saat tab dibangun: tandai semua tab untuk dibangun ulang.
+            "farbling" | "farbling_off" | "spellcheck" | "disable_beforeunload" | "de_amp" | "user_css" => {
+                self.script_gen += 1;
+                let shown: Vec<usize> = (0..self.tabs.len()).filter(|&j| self.is_shown(j) && internal_page(&self.tabs[j].url).is_none()).collect();
+                for j in shown {
+                    self.rebuild_tab(j);
+                }
+            }
             _ => {}
         }
         self.last_render_key.clear();
         self.render();
+    }
+
+    /// Tambah aturan "sembunyikan elemen" dari pemilih elemen untuk situs tab `i`.
+    fn add_hide_rule(&mut self, i: usize, selector: &str) {
+        let Some(host) = host_of(&self.tabs[i].url) else { return };
+        let host = settings::norm_host(&host);
+        let sel = selector.trim();
+        if sel.is_empty() || sel.contains('\n') || sel.len() > 500 {
+            return;
+        }
+        let rule = format!("{host}##{sel}");
+        let rules = {
+            let mut st = self.settings.borrow_mut();
+            if !st.custom_rules.lines().any(|l| l.trim() == rule) {
+                if !st.custom_rules.is_empty() && !st.custom_rules.ends_with('\n') {
+                    st.custom_rules.push('\n');
+                }
+                st.custom_rules.push_str(&rule);
+            }
+            st.save(data_dir());
+            st.custom_rules.clone()
+        };
+        log(&format!("aturan sendiri: {rule}"));
+        if blocker::write_custom_rules(data_dir(), &rules) {
+            start_filter_update(self.proxy.clone(), self.settings.borrow().clone());
+        }
+        self.refresh_pages("settings");
+    }
+
+    /// Ubah salah satu daftar per situs (skrip/sidik jari) untuk tab aktif, lalu muat ulang.
+    fn toggle_site(&mut self, which: &str) {
+        let Some(host) = self.tabs.get(self.active).filter(|t| internal_page(&t.url).is_none()).and_then(|t| host_of(&t.url)) else { return };
+        {
+            let mut st = self.settings.borrow_mut();
+            let list = if which == "scripts" { &mut st.script_blocked } else { &mut st.farbling_off };
+            toggle_host(list, &host);
+            st.save(data_dir());
+        }
+        if which == "fp" {
+            self.script_gen += 1;
+            let a = self.active;
+            self.rebuild_tab(a);
+        } else if let Some(wv) = self.active_webview() {
+            // Navigation handler mengatur JavaScript lalu memuat ulang dengan setelan baru.
+            let _ = wv.reload();
+        }
+        self.refresh_pages("settings");
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    /// Impor bookmark dari berkas Bookmarks browser lain.
+    fn import_bookmarks(&mut self, path: Option<&str>) -> String {
+        let found = import::detect();
+        let targets: Vec<(String, std::path::PathBuf)> = match path {
+            Some(p) => found.into_iter().filter(|(_, f)| f.display().to_string() == p).collect(),
+            None => found,
+        };
+        if targets.is_empty() {
+            return t(self.lang, "d.import_none").to_string();
+        }
+        let mut msgs = Vec::new();
+        for (name, file) in targets {
+            let n = self.store.add_bookmarks(&import::read_bookmarks(&file));
+            msgs.push(tf(self.lang, "d.imported", &[("n", &n.to_string()), ("b", &name)]));
+        }
+        self.refresh_pages("bookmarks");
+        self.last_render_key.clear();
+        self.render();
+        msgs.join("\n")
     }
 
     // ---- pesan dari halaman --------------------------------------------------
@@ -989,15 +1275,15 @@ impl App {
         let Ok(msg) = serde_json::from_str::<Value>(body) else { return false };
         let current_url = self.tabs[i].webview.as_ref().and_then(|w| w.url().ok()).unwrap_or_default();
         let internal = internal_page(&current_url).map(str::to_string);
-        let t = msg["t"].as_str().unwrap_or("");
+        let kind = msg["t"].as_str().unwrap_or("");
         if std::env::var_os("OVNER_DEBUG").is_some() {
-            log(&format!("pesan tab {id}: {t} ({} byte) url={current_url}", body.len()));
+            log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(t, "key" | "url" | "page" | "cos") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick") {
             return false;
         }
-        match t {
+        match kind {
             "key" => {
                 if i == self.active {
                     return self.on_key(msg["k"].as_str().unwrap_or(""));
@@ -1030,9 +1316,28 @@ impl App {
                 self.inject_css(i, &css);
             }
             "go" => {
-                if let Some(text) = msg["text"].as_str() {
-                    let url = to_url(text, &self.settings.borrow());
+                let url = msg["text"].as_str().and_then(|text| to_url(text, &self.settings.borrow()));
+                if let Some(url) = url {
                     self.navigate_active(&url, true);
+                }
+            }
+            "pick" => {
+                if let Some(sel) = msg["sel"].as_str() {
+                    self.add_hide_rule(i, sel);
+                }
+            }
+            "import" => {
+                let msg_text = self.import_bookmarks(msg["path"].as_str());
+                win::info(&msg_text);
+                self.push_page_state(i);
+            }
+            "setup-done" => {
+                self.settings.borrow_mut().setup_done = true;
+                self.settings.borrow().save(data_dir());
+                let nt = self.newtab_url();
+                self.tabs[i].url = nt.clone();
+                if let Some(wv) = &self.tabs[i].webview {
+                    let _ = wv.load_url(&nt);
                 }
             }
             "page-ready" => self.push_page_state(i),
@@ -1083,7 +1388,7 @@ impl App {
             }
             "tab-sleep" | "tab-close" => {
                 if let Some(j) = msg["id"].as_u64().and_then(|id| self.tab_index(id)) {
-                    if t == "tab-sleep" {
+                    if kind == "tab-sleep" {
                         self.sleep_tab(j);
                     } else if j != self.active {
                         self.close_tab(j);
@@ -1168,12 +1473,36 @@ impl App {
             }
             "go" => {
                 let url = to_url(msg["text"].as_str().unwrap_or(""), &self.settings.borrow());
-                if msg["newtab"].as_bool().unwrap_or(false) {
-                    self.open_tab(&url, true, false);
-                } else {
-                    self.navigate_active(&url, true);
+                if let Some(url) = url {
+                    if msg["newtab"].as_bool().unwrap_or(false) {
+                        self.open_tab(&url, true, false);
+                    } else {
+                        self.navigate_active(&url, true);
+                    }
                 }
             }
+            "suggest" => {
+                let text = msg["text"].as_str().unwrap_or("");
+                let list: Vec<Value> = if self.settings.borrow().address_suggestions {
+                    self.store.suggest(text, 6).into_iter().map(|(t, u, bm)| json!({"title": t, "url": u, "bm": bm})).collect()
+                } else {
+                    Vec::new()
+                };
+                let bang = shields::expand_bang(text, &self.settings.borrow());
+                let st = json!({"text": text, "items": list, "bang": bang});
+                let _ = self.toolbar.evaluate_script(&format!("window.ovner && ovner.suggestions({st})"));
+            }
+            "shield-scripts" => self.toggle_site("scripts"),
+            "shield-fp" => self.toggle_site("fp"),
+            "pick" => {
+                let _ = self.on_menu("pick");
+            }
+            "split-swap" => {
+                if let Some(p) = self.split.and_then(|id| self.tab_index(id)) {
+                    self.activate(p);
+                }
+            }
+            "split-close" => self.stop_split(),
             "open" => {
                 let url = msg["url"].as_str().unwrap_or("").to_string();
                 if msg["newtab"].as_bool().unwrap_or(false) {
@@ -1234,17 +1563,9 @@ impl App {
                 }
             }
             "shield" => {
-                let host = self.tabs.get(self.active).and_then(|t| host_of(&t.url));
-                if let Some(h) = host {
-                    let off = self.settings.borrow_mut().toggle_exception(&h);
-                    self.settings.borrow().save(data_dir());
-                    log(&format!("pemblokir di {h}: {}", if off { "mati" } else { "nyala" }));
-                    if let Some(wv) = self.active_webview() {
-                        let _ = wv.reload();
-                    }
-                    self.refresh_pages("settings");
-                    self.render();
-                }
+                let x = msg["x"].as_f64().unwrap_or(0.0);
+                let y = msg["y"].as_f64().unwrap_or(self.toolbar_h);
+                self.show_shield_menu(x, y);
             }
             "find" => {
                 let text = msg["text"].as_str().unwrap_or("");
@@ -1276,6 +1597,38 @@ impl App {
         false
     }
 
+    /// Panel Shields: menu kecil dengan sakelar untuk situs di tab aktif.
+    fn show_shield_menu(&self, x: f64, y: f64) {
+        let Some(host) = self.tabs.get(self.active).filter(|t| internal_page(&t.url).is_none()).and_then(|t| host_of(&t.url)) else { return };
+        let s = self.settings.borrow();
+        let site = settings::norm_host(&host);
+        let lang = self.lang;
+        let blocked = self.tabs[self.active].blocked.get();
+        let m = Menu::new();
+        let head = MenuItem::with_id("shield-none", tf(lang, "sh.title", &[("h", &site)]), false, None);
+        let count = MenuItem::with_id("shield-none2", tf(lang, "sh.blocked", &[("n", &blocked.to_string())]), false, None);
+        let ads = CheckMenuItem::with_id("shield-ads", t(lang, "sh.ads"), s.block_ads, s.block_ads && !s.is_exception(&host), None);
+        let scripts = CheckMenuItem::with_id("shield-scripts", t(lang, "sh.scripts"), true, host_in(&s.script_blocked, &host), None);
+        let fp = CheckMenuItem::with_id("shield-fp", t(lang, "sh.fp"), s.farbling != "off", s.farbling_for(&host) != "off", None);
+        let pick = MenuItem::with_id("pick", t(lang, "sh.pick"), true, None);
+        let more = MenuItem::with_id("shield-settings", t(lang, "sh.settings"), true, None);
+        drop(s);
+        let _ = m.append_items(&[&head, &count, &PredefinedMenuItem::separator(), &ads, &scripts, &fp, &PredefinedMenuItem::separator(), &pick, &more]);
+        #[cfg(windows)]
+        {
+            use tao::platform::windows::WindowExtWindows;
+            use tray_icon::menu::ContextMenu;
+            let pos = tray_icon::dpi::Position::Logical(tray_icon::dpi::LogicalPosition::new(x, y));
+            unsafe {
+                m.show_context_menu_for_hwnd(self.window.hwnd() as isize, Some(pos));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (x, y, m);
+        }
+    }
+
     fn show_menu(&self, tab_menu: bool, x: f64, y: f64) {
         #[cfg(windows)]
         {
@@ -1297,10 +1650,11 @@ impl App {
     fn check_update_now(&self) {
         let p = self.proxy.clone();
         let dir = data_dir().to_path_buf();
-        std::thread::spawn(move || match update::check_and_stage(&dir) {
+        let (channel, lang) = (self.settings.borrow().update_channel.clone(), self.lang);
+        std::thread::spawn(move || match update::check_and_stage(&dir, &channel) {
             Ok(Some(v)) => send(&p, UserEvent::UpdateReady(v)),
-            Ok(None) => send(&p, UserEvent::UpdateInfo("Ovner sudah versi terbaru.".into())),
-            Err(e) => send(&p, UserEvent::UpdateInfo(format!("Tidak bisa memeriksa update: {e}"))),
+            Ok(None) => send(&p, UserEvent::UpdateInfo(t(lang, "d.up_to_date").into())),
+            Err(e) => send(&p, UserEvent::UpdateInfo(tf(lang, "d.update_failed", &[("e", &e)]))),
         });
     }
 
@@ -1322,7 +1676,8 @@ impl App {
             "hide" => self.hide_to_tray(),
             "home" => {
                 let home = self.settings.borrow().home_url.trim().to_string();
-                let url = if home.is_empty() { self.newtab_url() } else { to_url(&home, &self.settings.borrow()) };
+                let url = if home.is_empty() { None } else { to_url(&home, &self.settings.borrow()) };
+                let url = url.unwrap_or_else(|| self.newtab_url());
                 self.navigate_active(&url, false);
             }
             "bookmark" => {
@@ -1345,6 +1700,59 @@ impl App {
                 self.render();
             }
             "bookmarks" | "history" | "settings" | "tasks" => self.open_internal(id),
+            "shield-settings" => self.open_internal("settings"),
+            "shield-scripts" => self.toggle_site("scripts"),
+            "shield-fp" => self.toggle_site("fp"),
+            "shield-ads" => {
+                let host = self.tabs.get(self.active).and_then(|t| host_of(&t.url));
+                if let Some(h) = host {
+                    self.settings.borrow_mut().toggle_exception(&h);
+                    self.settings.borrow().save(data_dir());
+                    // Pengecualian juga mematikan farbling: bangun ulang tab agar skripnya ikut.
+                    self.script_gen += 1;
+                    let a = self.active;
+                    self.rebuild_tab(a);
+                    self.refresh_pages("settings");
+                    self.last_render_key.clear();
+                    self.render();
+                }
+            }
+            "import" => {
+                let m = self.import_bookmarks(None);
+                win::info(&m);
+            }
+            "pick" => {
+                if let Some(wv) = self.active_webview() {
+                    let _ = wv.evaluate_script("window.__ovnerPick && __ovnerPick()");
+                    let _ = wv.focus();
+                }
+            }
+            "split" => {
+                if self.split.is_some() {
+                    self.stop_split();
+                } else {
+                    // Pasangan: tab lain yang paling baru dibuka.
+                    let a = self.active;
+                    let partner = (0..self.tabs.len()).filter(|&j| j != a).max_by_key(|&j| self.tabs[j].last_active);
+                    match partner {
+                        Some(p) => self.start_split(p),
+                        None => {
+                            self.open_tab("", false, false);
+                            let p = self.active + 1;
+                            self.start_split(p);
+                        }
+                    }
+                }
+            }
+            "tab-split" => {
+                if let Some(j) = tab_target {
+                    if j == self.active {
+                        let _ = self.on_menu("split");
+                    } else {
+                        self.start_split(j);
+                    }
+                }
+            }
             "downloads" => {
                 #[cfg(windows)]
                 if let Some(wv) = self.active_webview() {
@@ -1363,7 +1771,9 @@ impl App {
                 let _ = self.on_key("findbar");
             }
             "devtools" => {
-                if let Some(wv) = self.active_webview() {
+                if !self.settings.borrow().devtools {
+                    win::info(t(self.lang, "d.devtools_off"));
+                } else if let Some(wv) = self.active_webview() {
                     wv.open_devtools();
                 }
             }
@@ -1383,12 +1793,12 @@ impl App {
                 self.next_trim = Some(Instant::now() + Duration::from_secs(2));
             }
             "filters" => {
-                start_filter_update(self.proxy.clone(), true);
-                win::info("Daftar filter iklan sedang diperbarui di latar. Halaman yang dibuka berikutnya memakai daftar terbaru.");
+                start_filter_update_forced(self.proxy.clone(), self.settings.borrow().clone());
+                win::info(t(self.lang, "d.filters"));
             }
             "data" => win::open_folder(data_dir()),
             "clear" => {
-                if win::confirm("Hapus semua data penjelajahan (riwayat, cookie, login situs, cache)?\n\nAnda akan keluar dari semua situs.") {
+                if win::confirm(t(self.lang, "d.clear")) {
                     if let Some(wv) = self.tabs.iter().find_map(|t| t.webview.as_ref()) {
                         let _ = wv.clear_all_browsing_data();
                     }
@@ -1399,12 +1809,12 @@ impl App {
             }
             "about" => {
                 let engine = wry::webview_version().unwrap_or_else(|_| "?".into());
-                let lists = if self.blocker.borrow().full { "daftar lengkap" } else { "daftar bawaan (daftar lengkap sedang diunduh)" };
-                win::info(&format!(
-                    "Ovner {}\n\nMesin: Microsoft Edge WebView2 {engine}\nPemblokir iklan: adblock-rust (Brave), {lists}\nData: {}\n\nhttps://github.com/{}",
-                    env!("CARGO_PKG_VERSION"),
-                    data_dir().display(),
-                    update::REPO
+                let lists = t(self.lang, if self.blocker.borrow().full { "d.lists_full" } else { "d.lists_builtin" });
+                let data = data_dir().display().to_string();
+                win::info(&tf(
+                    self.lang,
+                    "d.about",
+                    &[("v", &update::display_version()), ("e", &engine), ("l", lists), ("d", &data), ("r", update::REPO)],
                 ));
             }
             "tab-reload" => {
@@ -1484,19 +1894,37 @@ fn nav_state(wv: &WebView) -> (bool, bool) {
     }
 }
 
-/// Unduh daftar filter (bila perlu atau dipaksa) lalu susun ulang mesinnya di latar.
-fn start_filter_update(proxy: EventLoopProxy<UserEvent>, force: bool) {
+/// Siapkan daftar filter sesuai setelan lalu susun ulang mesinnya di latar bila berubah:
+/// buang daftar yang tidak dipakai, unduh yang belum ada, dan (bila otomatis) perbarui yang
+/// lebih tua dari seminggu.
+fn start_filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings) {
+    filter_update(proxy, s, false);
+}
+
+/// Seperti `start_filter_update`, tetapi semua daftar diunduh ulang sekarang.
+fn start_filter_update_forced(proxy: EventLoopProxy<UserEvent>, s: Settings) {
+    filter_update(proxy, s, true);
+}
+
+fn filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings, force: bool) {
     let dir = data_dir().to_path_buf();
     std::thread::spawn(move || {
+        let wanted = blocker::wanted_lists(&s);
+        blocker::write_custom_rules(&dir, &s.custom_rules);
+        blocker::prune_lists(&dir, &wanted);
         let had_cache = blocker::load_cached(&dir).is_some();
+        let stale = blocker::lists_need_refresh(&dir, &wanted);
         let mut changed = false;
-        if force || blocker::lists_need_refresh(&dir) {
+        if force || (stale && s.auto_update_filters) {
             if !force {
                 std::thread::sleep(Duration::from_secs(3));
             }
-            let n = blocker::download_lists(&dir);
-            log(&format!("daftar filter diunduh: {n}/{}", blocker::FILTER_LISTS.len()));
+            let n = blocker::download_lists(&dir, &wanted, false);
+            log(&format!("daftar filter diunduh: {n}/{}", wanted.len()));
             changed = n > 0;
+        } else if stale {
+            // Pembaruan otomatis mati: hanya unduh daftar yang belum ada sama sekali.
+            changed = blocker::download_lists(&dir, &wanted, true) > 0;
         }
         if changed || !had_cache {
             let started = Instant::now();
@@ -1617,7 +2045,8 @@ fn parse_args() -> Args {
 }
 
 fn run_uninstall(exe: &Path, portable: bool) {
-    if !win::confirm("Hapus Ovner dari komputer ini?\n\nRiwayat, bookmark, cookie, dan pengaturan Ovner juga akan dihapus.") {
+    let lang = i18n::resolve(&Settings::load(&install::data_dir(exe, portable)).language);
+    if !win::confirm(t(lang, "d.uninstall")) {
         return;
     }
     stop_running_instance();
@@ -1626,10 +2055,10 @@ fn run_uninstall(exe: &Path, portable: bool) {
     let data = install::data_dir(exe, portable);
     if install::is_installed_copy(exe) {
         win::delete_dirs_later(&[&data, &install::install_dir()]);
-        win::info("Ovner sudah dihapus.");
+        win::info(t(lang, "d.uninstalled"));
     } else {
         win::delete_dirs_later(&[&data]);
-        win::info("Data Ovner sudah dihapus. File exe portabel bisa Anda hapus sendiri.");
+        win::info(t(lang, "d.uninstalled_portable"));
     }
 }
 
@@ -1651,7 +2080,7 @@ fn main() {
                     return;
                 }
             }
-            Err(e) => win::info(&format!("Ovner tidak bisa dipasang ({e}).\n\nOvner dijalankan langsung dari file ini.")),
+            Err(e) => win::info(&tf(i18n::system_lang(), "d.install_failed", &[("e", &e)])),
         }
     }
 
@@ -1668,7 +2097,7 @@ fn main() {
         return;
     }
     win::init_identity();
-    log(&format!("Ovner {} mulai (portabel: {portable}, tray: {})", env!("CARGO_PKG_VERSION"), args.tray));
+    log(&format!("Ovner {} mulai (portabel: {portable}, tray: {})", update::display_version(), args.tray));
 
     let event_loop: EventLoop<UserEvent> = EventLoopBuilder::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -1693,21 +2122,20 @@ fn main() {
     }
 
     let settings = Settings::load(data_dir());
-    if !Settings::path(data_dir()).exists() {
-        settings.save(data_dir());
-    }
+    // Simpan selalu: menulis versi skema setelah migrasi.
+    settings.save(data_dir());
+    let lang = i18n::resolve(&settings.language);
     let cached = blocker::load_cached(data_dir());
     let full = cached.is_some();
     let blocker = Rc::new(RefCell::new(Blocker::new(cached.unwrap_or_else(blocker::builtin_engine), full)));
-    if settings.auto_update_filters || !full {
-        start_filter_update(proxy.clone(), false);
-    }
+    start_filter_update(proxy.clone(), settings.clone());
     if settings.check_updates && cfg!(windows) {
         let p = proxy.clone();
         let dir = data_dir().to_path_buf();
+        let channel = settings.update_channel.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(20));
-            match update::check_and_stage(&dir) {
+            match update::check_and_stage(&dir, &channel) {
                 Ok(Some(v)) => {
                     log(&format!("update {v} siap"));
                     send(&p, UserEvent::UpdateReady(v));
@@ -1733,10 +2161,10 @@ fn main() {
         .build(&event_loop)
         .expect("jendela Ovner");
 
-    let menus = build_menus();
+    let menus = build_menus(lang);
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menus.tray.clone()))
-        .with_tooltip("Ovner")
+        .with_tooltip(format!("Ovner {}", update::display_version()))
         .with_icon(tray_icon::Icon::from_rgba(icon::rgba(32), 32, 32).expect("ikon tray"))
         .with_menu_on_left_click(false)
         .build()
@@ -1746,7 +2174,13 @@ fn main() {
     let args_str = settings.browser_args();
     let mut web_context = WebContext::new(Some(data_dir().join("WebView2")));
     #[cfg(windows)]
-    let env = match win::create_environment(&data_dir().join("WebView2"), &args_str, settings.edge_tracking_prevention, settings.local_crash_reports) {
+    let env = match win::create_environment(
+        &data_dir().join("WebView2"),
+        &args_str,
+        settings.edge_tracking_prevention,
+        settings.local_crash_reports,
+        settings.extensions_enabled,
+    ) {
         Ok(e) => Some(e),
         Err(e) => {
             log(&format!("environment WebView2 sendiri gagal ({e}); memakai bawaan wry"));
@@ -1778,7 +2212,7 @@ fn main() {
         match b.build_as_child(&window) {
             Ok(w) => w,
             Err(e) => {
-                win::info(&format!("Ovner butuh Microsoft Edge WebView2 Runtime (sudah ada di Windows 11).\n\nGalat: {e}"));
+                win::info(&tf(lang, "d.need_webview2", &[("e", &e.to_string())]));
                 return;
             }
         }
@@ -1812,6 +2246,14 @@ fn main() {
         background: false,
         next_trim: None,
         find_open: false,
+        lang,
+        session_key: shields::session_key(),
+        script_gen: 0,
+        split: None,
+        cname: Arc::new(Mutex::new(HashMap::new())),
+        proc_infos: Vec::new(),
+        last_unresponsive: HashMap::new(),
+        extensions_loaded: false,
     };
 
     // Pulihkan tab terakhir: hanya tab aktif yang dimuat, sisanya tidur sampai diklik.
@@ -1830,12 +2272,18 @@ fn main() {
         *t.allow_http.borrow_mut() = Some(u.clone());
         app.tabs.push(t);
     }
-    if app.tabs.is_empty() {
-        let nt = app.newtab_url();
-        let t = app.new_tab_struct(&nt, "Tab baru", false);
+    // Pertama kali (atau setelah update dari versi tanpa setup): halaman selamat datang.
+    let show_setup = !app.settings.borrow().setup_done && args.urls.is_empty();
+    if show_setup {
+        let t = app.new_tab_struct(&internal_url("setup"), t(lang, "p.setup"), false);
         app.tabs.push(t);
     }
-    let first = if args.urls.is_empty() { session.active.min(app.tabs.len() - 1) } else { app.tabs.len() - 1 };
+    if app.tabs.is_empty() {
+        let nt = app.newtab_url();
+        let t = app.new_tab_struct(&nt, t(lang, "p.newtab"), false);
+        app.tabs.push(t);
+    }
+    let first = if show_setup || !args.urls.is_empty() { app.tabs.len() - 1 } else { session.active.min(app.tabs.len() - 1) };
     if args.tray {
         // Mulai di tray: tidak ada tab yang dimuat sampai jendela dibuka.
         app.active = first;
@@ -1882,6 +2330,9 @@ fn main() {
                     log(&format!("RAM: {} MB working set, {} proses, {} tab ({} hidup)", total / 1_048_576, procs.len(), app.tabs.len(), app.tabs.iter().filter(|t| t.webview.is_some()).count()));
                 }
                 app.store.flush();
+                if app.tabs.iter().any(|t| internal_page(&t.url) == Some("tasks") && t.webview.is_some()) {
+                    app.refresh_proc_infos();
+                }
                 app.refresh_pages("tasks");
                 app.render();
             }
@@ -1936,16 +2387,9 @@ fn main() {
                             t.url = url.clone();
                         }
                         if is_newtab(&t.url) {
-                            t.title = "Tab baru".into();
+                            t.title = i18n::t(app.lang, "p.newtab").into();
                         } else if let Some(name) = internal_page(&t.url) {
-                            t.title = match name {
-                                "settings" => "Pengaturan",
-                                "history" => "Riwayat",
-                                "bookmarks" => "Bookmark",
-                                "tasks" => "Task manager",
-                                _ => name,
-                            }
-                            .into();
+                            t.title = i18n::t(app.lang, &format!("p.{name}")).into();
                         }
                         if started && !t.private && internal_page(&t.url).is_none() && app.settings.borrow().save_history {
                             let (u, ti) = (t.url.clone(), t.title.clone());
@@ -1966,6 +2410,54 @@ fn main() {
                         if let Some(wv) = &app.tabs[i].webview {
                             let _ = wv.load_url(&url);
                         }
+                    }
+                }
+                UserEvent::ScriptNav(id, url, enabled) => {
+                    if let Some(i) = app.tab_index(id) {
+                        let t = &app.tabs[i];
+                        t.scripts_on.set(enabled);
+                        if let Some(wv) = &t.webview {
+                            win::set_script_enabled(wv, enabled);
+                            let _ = wv.load_url(&url);
+                        }
+                    }
+                }
+                UserEvent::ProcInfos(v) => {
+                    app.proc_infos = v;
+                    app.refresh_pages("tasks");
+                }
+                UserEvent::ProcFailed(id, kind) => {
+                    log(&format!("proses tab {id} gagal: {kind:?}"));
+                    match kind {
+                        win::ProcFail::Browser => {
+                            // Seluruh mesin berhenti: buka ulang Ovner dengan tab yang sama.
+                            restart = true;
+                        }
+                        win::ProcFail::Render => {
+                            if let Some(i) = app.tab_index(id) {
+                                if app.is_shown(i) {
+                                    if let Some(wv) = &app.tabs[i].webview {
+                                        let _ = wv.reload();
+                                    }
+                                } else {
+                                    app.sleep_tab(i);
+                                    app.render();
+                                }
+                            }
+                        }
+                        win::ProcFail::Unresponsive => {
+                            let recent = app.last_unresponsive.get(&id).is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+                            if let Some(i) = app.tab_index(id).filter(|_| !recent) {
+                                app.last_unresponsive.insert(id, Instant::now());
+                                let title = app.tabs[i].title.clone();
+                                if win::confirm(&tf(app.lang, "d.unresponsive", &[("t", &title)])) {
+                                    if let Some(wv) = &app.tabs[i].webview {
+                                        let _ = wv.reload();
+                                    }
+                                }
+                            }
+                        }
+                        win::ProcFail::Other => {}
                     }
                 }
                 UserEvent::Upgraded(id, from) => {
@@ -2058,15 +2550,21 @@ mod tests {
     #[test]
     fn address_text_to_url() {
         let s = Settings::default();
-        assert_eq!(to_url("kompas.com", &s), "https://kompas.com");
-        assert_eq!(to_url("detik.com/berita?id=1", &s), "https://detik.com/berita?id=1");
-        assert_eq!(to_url("https://a.id/x", &s), "https://a.id/x");
-        assert_eq!(to_url("localhost:8080", &s), "http://localhost:8080");
-        assert_eq!(to_url("192.168.1.1", &s), "http://192.168.1.1");
-        assert_eq!(to_url("harga emas hari ini", &s), "https://www.google.com/search?q=harga+emas+hari+ini");
-        assert_eq!(to_url("rust", &s), "https://www.google.com/search?q=rust");
-        assert_eq!(to_url("8.8.8.8", &s), "https://8.8.8.8");
-        assert_eq!(to_url("ovner://settings", &s), internal_url("settings"));
+        assert_eq!(to_url("kompas.com", &s).as_deref(), Some("https://kompas.com"));
+        assert_eq!(to_url("detik.com/berita?id=1", &s).as_deref(), Some("https://detik.com/berita?id=1"));
+        assert_eq!(to_url("https://a.id/x", &s).as_deref(), Some("https://a.id/x"));
+        assert_eq!(to_url("localhost:8080", &s).as_deref(), Some("http://localhost:8080"));
+        assert_eq!(to_url("192.168.1.1", &s).as_deref(), Some("http://192.168.1.1"));
+        assert_eq!(to_url("harga emas hari ini", &s).as_deref(), Some("https://www.google.com/search?q=harga+emas+hari+ini"));
+        assert_eq!(to_url("rust", &s).as_deref(), Some("https://www.google.com/search?q=rust"));
+        assert_eq!(to_url("8.8.8.8", &s).as_deref(), Some("https://8.8.8.8"));
+        assert_eq!(to_url("ovner://settings", &s).as_deref(), Some(internal_url("settings").as_ref()));
+        // !bangs dan No Search
+        assert_eq!(to_url("rust !w", &s).as_deref(), Some("https://en.wikipedia.org/w/index.php?search=rust"));
+        let mut ns = Settings::default();
+        ns.no_search = true;
+        assert_eq!(to_url("harga emas", &ns), None);
+        assert_eq!(to_url("kompas.com", &ns).as_deref(), Some("https://kompas.com"));
     }
 
     #[test]

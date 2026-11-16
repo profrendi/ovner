@@ -1,62 +1,80 @@
 # Ovner
 
-Browser ringan untuk Windows 10/11, ditulis dengan Rust.
+**Bahasa Indonesia** · [English](#english)
+
+Browser ringan untuk Windows 10/11, ditulis dengan Rust. Tampilan tersedia dalam
+**Bahasa Indonesia dan English** (Pengaturan → Bahasa; bawaan mengikuti bahasa Windows).
 
 - **Mesin**: Microsoft Edge WebView2, mesin Chromium yang sudah ada di Windows 11. Semua situs
   (YouTube, Office online, Outlook web, situs bank) tampil seperti di Edge.
-- **Pemblokir iklan**: [adblock-rust](https://github.com/brave/adblock-rust), mesin yang sama
-  dengan Brave Shields, memakai daftar EasyList, EasyPrivacy, ABPindo (iklan situs Indonesia),
-  dan uBlock. Permintaan iklan dibatalkan sebelum terkirim, dan kotak iklan yang kosong
-  disembunyikan.
-- **Hemat RAM**: tab yang tidak dibuka selama 15 menit ditidurkan (halamannya dibuang dari
-  RAM dan dimuat ulang saat diklik). Tab yang memutar suara tidak ditidurkan. Tab di
-  belakang memakai mode memori rendah WebView2, dan fitur Chromium yang tidak perlu
-  (proses cadangan, terjemahan, cast) dimatikan.
+- **Shields ala Brave**: [adblock-rust](https://github.com/brave/adblock-rust) (mesin Brave
+  Shields) dengan EasyList, EasyPrivacy, ABPindo, uBlock; blokir popup persetujuan cookie;
+  acak sidik jari (*farbling*); blokir JavaScript per situs; pemilih elemen; daftar dan
+  aturan filter sendiri; buang parameter pelacak, lewati link pengalih (debounce), de-AMP;
+  ungkap pelacak yang menyamar lewat CNAME (eksperimen).
+- **Hemat RAM**: tab tidur otomatis, mode hemat saat diminimalkan/di tray seperti Outlook
+  Lite dan ZFPlus, batas jumlah proses halaman, task manager dengan RAM per tab.
 - **Tanpa hak admin**: terpasang per pengguna, runtime Visual C++ sudah tertanam di exe.
 
 ## Pasang
 
-1. Unduh **Ovner-Setup.exe** dari halaman [Releases](https://github.com/profrendi/ovner/releases/latest).
+1. Unduh **Ovner-Setup.exe** dari [Releases](https://github.com/profrendi/ovner/releases/latest).
 2. Jalankan. Ovner menyalin dirinya ke `%LOCALAPPDATA%\Programs\Ovner`, membuat ikon di
-   **Start Menu** dan **Desktop**, lalu terbuka.
+   **Start Menu** dan **Desktop**, lalu membuka halaman selamat datang (bahasa, mesin pencari,
+   Shields, impor bookmark dari Chrome/Edge/Brave).
 3. Kalau Windows SmartScreen muncul: **More info → Run anyway** (exe belum ditandatangani).
 
-Ovner memeriksa versi baru saat dibuka. Kalau ada, tombol hijau **Update** muncul di
-toolbar; klik untuk membuka ulang dengan versi baru.
+Ovner memeriksa versi baru saat dibuka; tombol hijau **Update** muncul di toolbar bila ada.
+Ada dua kanal (Pengaturan → Sistem → Kanal update):
+
+- **Stabil**: rilis `ovner-vX.Y.Z`.
+- **Nightly**: prarilis [`ovner-nightly`](https://github.com/profrendi/ovner/releases/tag/ovner-nightly),
+  dibangun ulang setiap ada perubahan. Fitur baru datang lebih dulu, mungkin kurang stabil.
 
 Hapus lewat **Settings → Apps → Installed apps → Ovner → Uninstall**.
 
 ## Versi portabel
 
-Unduh **Ovner-Portable.zip**, ekstrak ke folder mana saja (termasuk flashdisk), jalankan
-`ovner.exe`. File `portable.txt` di sebelahnya membuat semua data (cookie, login, riwayat,
-daftar filter) disimpan di folder `Data` di sebelah exe, dan tidak ada yang dipasang.
+Unduh **Ovner-Portable.zip**, ekstrak ke mana saja (termasuk flashdisk), jalankan `ovner.exe`.
+File `portable.txt` membuat semua data disimpan di folder `Data` di sebelah exe.
+Catatan: sandi dan cookie yang disimpan WebView2 dienkripsi dengan akun Windows, jadi login
+situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut.
 
-## Fitur
+## Fitur baru di 0.3
 
-**Menu ☰** (seperti Brave): tab baru, tab privat (Ctrl+Shift+N), buka lagi tab yang
-ditutup, bookmark (bilah bookmark, Ctrl+D), riwayat (Ctrl+H), unduhan (Ctrl+J), zoom,
-cetak, cari di halaman (Ctrl+F), task manager (Shift+Esc), tidurkan semua tab, rapikan
-RAM, perbarui filter iklan, hapus data penjelajahan, DevTools, pengaturan, sembunyikan
-ke tray. Klik kanan tab: muat ulang, duplikat, tidurkan, tutup, tutup tab lain.
+**Setelan Brave Origin dikoreksi**: prediksi jaringan nyala, zero-copy nyala, pemeriksa ejaan
+mati, tab baru kosong, DevTools mati secara bawaan. Pengguna 0.2 otomatis disesuaikan sekali.
 
-**Tray**: tombol X menyembunyikan Ovner ke tray (bisa dimatikan). Saat di tray atau
-diminimalkan, Ovner langsung masuk mode hemat seperti Outlook Lite dan ZFPlus: mode memori
-rendah WebView2, tab ditangguhkan, working set dirapikan, dan mode efisiensi Windows.
+**Kolom alamat**
+- **!bangs** seperti Helium: `rust !w`, `!yt lagu`, `!gh servo`, `!tok`, `!shp`, `!kbbi`,
+  `!tr`, `!claude`, dan lain-lain; bisa menambah bang sendiri.
+- Saran dari riwayat dan bookmark (lokal saja).
+- Mode **No Search** seperti ungoogled-chromium: teks yang bukan alamat tidak dicari.
+- Alamat internasional ditampilkan dalam bentuk punycode (cegah situs palsu yang mirip).
 
-**Pengaturan** (menu ☰ → Pengaturan, atau ketik `ovner://settings`), dengan bagian yang
-mengikuti Brave Origin:
+**Shields** (klik ikon tameng): blokir iklan, blokir JavaScript, dan acak sidik jari bisa
+dimatikan/dinyalakan per situs, ditambah *Sembunyikan elemen...* untuk memilih bagian halaman
+yang ingin dihilangkan selamanya.
 
-| Bagian | Isi |
-|---|---|
-| Tampilan | Tema terang/gelap/ikuti Windows, bilah bookmark, tombol beranda, halaman tab baru (kotak cari atau kosong), zoom bawaan |
-| Mesin pencari | Google, DuckDuckGo, Bing, Brave Search, atau alamat sendiri; tanpa saran pencarian |
-| Shields | Blokir iklan dan pelacak, sembunyikan kotak iklan, buang parameter pelacak, naikkan ke HTTPS (kembali ke http bila situs tidak mendukung), Global Privacy Control + DNT, blokir telemetri Edge/Office, filter otomatis, situs pengecualian |
-| Privasi dan keamanan | Simpan riwayat, hapus data saat keluar, tolak kamera/mikrofon/lokasi, WebRTC tanpa IP lokal, prediksi jaringan, putar media otomatis, pengelola sandi, isi otomatis, SmartScreen, tracking prevention Edge, laporan crash lokal |
-| Unduhan | Folder unduhan |
-| Saat mulai | Pulihkan tab terakhir (dalam keadaan tidur), mulai bersama Windows di tray |
-| Hemat RAM | Tidurkan tab (menit), tangguhkan tab di belakang, X ke tray, memori rendah saat tersembunyi, rapikan RAM saat tersembunyi dan tiap N menit, mode efisiensi Windows, tekanan memori simulasi, mode perangkat RAM kecil, JavaScript hemat memori, isolasi situs, proses cadangan, matikan GPU, zero-copy, unduhan paralel, argumen WebView2 tambahan |
-| Sistem | Periksa update, DevTools, catat pemakaian RAM ke log |
+**Acak sidik jari (farbling)**: situs bisa mengenali komputer Anda dari cara kartu grafis
+menggambar, suara diproses, jumlah inti CPU, dan sebagainya. Ovner menambahkan "noda"
+kecil yang tidak terlihat dan berbeda untuk tiap situs dan tiap sesi, jadi sidik jari Anda
+berubah-ubah dan tidak bisa dipakai melacak. *Standar* hampir tanpa efek samping, *Ketat*
+lebih kuat tetapi bisa membuat beberapa situs rewel.
+
+**Privasi**: Secure DNS (Cloudflare, Quad9, AdGuard), matikan API iklan Chromium (Topics,
+FLEDGE, Attribution Reporting) dan eksperimen lapangan, matikan WebGL, abaikan dialog
+"Tinggalkan situs?", semua pop-up jadi tab.
+
+**Tampilan**: paksa mode gelap di semua situs, CSS sendiri, **bagi layar** (dua tab
+berdampingan: menu ☰ → *Bagi layar*, atau klik kanan tab).
+
+**Hemat RAM dan stabilitas** (ide dari Servo): batas jumlah proses halaman, satu proses per
+situs, task manager dengan RAM per tab, pemulihan otomatis bila halaman crash, tawaran
+memuat ulang bila halaman macet.
+
+**Ekstensi (eksperimen)**: nyalakan di Pengaturan → Sistem, lalu isi folder ekstensi yang
+sudah diekstrak (misalnya uBlock Origin Lite). Hanya ekstensi yang didukung WebView2.
 
 ## Pintasan
 
@@ -73,25 +91,16 @@ mengikuti Brave Origin:
 | Shift+Esc | Task manager |
 | Alt+← / Alt+→, F5, Alt+Home | Kembali / maju, muat ulang, beranda |
 | Ctrl+ +/−/0 | Perbesar / perkecil / normal |
-| Klik tengah pada tab | Tutup tab |
-
-## Tameng (pemblokir iklan)
-
-Angka di ikon tameng oranye adalah jumlah iklan dan pelacak yang diblokir di halaman itu.
-Kalau ada situs yang rusak karena pemblokir, klik tameng untuk mematikannya **di situs itu
-saja**; klik lagi untuk menyalakan.
-
-Daftar filter diunduh saat Ovner pertama dibuka, lalu diperbarui seminggu sekali
-(menu ☰ → Alat lain → *Perbarui daftar filter iklan* untuk memperbarui sekarang).
 
 ## Batasan
 
-- RAM per tab yang **aktif** kurang lebih sama dengan Edge, karena mesinnya sama.
-  Penghematan datang dari iklan yang tidak dimuat dan tab yang ditidurkan.
-- Belum ada sinkronisasi antar perangkat, Brave Rewards, VPN, Wallet, atau Leo AI (Brave Origin juga membuang fitur-fitur ini).
-- Setelan bertanda "berlaku setelah dibuka ulang" adalah argumen mesin WebView2, jadi baru aktif saat Ovner dibuka lagi.
-- Ekstensi Chrome belum didukung.
-- Ovner belum bisa dijadikan browser default Windows.
+- RAM tab yang **aktif** kurang lebih sama dengan Edge, karena mesinnya sama. Penghematan
+  datang dari iklan yang tidak dimuat, tab yang ditidurkan, dan batas proses.
+- Setelan bertanda ↻ adalah argumen mesin WebView2 dan baru berlaku setelah Ovner dibuka ulang.
+  Secure DNS, paksa mode gelap, dan API iklan Chromium memakai flag Chromium yang bisa berubah
+  antar versi WebView2.
+- Pengungkap CNAME bekerja di latar: permintaan pertama ke subdomain baru tetap lewat.
+- Belum ada sinkronisasi, Rewards, VPN, Wallet, atau Leo AI (Brave Origin juga membuangnya).
 
 ## Build sendiri
 
@@ -99,8 +108,40 @@ Daftar filter diunduh saat Ovner pertama dibuka, lalu diperbarui seminggu sekali
 cargo build --release
 ```
 
-Proyek ini juga bisa dikompilasi dan diuji di Linux (WebKitGTK) untuk pengembangan;
-pemblokir jaringan, tidur tab, tray, dan menu ☰ hanya aktif penuh di Windows.
-
-Browser eksperimen berbasis mesin Servo yang dulu ada di repo ini sekarang di
+Bisa dikompilasi dan diuji di Linux (WebKitGTK) untuk pengembangan; pemblokir jaringan, tidur
+tab, tray, dan menu ☰ hanya aktif penuh di Windows. Browser eksperimen berbasis Servo ada di
 [profrendi/lumen](https://github.com/profrendi/lumen).
+
+---
+
+## English
+
+A lightweight browser for Windows 10/11, written in Rust, with an **Indonesian and English**
+interface (Settings → Language; follows Windows by default).
+
+- **Engine**: Microsoft Edge WebView2 (Chromium, built into Windows 11).
+- **Brave-style Shields**: adblock-rust (the Brave Shields engine) with EasyList, EasyPrivacy,
+  ABPindo and uBlock lists; cookie-notice blocking; fingerprint randomization (farbling);
+  per-site JavaScript blocking; element picker; custom filter lists and rules; tracking
+  parameter stripping, debouncing, de-AMP; experimental CNAME uncloaking.
+- **Memory saving**: automatic tab sleeping, a low-memory mode when minimized or in the tray
+  (like Outlook Lite and ZFPlus), renderer process limit, per-tab RAM in the task manager.
+- **No admin rights**: per-user install, Visual C++ runtime built into the exe.
+
+**Install**: download **Ovner-Setup.exe** from
+[Releases](https://github.com/profrendi/ovner/releases/latest) and run it. It installs to
+`%LOCALAPPDATA%\Programs\Ovner`, adds Start Menu and Desktop shortcuts, and opens a welcome page.
+Choose the **Stable** or **Nightly** update channel in Settings → System.
+**Portable**: extract **Ovner-Portable.zip** anywhere and run `ovner.exe`; data stays in the
+`Data` folder next to it (saved site logins are tied to the Windows account).
+
+**Address bar**: `!bangs` (`rust !w`, `!yt`, `!gh`, custom bangs), local suggestions from history
+and bookmarks, optional *No Search* mode, punycode display for internationalized domains.
+
+**Privacy**: Secure DNS (Cloudflare, Quad9, AdGuard), Privacy Sandbox APIs and field trials
+disabled, optional WebGL disabling, ignore "Leave site?" dialogs, all pop-ups as tabs.
+
+**Also**: forced dark mode, custom CSS, split view, crash and hang recovery, experimental
+WebView2 extensions, bookmark import from Chrome/Edge/Brave.
+
+Settings marked ↻ are WebView2 engine flags and apply after a restart.

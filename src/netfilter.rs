@@ -2,7 +2,9 @@
 //! beberapa fitur yang belum disediakan wry (cek audio, dialog unduhan, kembali/maju).
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
@@ -31,6 +33,46 @@ pub struct FilterCtx {
     pub blocked: Rc<Cell<u32>>,
     /// Alamat navigasi halaman utama yang sedang berjalan (sumber untuk aturan $third-party).
     pub page: Rc<RefCell<String>>,
+    /// Cache CNAME (host → nama asli), dibagi semua tab. `None` = sedang/tidak ada.
+    pub cname: Arc<Mutex<HashMap<String, Option<String>>>>,
+}
+
+/// Domain dasar perkiraan (eTLD+1): `a.b.kompas.com` → `kompas.com`, `x.co.id` → `x.co.id`.
+pub fn base_domain(host: &str) -> String {
+    let parts: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    if parts.len() <= 2 {
+        return host.to_string();
+    }
+    let n = parts.len();
+    let take = if parts[n - 2].len() <= 3 && parts[n - 1].len() == 2 { 3 } else { 2 };
+    parts[n.saturating_sub(take)..].join(".")
+}
+
+/// Pemeriksaan CNAME untuk subdomain situs sendiri (tempat pelacak biasa menyamar).
+/// Pencarian DNS dilakukan di thread latar; permintaan pertama ke host baru dibiarkan lewat.
+fn cname_blocked(ctx: &FilterCtx, uri: &str, host: &str, page: &str, rtype: &str) -> bool {
+    let page_host = url::Url::parse(page).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
+    if host == page_host || page_host.is_empty() || base_domain(host) != base_domain(&page_host) {
+        return false;
+    }
+    let cached = ctx.cname.lock().ok().and_then(|m| m.get(host).cloned());
+    match cached {
+        Some(Some(cname)) => ctx.blocker.borrow().should_block_cname(uri, &cname, page, rtype),
+        Some(None) => false,
+        None => {
+            if let Ok(mut m) = ctx.cname.lock() {
+                m.insert(host.to_string(), None);
+            }
+            let (cache, h) = (ctx.cname.clone(), host.to_string());
+            std::thread::spawn(move || {
+                let c = crate::win::cname_of(&h).filter(|c| base_domain(c) != base_domain(&h));
+                if let Ok(mut m) = cache.lock() {
+                    m.insert(h, c);
+                }
+            });
+            false
+        }
+    }
 }
 
 fn host_matches(host: &str, list: &[&str]) -> bool {
@@ -63,11 +105,11 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                     return Ok(());
                 }
-                let (block_ads, gpc, block_telemetry, exception) = {
+                let (block_ads, gpc, block_telemetry, exception, cname_on) = {
                     let s = ctx.settings.borrow();
                     let page = ctx.page.borrow();
                     let host = url::Url::parse(&page).ok().and_then(|u| u.host_str().map(str::to_string));
-                    (s.block_ads, s.gpc, s.block_telemetry, host.is_some_and(|h| s.is_exception(&h)))
+                    (s.block_ads, s.gpc, s.block_telemetry, host.is_some_and(|h| s.is_exception(&h)), s.cname_uncloak)
                 };
                 if gpc {
                     if let Ok(h) = req.Headers() {
@@ -84,6 +126,9 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                     let is_main = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (uri == page || page.is_empty());
                     let rtype = blocker::request_type_from_webview2(kind.0, is_main);
                     block = ctx.blocker.borrow().should_block(&uri, &page, rtype);
+                    if !block && cname_on {
+                        block = cname_blocked(&ctx, &uri, &host, &page, rtype);
+                    }
                 }
                 if block {
                     let resp = env.CreateWebResourceResponse(None, 403, &HSTRING::from("Diblokir Ovner"), &HSTRING::new())?;
@@ -158,6 +203,13 @@ pub fn stop(wv: &wry::WebView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_domains() {
+        assert_eq!(base_domain("metrics.news.kompas.com"), "kompas.com");
+        assert_eq!(base_domain("www.bank.co.id"), "bank.co.id");
+        assert_eq!(base_domain("detik.com"), "detik.com");
+    }
 
     #[test]
     fn telemetry_hosts() {

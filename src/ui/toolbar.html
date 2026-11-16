@@ -70,26 +70,34 @@
     font: inherit; outline: none; user-select: text; }
   #findq:focus { border-color: var(--accent); }
   .line { height: 1px; background: var(--line); }
+  .tab.split { box-shadow: inset 0 -2px 0 var(--accent); }
+  #splitbox { display: none; gap: 2px; }
+  #splitbox.show { display: flex; }
 </style>
 </head>
 <body>
-<div id="tabs"><button id="new" title="Tab baru (Ctrl+T)">+</button></div>
+<div id="tabs"><button id="new">+</button></div>
 <div id="bar">
   <button class="b" id="back" title="Kembali (Alt+←)"><svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
   <button class="b" id="fwd" title="Maju (Alt+→)"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
   <button class="b" id="reload" title="Muat ulang (F5)"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg></button>
   <button class="b hidden" id="home" title="Beranda"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg></button>
   <div id="addrwrap">
-    <input id="addr" spellcheck="false" autocomplete="off" placeholder="Cari atau ketik alamat">
+    <input id="addr" spellcheck="false" autocomplete="off" list="sug">
+    <datalist id="sug"></datalist>
     <button class="b" id="star" title="Bookmark halaman ini (Ctrl+D)"><svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg></button>
   </div>
-  <button id="upd" title="Versi baru sudah diunduh. Klik untuk membuka ulang Ovner."></button>
+  <span id="splitbox">
+    <button class="b" id="swap"><svg viewBox="0 0 24 24"><path d="M7 7h13l-4-4M17 17H4l4 4"/></svg></button>
+    <button class="b" id="unsplit"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M15 9l-3 3 3 3"/></svg></button>
+  </span>
+  <button id="upd"></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
   <button class="b" id="menu" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </div>
 <div id="bmbar"></div>
 <div id="find">
-  <input id="findq" placeholder="Cari di halaman">
+  <input id="findq">
   <button class="b" id="findprev" title="Sebelumnya (Shift+Enter)"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
   <button class="b" id="findnext" title="Berikutnya (Enter)"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
   <button class="b" id="findclose" title="Tutup (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
@@ -98,6 +106,21 @@
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const D = {
+    id: { newtab: "Tab baru", newtabK: "Tab baru (Ctrl+T)", priv: " (privat)", sleep: "\n(Tab tidur: tidak memakai RAM, dimuat lagi saat dibuka)", close: "Tutup tab (Ctrl+W)",
+      back: "Kembali (Alt+←)", fwd: "Maju (Alt+→)", reload: "Muat ulang (F5)", stop: "Hentikan (Esc)", home: "Beranda", addr: "Cari atau ketik alamat",
+      addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
+      find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
+      swap: "Pindah ke sisi lain", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
+    en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
+      back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
+      addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
+      find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
+      swap: "Switch side", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
+  };
+  let W = D.id;
   const $ = (id) => document.getElementById(id);
   const tabsEl = $("tabs"), addr = $("addr"), findq = $("findq");
   let state = { tabs: [], url: "", loading: false, bookmarks: [] };
@@ -114,11 +137,11 @@
     const plus = $("new");
     for (const t of state.tabs) {
       const el = document.createElement("div");
-      el.className = "tab" + (t.active ? " active" : "") + (t.sleeping ? " sleep" : "") + (t.loading ? " loading" : "") + (t.private ? " private" : "");
-      el.title = (t.title || "Tab baru") + (t.private ? " (privat)" : "") + (t.sleeping ? "\n(Tab tidur: tidak memakai RAM, dimuat lagi saat dibuka)" : "");
+      el.className = "tab" + (t.active ? " active" : "") + (t.sleeping ? " sleep" : "") + (t.loading ? " loading" : "") + (t.private ? " private" : "") + (t.split ? " split" : "");
+      el.title = (t.title || W.newtab) + (t.private ? W.priv : "") + (t.sleeping ? W.sleep : "");
       const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = letter(t);
-      const ti = document.createElement("span"); ti.className = "t"; ti.textContent = t.title || "Tab baru";
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Tutup tab (Ctrl+W)";
+      const ti = document.createElement("span"); ti.className = "t"; ti.textContent = t.title || W.newtab;
+      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = W.close;
       x.onclick = (e) => { e.stopPropagation(); send({ cmd: "close", id: t.id }); };
       el.onmousedown = (e) => { if (e.button === 0) send({ cmd: "activate", id: t.id }); };
       el.onauxclick = (e) => { if (e.button === 1) send({ cmd: "close", id: t.id }); };
@@ -140,7 +163,7 @@
     }
     if (!(state.bookmarks || []).length) {
       const el = document.createElement("span"); el.className = "bm"; el.style.color = "var(--muted)";
-      el.textContent = "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.";
+      el.textContent = W.bmEmpty;
       bar.append(el);
     }
   }
@@ -148,22 +171,23 @@
   window.ovner = {
     render(s) {
       state = s;
+      if (D[s.lang] !== W || !document.documentElement.lang) applyLang(s.lang);
+      addr.placeholder = s.noSearch ? W.addrNs : W.addr;
+      $("splitbox").classList.toggle("show", !!s.split);
       document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
       renderTabs();
       renderBookmarks();
       $("home").classList.toggle("hidden", !s.homeButton);
       if (document.activeElement !== addr) addr.value = s.url;
       $("reload").innerHTML = s.loading ? stopIcon : reloadIcon;
-      $("reload").title = s.loading ? "Hentikan (Esc)" : "Muat ulang (F5)";
+      $("reload").title = s.loading ? W.stop : W.reload;
       $("back").disabled = !s.canBack; $("fwd").disabled = !s.canForward;
       $("star").classList.toggle("on", !!s.bookmarked);
       $("star").style.display = s.url ? "" : "none";
       const sh = $("shield");
       sh.classList.toggle("off", !s.shieldOn);
       $("count").textContent = s.shieldOn && s.blocked > 0 ? String(s.blocked) : "";
-      sh.title = !s.blockAds ? "Pemblokir iklan dimatikan di pengaturan"
-        : !s.shieldOn ? "Pemblokir iklan MATI di situs ini. Klik untuk menyalakan lagi."
-        : `${s.blocked} iklan/pelacak diblokir di halaman ini${s.listsReady ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mematikan pemblokir di situs ini.`;
+      sh.title = !s.blockAds ? W.shOff : !s.shieldOn ? W.shSite : W.shOn(s.blocked, s.listsReady);
       const u = $("upd");
       u.classList.toggle("show", !!s.update);
       u.textContent = s.update ? "Update " + s.update : "";
@@ -171,9 +195,40 @@
       send({ cmd: "height", h: document.body.scrollHeight });
     },
     focusAddress() { addr.focus(); addr.select(); },
+    suggestions(r) {
+      if (r.text !== addr.value.trim()) return;
+      const dl = $("sug"); dl.textContent = "";
+      for (const it of r.items || []) {
+        const o = document.createElement("option");
+        o.value = it.url; o.label = (it.bm ? W.bm : "") + (it.title || it.url);
+        dl.append(o);
+      }
+    },
     focusFind() { findq.focus(); findq.select(); },
   };
 
+  function applyLang(l) {
+    W = D[l] || D.id;
+    document.documentElement.lang = l;
+    const tt = { new: W.newtabK, back: W.back, fwd: W.fwd, home: W.home, star: W.star, upd: W.upd, menu: W.menu, findprev: W.prev, findnext: W.next, findclose: W.fclose, swap: W.swap, unsplit: W.unsplit };
+    for (const k in tt) $(k).title = tt[k];
+    findq.placeholder = W.find;
+  }
+  let sugTimer = 0, picked = false;
+  addr.addEventListener("input", (e) => {
+    // Pilihan dari daftar saran: langsung buka.
+    if (!e.inputType || e.inputType === "insertReplacementText") {
+      const text = addr.value.trim();
+      if (text) { picked = true; send({ cmd: "go", text }); addr.blur(); }
+      return;
+    }
+    if (!state.suggest) return;
+    clearTimeout(sugTimer);
+    const text = addr.value.trim();
+    if (!text) { $("sug").textContent = ""; return; }
+    sugTimer = setTimeout(() => send({ cmd: "suggest", text }), 120);
+  });
+  addr.addEventListener("blur", () => { $("sug").textContent = ""; });
   addr.addEventListener("focus", () => setTimeout(() => addr.select(), 0));
   addr.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -198,7 +253,9 @@
   $("home").onclick = () => send({ cmd: "home" });
   $("star").onclick = () => send({ cmd: "bookmark" });
   $("reload").onclick = () => send({ cmd: state.loading ? "stop" : "reload" });
-  $("shield").onclick = () => send({ cmd: "shield" });
+  $("shield").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); send({ cmd: "shield", x: r.left, y: r.bottom }); };
+  $("swap").onclick = () => send({ cmd: "split-swap" });
+  $("unsplit").onclick = () => send({ cmd: "split-close" });
   $("upd").onclick = () => send({ cmd: "restart" });
   $("menu").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); send({ cmd: "menu", x: r.right, y: r.bottom }); };
   window.addEventListener("keydown", (e) => {
@@ -217,11 +274,14 @@
       else if (k === "tab" || k === "pagedown") c = e.shiftKey || k === "pageup" ? "prevtab" : "nexttab";
       else if (k === "pageup") c = "prevtab";
       else if (/^[1-9]$/.test(k)) c = "tab" + k;
-    } else if (k === "f5") c = "reload";
+    } else if (e.shiftKey && k === "escape") c = "tasks";
+    else if (k === "f5") c = "reload";
     else if (k === "escape" && $("find").classList.contains("show")) c = "find-close";
     if (c) { e.preventDefault(); send({ cmd: "key", k: c }); }
   });
   document.addEventListener("contextmenu", (e) => { if (e.target !== addr && e.target !== findq) e.preventDefault(); });
+  applyLang("id");
+  document.documentElement.lang = "";
   send({ cmd: "ready" });
 })();
 </script>

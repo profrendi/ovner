@@ -136,6 +136,66 @@ impl Store {
         added
     }
 
+    /// Tambah banyak bookmark sekaligus (impor); alamat yang sudah ada dilewati.
+    /// Mengembalikan jumlah yang ditambahkan.
+    pub fn add_bookmarks(&mut self, items: &[(String, String)]) -> usize {
+        let mut n = 0;
+        for (title, url) in items {
+            if !url.is_empty() && !self.is_bookmarked(url) {
+                let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
+                self.bookmarks.push(Bookmark { url: url.clone(), title, added: now() });
+                n += 1;
+            }
+        }
+        if n > 0 {
+            write(&self.bookmarks_path, &self.bookmarks);
+        }
+        n
+    }
+
+    /// Saran kolom alamat dari bookmark dan riwayat: (judul, alamat, bookmark?).
+    /// Cocok bila kata kunci ada di judul atau alamat; urut: bookmark, awalan host, sering dikunjungi.
+    pub fn suggest(&self, query: &str, limit: usize) -> Vec<(String, String, bool)> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let bare = |u: &str| u.trim_start_matches("https://").trim_start_matches("http://").trim_start_matches("www.").to_lowercase();
+        let mut scored: Vec<(i64, String, String, bool)> = Vec::new();
+        let mut push = |title: &str, url: &str, bm: bool, visits: i64| {
+            let (t, b) = (title.to_lowercase(), bare(url));
+            if !(t.contains(&q) || b.contains(&q)) {
+                return;
+            }
+            let mut score = visits + if bm { 50 } else { 0 };
+            if b.starts_with(&q) {
+                score += 100;
+            }
+            if let Some(e) = scored.iter_mut().find(|e| e.2 == url) {
+                e.0 = e.0.max(score);
+                e.3 |= bm;
+            } else {
+                scored.push((score, title.to_string(), url.to_string(), bm));
+            }
+        };
+        for b in &self.bookmarks {
+            push(&b.title, &b.url, true, 0);
+        }
+        let mut counts: std::collections::HashMap<&str, (i64, &str)> = std::collections::HashMap::new();
+        for v in &self.history {
+            let e = counts.entry(v.url.as_str()).or_insert((0, v.title.as_str()));
+            e.0 += 1;
+            if !v.title.is_empty() {
+                e.1 = v.title.as_str();
+            }
+        }
+        for (url, (n, title)) in counts {
+            push(title, url, false, n.min(40));
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.2.len().cmp(&b.2.len())));
+        scored.into_iter().take(limit).map(|(_, t, u, bm)| (t, u, bm)).collect()
+    }
+
     pub fn rename_bookmark(&mut self, url: &str, title: &str) {
         if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url) {
             b.title = if title.trim().is_empty() { url.to_string() } else { title.trim().to_string() };
@@ -186,6 +246,13 @@ mod tests {
         assert!(s.toggle_bookmark("https://a.id/", "A"));
         assert!(s.is_bookmarked("https://a.id/"));
         s.rename_bookmark("https://a.id/", "Situs A");
+
+        assert_eq!(s.add_bookmarks(&[("B".into(), "https://b.id/".into()), ("A".into(), "https://a.id/".into())]), 1);
+        let sug = s.suggest("b.i", 5);
+        assert_eq!(sug[0].1, "https://b.id/");
+        assert!(sug[0].2, "bookmark diutamakan");
+        assert!(s.suggest("", 5).is_empty());
+        s.remove_bookmark("https://b.id/");
 
         let again = Store::load(&d);
         assert_eq!(again.history, s.history);

@@ -7,27 +7,36 @@
 </head>
 <body>
 <div class="wrap">
-<h1>Bookmark</h1>
-<p class="muted">Tekan <b>Ctrl+D</b> atau klik bintang di kolom alamat untuk menyimpan halaman. Klik judul untuk mengubah namanya.</p>
+<h1 id="h1"></h1>
+<p class="muted" id="tip"></p>
+<div class="bar"><span style="flex:1"></span><button id="imp"></button></div>
 <div id="list"></div>
 </div>
 <script>
 (function () {
   const post = (o) => window.ipc.postMessage(JSON.stringify(o));
   const list = document.getElementById("list");
+  const W = {
+    id: { h1: "Bookmark", tip: "Tekan <b>Ctrl+D</b> atau klik bintang di kolom alamat untuk menyimpan halaman.", empty: "Belum ada bookmark.", ren: "Ubah nama", name: "Nama bookmark:", rm: "Hapus bookmark", imp: "Impor dari Chrome/Edge/Brave" },
+    en: { h1: "Bookmarks", tip: "Press <b>Ctrl+D</b> or click the star in the address bar to save a page.", empty: "No bookmarks yet.", ren: "Rename", name: "Bookmark name:", rm: "Remove bookmark", imp: "Import from Chrome/Edge/Brave" },
+  };
+  document.getElementById("imp").onclick = () => post({ t: "import" });
   window.ovnerPage = (s) => {
     document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    const w = W[s.lang] || W.id;
+    document.documentElement.lang = s.lang; document.title = w.h1;
+    document.getElementById("h1").textContent = w.h1; document.getElementById("tip").innerHTML = w.tip; document.getElementById("imp").textContent = w.imp;
     list.textContent = "";
-    if (!s.bookmarks.length) { list.innerHTML = '<div class="card"><div class="empty">Belum ada bookmark.</div></div>'; return; }
+    if (!s.bookmarks.length) { list.innerHTML = '<div class="card"><div class="empty"></div></div>'; list.querySelector(".empty").textContent = w.empty; return; }
     const card = Object.assign(document.createElement("div"), { className: "card list" });
     for (const b of s.bookmarks) {
       const row = document.createElement("div"); row.className = "row";
       const a = document.createElement("a"); a.href = b.url;
       a.innerHTML = `<span class="t"></span><span class="u"></span>`;
       a.querySelector(".t").textContent = b.title; a.querySelector(".u").textContent = b.url;
-      const ren = document.createElement("button"); ren.textContent = "Ubah nama";
-      ren.onclick = () => { const t = prompt("Nama bookmark:", b.title); if (t !== null) post({ t: "bookmark-rename", url: b.url, title: t }); };
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Hapus bookmark";
+      const ren = document.createElement("button"); ren.textContent = w.ren;
+      ren.onclick = () => { const t = prompt(w.name, b.title); if (t !== null) post({ t: "bookmark-rename", url: b.url, title: t }); };
+      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = w.rm;
       x.onclick = () => post({ t: "bookmark-remove", url: b.url });
       row.append(a, ren, x); card.append(row);
     }

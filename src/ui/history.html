@@ -7,26 +7,31 @@
 </head>
 <body>
 <div class="wrap">
-<h1>Riwayat</h1>
-<div class="bar"><input type="search" id="q" placeholder="Cari di riwayat"><button class="danger" id="clear">Hapus semua riwayat</button></div>
+<h1 id="h1"></h1>
+<div class="bar"><input type="search" id="q"><button class="danger" id="clear"></button></div>
 <div id="list"></div>
 </div>
 <script>
 (function () {
   const post = (o) => window.ipc.postMessage(JSON.stringify(o));
   const list = document.getElementById("list"), q = document.getElementById("q");
-  let items = [];
+  let items = [], L = "id";
+  const W = {
+    id: { h1: "Riwayat", q: "Cari di riwayat", clear: "Hapus semua riwayat", today: "Hari ini", yday: "Kemarin", empty: "Belum ada riwayat.", rm: "Hapus dari riwayat", confirm: "Hapus semua riwayat kunjungan?", loc: "id-ID" },
+    en: { h1: "History", q: "Search history", clear: "Clear all history", today: "Today", yday: "Yesterday", empty: "No history yet.", rm: "Remove from history", confirm: "Clear all browsing history?", loc: "en-US" },
+  };
+  const w = () => W[L] || W.id;
   const dayName = (t) => {
     const d = new Date(t * 1000), now = new Date();
     const same = (a, b) => a.toDateString() === b.toDateString();
-    if (same(d, now)) return "Hari ini";
+    if (same(d, now)) return w().today;
     const y = new Date(now); y.setDate(now.getDate() - 1);
-    if (same(d, y)) return "Kemarin";
-    return d.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    if (same(d, y)) return w().yday;
+    return d.toLocaleDateString(w().loc, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   };
   function render() {
     list.textContent = "";
-    if (!items.length) { list.innerHTML = '<div class="card"><div class="empty">Belum ada riwayat.</div></div>'; return; }
+    if (!items.length) { list.innerHTML = '<div class="card"><div class="empty"></div></div>'; list.querySelector(".empty").textContent = w().empty; return; }
     let day = null, card = null;
     for (const v of items) {
       const d = dayName(v.time);
@@ -38,18 +43,21 @@
       }
       const row = document.createElement("div"); row.className = "row";
       const time = document.createElement("span"); time.className = "time";
-      time.textContent = new Date(v.time * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+      time.textContent = new Date(v.time * 1000).toLocaleTimeString(w().loc, { hour: "2-digit", minute: "2-digit" });
       const a = document.createElement("a"); a.href = v.url;
       a.innerHTML = `<span class="t"></span><span class="u"></span>`;
       a.querySelector(".t").textContent = v.title || v.url; a.querySelector(".u").textContent = v.url;
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Hapus dari riwayat";
+      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = w().rm;
       x.onclick = () => post({ t: "history-remove", url: v.url });
       row.append(time, a, x); card.append(row);
     }
   }
-  window.ovnerPage = (s) => { items = s.history; document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme; render(); };
+  window.ovnerPage = (s) => {
+    items = s.history; L = s.lang; document.documentElement.lang = L;
+    document.title = w().h1; document.getElementById("h1").textContent = w().h1;
+    q.placeholder = w().q; document.getElementById("clear").textContent = w().clear; document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme; render(); };
   q.oninput = () => post({ t: "history-search", q: q.value });
-  document.getElementById("clear").onclick = () => { if (confirm("Hapus semua riwayat kunjungan?")) post({ t: "history-clear" }); };
+  document.getElementById("clear").onclick = () => { if (confirm(w().confirm)) post({ t: "history-clear" }); };
   post({ t: "page-ready" });
 })();
 </script>

@@ -1,153 +1,204 @@
 //! Pengaturan Ovner, disimpan di `<data>/settings.json` dan diubah lewat halaman
-//! `ovner://settings`. Bagian-bagiannya mengikuti halaman pengaturan Brave (Origin):
-//! tampilan, pencarian, Shields, privasi, unduhan, saat mulai, sistem, ditambah bagian
-//! hemat RAM dari Outlook Lite/ZFPlus.
+//! `ovner://settings`. Bagian-bagiannya mengikuti Brave Origin: tampilan, pencarian,
+//! Shields, privasi, unduhan, saat mulai, sistem; ditambah hemat RAM dari Outlook Lite/ZFPlus
+//! dan fitur dari ungoogled-chromium, Helium, dan Servo.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
+pub const SCHEMA: u32 = 1;
+
+fn zero() -> u32 {
+    0
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// Versi skema file ini (0 = dibuat sebelum ada migrasi).
+    #[serde(default = "zero")]
+    pub schema: u32,
+    /// Halaman setup awal sudah dilewati.
+    pub setup_done: bool,
+
     // ---------- tampilan ----------
+    /// "auto" (ikut Windows), "id", atau "en".
+    pub language: String,
     /// "system", "light", atau "dark".
     pub theme: String,
     pub bookmark_bar: bool,
     pub home_button: bool,
-    /// Alamat tombol beranda (kosong = halaman tab baru).
     pub home_url: String,
-    /// Halaman tab baru: "ovner" (kotak cari) atau "blank" (kosong, seperti Brave Origin).
+    /// Halaman tab baru: "blank" (kosong, seperti Brave Origin) atau "ovner" (kotak cari).
     pub newtab: String,
-    /// Zoom bawaan halaman, persen.
     pub default_zoom: u32,
+    /// Paksa mode gelap di semua situs (fitur Chromium).
+    pub force_dark: bool,
+    /// CSS sendiri yang dipasang di semua halaman.
+    pub user_css: String,
 
-    // ---------- pencarian ----------
+    // ---------- pencarian dan kolom alamat ----------
     /// google, duckduckgo, bing, brave, atau URL berisi `%s`.
     pub search_engine: String,
+    /// Pintasan !bang (contoh: `!w rust`).
+    pub bangs: bool,
+    /// Bang sendiri, tiap baris `!kode https://alamat?q=%s`.
+    pub custom_bangs: Vec<String>,
+    /// Saran dari riwayat dan bookmark saat mengetik (lokal, tanpa koneksi).
+    pub address_suggestions: bool,
+    /// Kolom alamat hanya menerima alamat, tidak pernah mencari ("No Search").
+    pub no_search: bool,
 
-    // ---------- Shields (pemblokir) ----------
+    // ---------- Shields ----------
     pub block_ads: bool,
-    /// Sembunyikan kotak iklan yang kosong (aturan kosmetik EasyList).
     pub cosmetic_filtering: bool,
-    /// Buang parameter pelacak klik (fbclid, utm_*, ...) dari alamat.
+    /// Daftar filter popup persetujuan cookie.
+    pub block_cookie_notices: bool,
+    /// Acak sidik jari: "off", "standard", "strict".
+    pub farbling: String,
     pub strip_tracking_params: bool,
-    /// Naikkan http:// ke https:// (alamat lokal dikecualikan).
+    /// Lewati halaman AMP Google dan buka halaman aslinya.
+    pub de_amp: bool,
+    /// Lewati link pengalih pelacak (l.facebook.com, google.com/url, ...).
+    pub debounce: bool,
     pub https_only: bool,
-    /// Kirim tajuk Global Privacy Control dan Do Not Track.
     pub gpc: bool,
-    /// Blokir telemetri Microsoft Edge/WebView2 dan Office.
     pub block_telemetry: bool,
-    /// Daftar filter diperbarui otomatis seminggu sekali.
+    /// Matikan API iklan Chromium (Topics, FLEDGE, Attribution Reporting) dan eksperimen.
+    pub block_privacy_sandbox: bool,
+    /// Ungkap pelacak yang menyamar lewat CNAME (pencarian DNS di latar).
+    pub cname_uncloak: bool,
     pub auto_update_filters: bool,
-    /// Situs (host) tempat pemblokir dimatikan.
+    /// Alamat daftar filter tambahan (format EasyList/uBlock).
+    pub custom_lists: Vec<String>,
+    /// Aturan filter sendiri (format EasyList/uBlock), satu per baris.
+    pub custom_rules: String,
+    /// Situs tanpa pemblokir iklan.
     pub exceptions: Vec<String>,
+    /// Situs yang JavaScript-nya diblokir.
+    pub script_blocked: Vec<String>,
+    /// Situs tanpa pengacakan sidik jari.
+    pub farbling_off: Vec<String>,
 
-    // ---------- privasi & keamanan ----------
-    /// Hapus cookie, cache, dan riwayat situs saat Ovner ditutup.
+    // ---------- privasi dan keamanan ----------
     pub clear_on_exit: bool,
-    /// Simpan riwayat kunjungan di Ovner.
     pub save_history: bool,
-    /// Tolak akses kamera, mikrofon, lokasi, dan sensor tanpa bertanya.
     pub deny_sensitive_permissions: bool,
-    /// Kebijakan WebRTC: "default" atau "proxy_only" (sembunyikan IP lokal).
     pub webrtc_policy: String,
-    /// Prediksi jaringan (prefetch DNS, preconnect). Mati = seperti Brave Origin.
+    /// Prediksi jaringan (DNS prefetch, preconnect). Brave Origin: nyala (speed fix).
     pub network_prediction: bool,
-    /// Putar video/audio otomatis tanpa klik.
+    /// Secure DNS: "off", "cloudflare", "quad9", "adguard", atau URL DoH.
+    pub secure_dns: String,
     pub autoplay: bool,
-    /// Pengelola kata sandi bawaan WebView2 (Brave Origin: mati).
     pub password_manager: bool,
-    /// Isi otomatis alamat/formulir (Brave Origin: mati).
     pub autofill: bool,
-    /// SmartScreen (cek reputasi alamat ke Microsoft).
+    pub spellcheck: bool,
     pub smartscreen: bool,
-    /// Tracking prevention bawaan Edge (pemblokir sudah ada di Ovner; mati = lebih ringan).
     pub edge_tracking_prevention: bool,
-    /// Laporan crash WebView2 disimpan lokal, bukan dikirim ke Microsoft.
     pub local_crash_reports: bool,
+    /// Matikan WebGL (mengurangi sidik jari dan RAM; game/peta 3D tidak jalan).
+    pub disable_webgl: bool,
+    /// Semua pop-up dibuka sebagai tab (termasuk jendela login berukuran kecil).
+    pub popups_to_tabs: bool,
+    /// Abaikan dialog "Tinggalkan situs?" (beforeunload).
+    pub disable_beforeunload: bool,
 
     // ---------- unduhan ----------
-    /// Folder unduhan (kosong = bawaan Windows).
     pub download_dir: String,
 
     // ---------- saat mulai ----------
     pub restore_tabs: bool,
-    /// Mulai bersama Windows (di tray).
     pub autostart: bool,
 
     // ---------- hemat RAM ----------
-    /// Tab yang tidak dibuka selama ini (menit) ditidurkan. 0 = tidak pernah.
     pub sleep_tabs_minutes: u64,
-    /// Tab di belakang (tidak terlihat) ditangguhkan WebView2 (TrySuspend): JavaScript dan
-    /// timer berhenti, RAM dilepas, halaman tetap utuh dan langsung tampil saat diklik.
     pub suspend_hidden_tabs: bool,
-    /// Tombol X menyembunyikan Ovner ke tray (bukan keluar).
     pub close_to_tray: bool,
-    /// Saat diminimalkan/di tray: mode memori rendah WebView2 untuk semua tab.
     pub low_memory_when_hidden: bool,
-    /// Saat diminimalkan/di tray: rapikan working set semua proses (RAM di Task Manager turun).
     pub trim_when_hidden: bool,
-    /// Rapikan ulang tiap N menit selama tersembunyi. 0 = sekali saja.
     pub trim_every_minutes: u32,
-    /// Mode efisiensi Windows (EcoQoS) + prioritas rendah untuk proses WebView2 saat tersembunyi.
     pub efficiency_mode: bool,
-    /// Flag WebView2: tab tidak aktif diperlakukan seperti kekurangan memori (bersih-bersih sendiri).
     pub simulate_memory_pressure: bool,
-    /// Mode perangkat RAM kecil Chromium: cache gambar/grafis lebih kecil.
     pub low_end_mode: bool,
-    /// V8 mengutamakan ukuran memori daripada kecepatan.
     pub v8_optimize_for_size: bool,
-    /// Pisahkan iframe lintas-situs ke proses sendiri (lebih aman, lebih banyak RAM).
     pub site_isolation: bool,
-    /// Proses renderer cadangan Chromium (tab baru terbuka lebih cepat, +RAM).
     pub spare_renderer: bool,
-    /// Matikan akselerasi GPU (hemat ~50-80 MB; video jadi lebih berat ke CPU).
+    /// Batas jumlah proses halaman (0 = otomatis).
+    pub renderer_process_limit: u32,
+    /// Satu proses per situs (bukan per tab).
+    pub process_per_site: bool,
     pub no_gpu: bool,
-    /// Zero-copy rasterizer (saran Brave Origin).
     pub zero_copy: bool,
-    /// Unduhan paralel (saran Brave Origin).
     pub parallel_downloading: bool,
-    /// Argumen tambahan WebView2 (lanjutan).
     pub extra_browser_args: String,
 
     // ---------- sistem ----------
     pub check_updates: bool,
-    /// Catat pemakaian RAM ke log tiap 5 menit.
+    /// "stable" atau "nightly".
+    pub update_channel: String,
     pub diagnostics: bool,
-    /// Izinkan DevTools (F12).
     pub devtools: bool,
+    /// Muat ekstensi (eksperimen).
+    pub extensions_enabled: bool,
+    /// Folder ekstensi yang sudah diekstrak (unpacked).
+    pub extension_dirs: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            schema: SCHEMA,
+            setup_done: false,
+            language: "auto".into(),
             theme: "system".into(),
             bookmark_bar: false,
             home_button: false,
             home_url: String::new(),
-            newtab: "ovner".into(),
+            newtab: "blank".into(),
             default_zoom: 100,
+            force_dark: false,
+            user_css: String::new(),
             search_engine: "google".into(),
+            bangs: true,
+            custom_bangs: Vec::new(),
+            address_suggestions: true,
+            no_search: false,
             block_ads: true,
             cosmetic_filtering: true,
+            block_cookie_notices: true,
+            farbling: "standard".into(),
             strip_tracking_params: true,
+            de_amp: true,
+            debounce: true,
             https_only: true,
             gpc: true,
             block_telemetry: true,
+            block_privacy_sandbox: true,
+            cname_uncloak: false,
             auto_update_filters: true,
+            custom_lists: Vec::new(),
+            custom_rules: String::new(),
             exceptions: Vec::new(),
+            script_blocked: Vec::new(),
+            farbling_off: Vec::new(),
             clear_on_exit: false,
             save_history: true,
             deny_sensitive_permissions: false,
             webrtc_policy: "default".into(),
-            network_prediction: false,
+            network_prediction: true,
+            secure_dns: "off".into(),
             autoplay: true,
             password_manager: false,
             autofill: false,
+            spellcheck: false,
             smartscreen: false,
             edge_tracking_prevention: false,
             local_crash_reports: true,
+            disable_webgl: false,
+            popups_to_tabs: false,
+            disable_beforeunload: false,
             download_dir: String::new(),
             restore_tabs: true,
             autostart: false,
@@ -163,14 +214,59 @@ impl Default for Settings {
             v8_optimize_for_size: true,
             site_isolation: true,
             spare_renderer: false,
+            renderer_process_limit: 0,
+            process_per_site: false,
             no_gpu: false,
-            zero_copy: false,
+            zero_copy: true,
             parallel_downloading: true,
             extra_browser_args: String::new(),
             check_updates: true,
+            update_channel: "stable".into(),
             diagnostics: false,
-            devtools: true,
+            devtools: false,
+            extensions_enabled: false,
+            extension_dirs: Vec::new(),
         }
+    }
+}
+
+/// Alamat DoH untuk pilihan Secure DNS.
+pub fn doh_template(choice: &str) -> Option<String> {
+    match choice {
+        "cloudflare" => Some("https://cloudflare-dns.com/dns-query".into()),
+        "quad9" => Some("https://dns.quad9.net/dns-query".into()),
+        "adguard" => Some("https://dns.adguard-dns.com/dns-query".into()),
+        c if c.starts_with("https://") => Some(c.to_string()),
+        _ => None,
+    }
+}
+
+fn escape_param(v: &str) -> String {
+    url::form_urlencoded::byte_serialize(v.as_bytes()).collect()
+}
+
+pub fn norm_host(h: &str) -> String {
+    h.trim().trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// `host` (atau domain induknya) ada di daftar.
+pub fn host_in(list: &[String], host: &str) -> bool {
+    let host = norm_host(host);
+    !host.is_empty() && list.iter().any(|e| host == *e || host.ends_with(&format!(".{e}")))
+}
+
+/// Tambah/hapus `host` dari daftar. Mengembalikan true bila sekarang ada di daftar.
+pub fn toggle_host(list: &mut Vec<String>, host: &str) -> bool {
+    let host = norm_host(host);
+    if host.is_empty() {
+        return false;
+    }
+    if host_in(list, &host) {
+        list.retain(|e| !(host == *e || host.ends_with(&format!(".{e}"))));
+        false
+    } else {
+        list.push(host);
+        true
     }
 }
 
@@ -184,6 +280,7 @@ impl Settings {
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
+        s.migrate();
         s.normalize();
         s
     }
@@ -195,36 +292,67 @@ impl Settings {
         }
     }
 
+    /// Ubah bawaan lama yang ternyata keliru untuk pengguna versi sebelumnya.
+    fn migrate(&mut self) {
+        if self.schema < 1 {
+            // 0.3.0: disamakan dengan Brave Origin (repo flyingPenguinW/brave-origin).
+            self.network_prediction = true;
+            self.zero_copy = true;
+            self.newtab = "blank".into();
+            self.devtools = false;
+            self.spellcheck = false;
+        }
+        self.schema = SCHEMA;
+    }
+
     fn normalize(&mut self) {
-        if !["system", "light", "dark"].contains(&self.theme.as_str()) {
-            self.theme = "system".into();
-        }
-        if !["ovner", "blank"].contains(&self.newtab.as_str()) {
-            self.newtab = "ovner".into();
-        }
-        if !["default", "proxy_only"].contains(&self.webrtc_policy.as_str()) {
-            self.webrtc_policy = "default".into();
+        let pick = |v: &mut String, ok: &[&str], def: &str| {
+            if !ok.contains(&v.as_str()) {
+                *v = def.into();
+            }
+        };
+        pick(&mut self.language, &["auto", "id", "en"], "auto");
+        pick(&mut self.theme, &["system", "light", "dark"], "system");
+        pick(&mut self.newtab, &["blank", "ovner"], "blank");
+        pick(&mut self.webrtc_policy, &["default", "proxy_only"], "default");
+        pick(&mut self.farbling, &["off", "standard", "strict"], "standard");
+        pick(&mut self.update_channel, &["stable", "nightly"], "stable");
+        if !["off", "cloudflare", "quad9", "adguard"].contains(&self.secure_dns.as_str()) && !self.secure_dns.starts_with("https://") {
+            self.secure_dns = "off".into();
         }
         self.default_zoom = self.default_zoom.clamp(25, 500);
         self.sleep_tabs_minutes = self.sleep_tabs_minutes.min(24 * 60);
         self.trim_every_minutes = self.trim_every_minutes.min(24 * 60);
-        self.exceptions = self.exceptions.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
-        self.exceptions.dedup();
+        self.renderer_process_limit = self.renderer_process_limit.min(64);
+        for list in [&mut self.exceptions, &mut self.script_blocked, &mut self.farbling_off] {
+            *list = list.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
+            list.sort();
+            list.dedup();
+        }
+        let clean = |v: &mut Vec<String>| {
+            *v = v.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        };
+        clean(&mut self.custom_lists);
+        clean(&mut self.custom_bangs);
+        clean(&mut self.extension_dirs);
     }
 
     /// Ubah satu pengaturan dari halaman pengaturan (nilai JSON). Mengembalikan false bila
     /// kunci tidak dikenal atau nilainya salah jenis.
     pub fn set(&mut self, key: &str, value: &serde_json::Value) -> bool {
+        if key == "schema" {
+            return false;
+        }
         let Ok(mut map) = serde_json::to_value(&*self) else { return false };
         let Some(obj) = map.as_object_mut() else { return false };
         let Some(slot) = obj.get_mut(key) else { return false };
-        let same_kind = match (&*slot, value) {
-            (serde_json::Value::Bool(_), serde_json::Value::Bool(_)) => true,
-            (serde_json::Value::Number(_), serde_json::Value::Number(_)) => true,
-            (serde_json::Value::String(_), serde_json::Value::String(_)) => true,
-            (serde_json::Value::Array(_), serde_json::Value::Array(_)) => true,
-            _ => false,
-        };
+        let same_kind = matches!(
+            (&*slot, value),
+            (serde_json::Value::Bool(_), serde_json::Value::Bool(_))
+                | (serde_json::Value::Number(_), serde_json::Value::Number(_))
+                | (serde_json::Value::String(_), serde_json::Value::String(_))
+                | (serde_json::Value::Array(_), serde_json::Value::Array(_))
+        );
         if !same_kind {
             return false;
         }
@@ -251,24 +379,45 @@ impl Settings {
             "OptimizationHints",
             "AutofillServerCommunication",
         ];
-        let mut on: Vec<&str> = Vec::new();
+        let mut on: Vec<String> = Vec::new();
         let mut extra = String::new();
         if !self.spare_renderer {
             off.push("SpareRendererForSitePerProcess");
         }
         if !self.site_isolation {
-            off.push("IsolateOrigins");
-            off.push("site-per-process");
+            off.extend(["IsolateOrigins", "site-per-process"]);
             extra.push_str(" --disable-site-isolation-trials");
         }
         if !self.smartscreen {
             off.push("msSmartScreenProtection");
         }
+        if self.block_privacy_sandbox {
+            // Seperti Helium: API iklan Chromium dan FedCM dimatikan.
+            off.extend([
+                "BrowsingTopics",
+                "BrowsingTopicsXHR",
+                "Fledge",
+                "InterestGroupStorage",
+                "PrivacySandboxAdsAPIs",
+                "PrivacySandboxAdsAPIsOverride",
+                "AttributionReportingCrossAppWeb",
+                "ConversionMeasurement",
+                "SharedStorageAPI",
+                "FedCm",
+            ]);
+            extra.push_str(" --disable-field-trial-config");
+        }
         if self.simulate_memory_pressure {
-            on.push("msWebView2SimulateMemoryPressureWhenInactive");
+            on.push("msWebView2SimulateMemoryPressureWhenInactive".into());
         }
         if self.parallel_downloading {
-            on.push("ParallelDownloading");
+            on.push("ParallelDownloading".into());
+        }
+        if self.force_dark {
+            on.push("WebContentsForceDark".into());
+        }
+        if let Some(t) = doh_template(&self.secure_dns) {
+            on.push(format!("DnsOverHttps:Fallback/true/Templates/{}", escape_param(&t)));
         }
         if !self.network_prediction {
             extra.push_str(" --dns-prefetch-disable");
@@ -284,6 +433,15 @@ impl Settings {
         }
         if self.zero_copy {
             extra.push_str(" --enable-zero-copy");
+        }
+        if self.disable_webgl {
+            extra.push_str(" --disable-webgl");
+        }
+        if self.renderer_process_limit > 0 {
+            extra.push_str(&format!(" --renderer-process-limit={}", self.renderer_process_limit));
+        }
+        if self.process_per_site {
+            extra.push_str(" --process-per-site");
         }
         if self.webrtc_policy == "proxy_only" {
             extra.push_str(" --force-webrtc-ip-handling-policy=disable_non_proxied_udp");
@@ -318,28 +476,21 @@ impl Settings {
     }
 
     pub fn is_exception(&self, host: &str) -> bool {
-        let host = norm_host(host);
-        self.exceptions.iter().any(|e| host == *e || host.ends_with(&format!(".{e}")))
+        host_in(&self.exceptions, host)
     }
 
-    /// Nyalakan/matikan pemblokir di situs ini. Mengembalikan true bila sekarang dikecualikan.
     pub fn toggle_exception(&mut self, host: &str) -> bool {
-        let host = norm_host(host);
-        if host.is_empty() {
-            return false;
-        }
-        if self.is_exception(&host) {
-            self.exceptions.retain(|e| !(host == *e || host.ends_with(&format!(".{e}"))));
-            false
+        toggle_host(&mut self.exceptions, host)
+    }
+
+    /// Pengacakan sidik jari yang berlaku untuk situs ini ("off", "standard", "strict").
+    pub fn farbling_for(&self, host: &str) -> &str {
+        if host_in(&self.farbling_off, host) || self.is_exception(host) {
+            "off"
         } else {
-            self.exceptions.push(host);
-            true
+            &self.farbling
         }
     }
-}
-
-fn norm_host(h: &str) -> String {
-    h.trim().trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -353,7 +504,25 @@ mod tests {
         s.sleep_tabs_minutes = 5;
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), s);
-        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn migration_applies_brave_origin_defaults_once() {
+        // File 0.2.0: tanpa "schema", nilai lama keliru.
+        let old = r#"{"network_prediction":false,"zero_copy":false,"newtab":"ovner","devtools":true,"block_ads":false}"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.schema, 0);
+        s.migrate();
+        assert!(s.network_prediction && s.zero_copy && !s.devtools);
+        assert_eq!(s.newtab, "blank");
+        assert!(!s.block_ads, "setelan lain tidak disentuh");
+        assert_eq!(s.schema, SCHEMA);
+        // Setelah migrasi, pilihan pengguna dihormati.
+        s.newtab = "ovner".into();
+        let again: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let mut again = again;
+        again.migrate();
+        assert_eq!(again.newtab, "ovner");
     }
 
     #[test]
@@ -363,6 +532,7 @@ mod tests {
         assert!(!s.block_ads);
         assert!(!s.set("block_ads", &serde_json::json!("ya")));
         assert!(!s.set("tidak_ada", &serde_json::json!(true)));
+        assert!(!s.set("schema", &serde_json::json!(0)));
         assert!(s.set("default_zoom", &serde_json::json!(900)));
         assert_eq!(s.default_zoom, 500);
         assert!(s.set("theme", &serde_json::json!("ungu")));
@@ -373,15 +543,30 @@ mod tests {
 
     #[test]
     fn browser_args_follow_settings() {
-        let s = Settings::default();
-        let a = s.browser_args();
+        let a = Settings::default().browser_args();
         assert!(a.contains("SpareRendererForSitePerProcess"));
         assert!(a.contains("msWebView2SimulateMemoryPressureWhenInactive"));
         assert!(a.contains("--js-flags=--optimize-for-size"));
-        assert!(!a.contains("--disable-gpu"));
-        let s = Settings { no_gpu: true, site_isolation: false, webrtc_policy: "proxy_only".into(), extra_browser_args: "--foo".into(), ..Settings::default() };
+        assert!(a.contains("BrowsingTopics") && a.contains("--disable-field-trial-config"));
+        assert!(a.contains("--enable-zero-copy"));
+        assert!(!a.contains("--dns-prefetch-disable"));
+        assert!(!a.contains("--disable-gpu") && !a.contains("DnsOverHttps"));
+        let s = Settings {
+            no_gpu: true,
+            site_isolation: false,
+            webrtc_policy: "proxy_only".into(),
+            secure_dns: "quad9".into(),
+            renderer_process_limit: 4,
+            force_dark: true,
+            extra_browser_args: "--foo".into(),
+            ..Settings::default()
+        };
         let a = s.browser_args();
-        assert!(a.contains("--disable-gpu") && a.contains("site-per-process") && a.contains("disable_non_proxied_udp") && a.ends_with("--foo"));
+        assert!(a.contains("--disable-gpu") && a.contains("site-per-process") && a.contains("disable_non_proxied_udp"));
+        assert!(a.contains("DnsOverHttps:Fallback/true/Templates/https%3A%2F%2Fdns.quad9.net%2Fdns-query"));
+        assert!(a.contains("--renderer-process-limit=4") && a.contains("WebContentsForceDark") && a.ends_with("--foo"));
+        // Hanya satu --enable-features (Chromium memakai yang terakhir).
+        assert_eq!(a.matches("--enable-features=").count(), 1);
     }
 
     #[test]
@@ -393,13 +578,14 @@ mod tests {
     }
 
     #[test]
-    fn exceptions_match_subdomains_and_toggle() {
+    fn per_site_lists() {
         let mut s = Settings::default();
         assert!(s.toggle_exception("www.kompas.com"));
-        assert!(s.is_exception("kompas.com"));
         assert!(s.is_exception("money.kompas.com"));
         assert!(!s.is_exception("notkompas.com"));
         assert!(!s.toggle_exception("money.kompas.com"));
-        assert!(!s.is_exception("kompas.com"));
+        assert!(toggle_host(&mut s.farbling_off, "bank.co.id"));
+        assert_eq!(s.farbling_for("ib.bank.co.id"), "off");
+        assert_eq!(s.farbling_for("kompas.com"), "standard");
     }
 }
