@@ -1,0 +1,17 @@
+[2026-11-16T07:48:35Z INFO  lumen::privacy] Filter iklan disusun dari 5 daftar (84.389492ms)
+[2026-11-16T07:48:37Z INFO  lumen::app] Diblokir: [script] https://applets.ebxcdn.com/ebx.js
+[2026-11-16T07:48:37Z INFO  lumen::app] Diblokir: [script] https://micro.rubiconproject.com/prebid/dynamic/11530.js
+[2026-11-16T07:48:37Z INFO  lumen::app] Diblokir: [script] https://securepubads.g.doubleclick.net/tag/js/gpt.js
+[2026-11-16T07:48:39Z INFO  lumen::app] Diblokir: [script] https://applets.ebxcdn.com/ebx.js
+[2026-11-16T07:48:39Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:39Z INFO  lumen::app] Diblokir: [script] https://micro.rubiconproject.com/prebid/dynamic/11530.js
+[2026-11-16T07:48:40Z INFO  lumen::app] Diblokir: [script] https://securepubads.g.doubleclick.net/tag/js/gpt.js
+[2026-11-16T07:48:42Z INFO  lumen::app] Diblokir: [script] https://newrevive.detik.com/delivery/asyncjs.php
+[2026-11-16T07:48:42Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-WG2CB3N
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
+[2026-11-16T07:48:44Z INFO  lumen::app] Diblokir: [script] https://www.googletagmanager.com/gtm.js?id=GTM-NG6BTJ
