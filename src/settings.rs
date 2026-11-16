@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 
 fn zero() -> u32 {
     0
@@ -319,7 +319,6 @@ pub const PRESETS: &[(&str, &str, &str, &str)] = &[
     ("cname_uncloak", "false", "true", "true"),
     ("block_local_network", "true", "true", "true"),
     ("referrer_policy", "\"default\"", "\"origin\"", "\"none\""),
-    ("secure_dns", "\"off\"", "\"quad9\"", "\"mullvad_adblock\""),
     ("webrtc_policy", "\"default\"", "\"proxy_only\"", "\"proxy_only\""),
     ("deny_sensitive_permissions", "false", "false", "true"),
     ("letterboxing", "false", "false", "true"),
@@ -410,6 +409,16 @@ impl Settings {
             self.password_manager = true;
             self.password_autosignin = true;
             self.autofill = true;
+        }
+        if self.schema < 4 && self.secure_dns == ["off", "quad9", "mullvad_adblock"][match self.preset.as_str() {
+            "strict" => 1,
+            "max" => 2,
+            _ => 0,
+        }] {
+            // 0.5.1: preset tidak lagi mengganti DNS. DNS yang dipasang preset Ketat/Maksimal
+            // dikembalikan ke DNS Windows, karena sebagian jaringan (kantor, ISP) memaksa
+            // YouTube Restricted Mode (error 151) atau memblokir DNS aman.
+            self.secure_dns = "off".into();
         }
         if self.schema < 2 {
             // 0.3.1: "Matikan GPU" menjadi pilihan mode GPU.
@@ -779,7 +788,14 @@ mod tests {
         assert!(s.apply_preset("max"));
         assert_eq!((s.preset.as_str(), s.farbling.as_str(), s.security_level.as_str()), ("max", "strict", "safer"));
         // Level keamanan tidak lagi mematikan JIT (YouTube jadi lambat/hitam); itu setelan sendiri.
-        assert!(!s.browser_args().contains("--jitless") && s.browser_args().contains("adblock.dns.mullvad.net"));
+        // Preset tidak menyentuh DNS (jaringan tertentu memaksa YouTube Restricted Mode).
+        assert!(!s.browser_args().contains("--jitless") && !s.browser_args().contains("DnsOverHttps"));
+        let mut m: Settings = serde_json::from_str(r#"{"schema":3,"preset":"max","secure_dns":"mullvad_adblock"}"#).unwrap();
+        m.migrate();
+        assert_eq!(m.secure_dns, "off");
+        let mut k: Settings = serde_json::from_str(r#"{"schema":3,"preset":"custom","secure_dns":"quad9"}"#).unwrap();
+        k.migrate();
+        assert_eq!(k.secure_dns, "quad9");
         assert!(Settings { disable_jit: true, ..Settings::default() }.browser_args().contains("--jitless"));
         assert!(s.set("letterboxing", &serde_json::json!(false)));
         assert_eq!(s.preset, "custom");
