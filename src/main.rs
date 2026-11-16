@@ -489,7 +489,7 @@ impl App {
                 .with_browser_accelerator_keys(true)
                 .with_default_context_menus(true)
                 .with_theme(wry_theme(&s.theme));
-            if let (Some(env), false) = (&self.env, private) {
+            if let Some(env) = &self.env {
                 b = b.with_environment(env.clone());
             }
             b

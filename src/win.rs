@@ -192,7 +192,7 @@ mod imp {
                 let mut p = Proc { pid, is_self: pid == me, ..Default::default() };
                 let mut pmc = PROCESS_MEMORY_COUNTERS_EX2 { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32, ..Default::default() };
                 if GetProcessMemoryInfo(h, &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS, pmc.cb).is_ok() {
-                    p.working = if pmc.PrivateWorkingSetSize > 0 { pmc.PrivateWorkingSetSize } else { pmc.WorkingSetSize } as u64;
+                    p.working = (if pmc.PrivateWorkingSetSize > 0 { pmc.PrivateWorkingSetSize } else { pmc.WorkingSetSize }) as u64;
                     p.commit = pmc.PrivateUsage as u64;
                 }
                 let _ = CloseHandle(h);
