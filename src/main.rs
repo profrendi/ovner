@@ -13,6 +13,8 @@ mod import;
 mod install;
 #[cfg(windows)]
 mod netfilter;
+mod antiblock;
+mod usage;
 mod settings;
 mod vault;
 mod shields;
@@ -56,6 +58,7 @@ const BOOKMARKS_HTML: &str = include_str!("ui/bookmarks.html");
 const TASKS_HTML: &str = include_str!("ui/tasks.html");
 const SETUP_HTML: &str = include_str!("ui/setup.html");
 const HTTPS_HTML: &str = include_str!("ui/https.html");
+const DIAGNOSTICS_HTML: &str = include_str!("ui/diagnostics.html");
 const PASSWORDS_HTML: &str = include_str!("ui/passwords.html");
 const DOWNLOADS_HTML: &str = include_str!("ui/downloads.html");
 
@@ -217,7 +220,12 @@ enum UserEvent {
     /// Proses WebView2 tab ini crash/macet.
     ProcFailed(u64, win::ProcFail),
     /// Hasil daftar proses WebView2 (task manager per tab).
-    ProcInfos(Vec<win::ProcExt>),
+    /// Hasil CDP Performance.getMetrics untuk satu tab (JSON).
+    TabMetrics(u64, String),
+    /// Hasil uji diagnostik di latar.
+    DiagResult(String, bool, String),
+    /// Ikon situs hasil unduhan untuk bookmark (host, isi berkas).
+    IconFetched(String, Vec<u8>),
     /// Navigasi halaman utama selesai (berhasil?, kode galat WebView2).
     NavDone(u64, bool, i32),
     /// Alamat http:// di tab ini baru saja dinaikkan ke https.
@@ -263,6 +271,13 @@ struct Tab {
     scripts_on: Rc<Cell<bool>>,
     /// Generasi skrip halaman saat tab ini dibangun (dibangun ulang bila setelan berubah).
     script_gen: u64,
+    /// Pemakaian tab dari protokol DevTools: memori JavaScript (byte) dan persen CPU.
+    js_heap: u64,
+    tab_cpu: f64,
+    perf_prev: Option<(f64, Instant)>,
+    perf_on: bool,
+    /// Sejak kapan tab ini ditinggal sambil memutar media (setelan "berhenti setelah N menit").
+    media_hidden_at: Option<Instant>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -289,7 +304,21 @@ struct App {
     window: Window,
     toolbar: WebView,
     /// Permintaan daftar proses WebView2 yang sedang berjalan (task manager).
-    proc_req: Option<Instant>,
+    /// Pengukur RAM/CPU/GPU proses Ovner + WebView2.
+    sampler: usage::Sampler,
+    stats: Vec<usage::ProcStat>,
+    stats_at: Instant,
+    /// Port proxy anti-blokir (bila menyala).
+    antiblock_port: Option<u16>,
+    /// Galat pembuatan environment WebView2 sendiri (diagnostik).
+    env_error: Option<String>,
+    /// Kapan ikon bookmark yang belum ada diunduh berikutnya.
+    icons_due: Option<Instant>,
+    icons_tried: HashSet<String>,
+    /// Ovner harus keluar (bukan buka ulang), mis. setelah dihapus dari Pengaturan.
+    quit_requested: bool,
+    /// Hasil uji diagnostik terakhir: nama → (berhasil, keterangan).
+    diag: Vec<(String, bool, String)>,
     /// Daftar tab vertikal di kiri (bila dinyalakan).
     sidebar: Option<WebView>,
     toolbar_ready: bool,
@@ -331,7 +360,7 @@ struct App {
     split: Option<u64>,
     /// Cache CNAME bersama untuk semua tab.
     cname: Arc<Mutex<HashMap<String, Option<String>>>>,
-    proc_infos: Vec<win::ProcExt>,
+
     last_unresponsive: HashMap<u64, Instant>,
     extensions_loaded: bool,
     /// Tersembunyi di tray.
@@ -368,9 +397,31 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "setup" => page_response(SETUP_HTML),
         "https" => page_response(HTTPS_HTML),
         "passwords" => page_response(PASSWORDS_HTML),
+        "diagnostics" => page_response(DIAGNOSTICS_HTML),
         "downloads" => page_response(DOWNLOADS_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
+}
+
+/// Tab sedang memutar suara (video/musik).
+fn playing_audio(wv: &WebView) -> bool {
+    #[cfg(windows)]
+    {
+        netfilter::is_playing_audio(wv)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = wv;
+        false
+    }
+}
+
+/// Jeda semua video/musik di halaman (termasuk iframe yang bisa dijangkau).
+fn pause_media(wv: &WebView) {
+    let _ = wv.evaluate_script(
+        "(function(){const p=(d)=>{try{d.querySelectorAll('video,audio').forEach(m=>{try{m.pause()}catch(e){}});\
+         d.querySelectorAll('iframe').forEach(f=>{try{p(f.contentDocument)}catch(e){}})}catch(e){}};p(document)})()",
+    );
 }
 
 fn set_memory_low(wv: &WebView, low: bool) {
@@ -423,6 +474,8 @@ fn build_menus(lang: Lang) -> Menus {
         &item("clear", "m.clear"),
         &item("data", "m.data"),
         &item("devtools", "m.devtools"),
+        &PredefinedMenuItem::separator(),
+        &item("diagnostics", "m.diagnostics"),
     ]);
     let _ = main.append_items(&[
         &item("newtab", "m.newtab"),
@@ -578,6 +631,11 @@ impl App {
             page_query: String::new(),
             scripts_on: Rc::new(Cell::new(true)),
             script_gen: 0,
+            js_heap: 0,
+            tab_cpu: 0.0,
+            perf_prev: None,
+            perf_on: false,
+            media_hidden_at: None,
         }
     }
 
@@ -846,11 +904,13 @@ impl App {
         }
         let suspend = self.settings.borrow().suspend_hidden_tabs;
         let low = self.settings.borrow().low_memory_when_hidden;
+        let media_policy = self.settings.borrow().background_media.clone();
         let rects: Vec<Rect> = (0..self.tabs.len()).map(|j| self.rect_for(j)).collect();
         for (j, t) in self.tabs.iter_mut().enumerate() {
             if let Some(wv) = &t.webview {
                 let on = j == i || Some(j) == partner;
                 if on {
+                    t.media_hidden_at = None;
                     let _ = wv.set_bounds(rects[j]);
                     win::resume(wv);
                     t.suspended = false;
@@ -861,7 +921,16 @@ impl App {
                     if low {
                         set_memory_low(wv, true);
                     }
-                    if suspend && !t.loading {
+                    // Media yang sedang diputar mengikuti setelan "Media di tab latar".
+                    let playing = playing_audio(wv);
+                    if playing && media_policy != "pause" {
+                        if media_policy == "timer" && t.media_hidden_at.is_none() {
+                            t.media_hidden_at = Some(now);
+                        }
+                    } else if suspend && !t.loading {
+                        if playing {
+                            pause_media(wv);
+                        }
                         win::try_suspend(wv);
                         t.suspended = true;
                     }
@@ -986,6 +1055,13 @@ impl App {
                 }
                 if s.suspend_hidden_tabs && self.in_tray {
                     let _ = wv.set_visible(false);
+                    // Musik tetap berputar di tray bila setelan media tidak "langsung berhenti".
+                    if playing_audio(wv) && s.background_media != "pause" {
+                        if s.background_media == "timer" && t.media_hidden_at.is_none() {
+                            t.media_hidden_at = Some(Instant::now());
+                        }
+                        continue;
+                    }
                     win::try_suspend(wv);
                     t.suspended = true;
                 }
@@ -1050,8 +1126,7 @@ impl App {
             if self.is_shown(j) || t.webview.is_none() || t.last_active.elapsed() < limit {
                 continue;
             }
-            #[cfg(windows)]
-            if t.webview.as_ref().is_some_and(netfilter::is_playing_audio) {
+            if t.webview.as_ref().is_some_and(playing_audio) && self.settings.borrow().background_media != "pause" {
                 continue;
             }
             self.sleep_tab(j);
@@ -1124,6 +1199,7 @@ impl App {
             "dlBubble": self.dl_bubble,
             "pwOffer": self.pw_offer.as_ref().map(|(u, user, _, update)| json!({"site": vault::site_of(u), "user": user, "update": update})),
             "toolbarCss": s.toolbar_css,
+            "usage": self.usage_view(&s),
         });
         drop(s);
         let text = state.to_string();
@@ -1328,41 +1404,29 @@ impl App {
                 json!({ "theme": theme, "lang": lang, "bookmarks": self.store.bookmarks, "folders": self.store.all_folders(), "icons": icons, "browsers": browsers })
             }
             "tasks" => {
-                let pids: Vec<u32> = self.proc_infos.iter().map(|p| p.pid).collect();
-                let snap = win::process_snapshot(&pids);
-                let mem: HashMap<u32, (u64, u64)> = snap.iter().map(|p| (p.pid, (p.working, p.commit))).collect();
-                // RAM per tab: proses renderer yang melayani halaman tab itu (seperti task
-                // manager Chrome). Proses yang melayani beberapa tab ditandai "bersama".
-                let same = |a: &str, b: &str| a == b || (host_of(a).is_some() && host_of(a) == host_of(b));
                 let tabs: Vec<Value> = self
                     .tabs
                     .iter()
                     .enumerate()
                     .map(|(j, t)| {
-                        let procs: Vec<&win::ProcExt> = if t.webview.is_some() {
-                            self.proc_infos.iter().filter(|p| p.kind == "renderer" && p.mains.iter().any(|m| same(m, &t.url))).collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let ram: u64 = procs.iter().filter_map(|p| mem.get(&p.pid)).map(|m| m.0).sum();
-                        let shared = procs.iter().any(|p| p.mains.len() > 1);
                         json!({
                             "id": t.id, "title": t.title, "url": display_url(&t.url), "active": self.is_shown(j),
                             "sleeping": t.webview.is_none(), "suspended": t.suspended, "blocked": t.blocked.get(),
-                            "zoom": t.zoom, "private": t.private, "ram": ram, "shared": shared,
-                            "pids": procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
+                            "zoom": t.zoom, "private": t.private, "js": t.js_heap, "cpu": t.tab_cpu,
+                            "media": t.media_hidden_at.is_some() || t.webview.as_ref().is_some_and(playing_audio),
                         })
                     })
                     .collect();
-                let kinds: HashMap<u32, &str> = self.proc_infos.iter().map(|p| (p.pid, p.kind)).collect();
-                let procs: Vec<Value> = snap
+                let procs: Vec<Value> = self
+                    .stats
                     .iter()
-                    .map(|p| {
-                        let kind = if p.is_self { "ovner" } else { kinds.get(&p.pid).copied().unwrap_or("webview2") };
-                        json!({"pid": p.pid, "working": p.working, "commit": p.commit, "kind": kind})
-                    })
+                    .map(|p| json!({"pid": p.pid, "kind": p.kind, "working": p.working, "commit": p.commit, "cpu": p.cpu, "gpu": p.gpu, "gpuMem": p.gpu_mem}))
                     .collect();
                 json!({ "theme": theme, "lang": lang, "tabs": tabs, "procs": procs })
+            }
+            "diagnostics" => {
+                let v = self.diagnostics_report();
+                json!({ "theme": theme, "lang": lang, "report": v })
             }
             _ => return,
         };
@@ -1371,20 +1435,231 @@ impl App {
         }
     }
 
-    /// Minta daftar proses WebView2 terbaru (untuk task manager per tab).
-    fn refresh_proc_infos(&mut self) {
-        // Paling sering tiap 5 detik, dan tidak menumpuk permintaan yang belum dijawab.
-        if self.proc_req.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+    /// Ukur RAM/CPU/GPU semua proses, dan minta metrik tiap tab yang tampil lewat DevTools.
+    fn sample_usage(&mut self) {
+        if self.stats_at.elapsed() < Duration::from_millis(1500) && !self.stats.is_empty() {
             return;
         }
-        self.proc_req = Some(Instant::now());
-        #[cfg(windows)]
-        {
-            use wry::WebViewExtWindows;
-            let env = self.env.clone().unwrap_or_else(|| self.toolbar.environment());
-            let p = self.proxy.clone();
-            win::request_process_infos(&env, move |v| send(&p, UserEvent::ProcInfos(v)));
+        self.stats_at = Instant::now();
+        self.stats = self.sampler.sample(true);
+        let tasks = self.tasks_open();
+        for j in 0..self.tabs.len() {
+            let shown = self.is_shown(j);
+            let t = &mut self.tabs[j];
+            let Some(wv) = &t.webview else { continue };
+            if t.suspended || (!shown && !tasks) {
+                continue;
+            }
+            if !t.perf_on {
+                win::cdp(wv, "Performance.enable", "{}");
+                t.perf_on = true;
+            }
+            let (p, id) = (self.proxy.clone(), t.id);
+            win::cdp_call(wv, "Performance.getMetrics", "{}", move |r| send(&p, UserEvent::TabMetrics(id, r)));
         }
+    }
+
+    fn tasks_open(&self) -> bool {
+        self.tabs.iter().any(|t| internal_page(&t.url) == Some("tasks") && t.webview.is_some())
+    }
+
+    /// Perlu mengukur pemakaian? (indikator toolbar menyala atau task manager terbuka)
+    fn usage_wanted(&self) -> bool {
+        let s = self.settings.borrow();
+        s.usage_overlay_app || s.usage_overlay_tab || self.tasks_open()
+    }
+
+    /// Hentikan media di tab yang ditinggal lebih lama dari setelan "berhenti setelah N menit".
+    fn check_background_media(&mut self) {
+        let (policy, mins) = {
+            let s = self.settings.borrow();
+            (s.background_media.clone(), s.background_media_minutes)
+        };
+        let limit = Duration::from_secs(mins as u64 * 60);
+        let suspend = self.settings.borrow().suspend_hidden_tabs;
+        for j in 0..self.tabs.len() {
+            if self.is_shown(j) && !self.in_tray {
+                self.tabs[j].media_hidden_at = None;
+                continue;
+            }
+            let t = &mut self.tabs[j];
+            let Some(since) = t.media_hidden_at else { continue };
+            if policy == "timer" && since.elapsed() < limit {
+                continue;
+            }
+            if policy == "keep" {
+                continue;
+            }
+            t.media_hidden_at = None;
+            if let Some(wv) = &t.webview {
+                pause_media(wv);
+                if suspend {
+                    win::try_suspend(wv);
+                    t.suspended = true;
+                }
+            }
+        }
+    }
+
+    /// Angka untuk indikator pemakaian di toolbar.
+    fn usage_view(&self, s: &Settings) -> Value {
+        if !(s.usage_overlay_app || s.usage_overlay_tab) || self.stats.is_empty() {
+            return Value::Null;
+        }
+        let tot = usage::total(&self.stats);
+        let app = s.usage_overlay_app.then(|| json!({"ram": tot.working, "cpu": tot.cpu, "gpu": tot.gpu, "procs": tot.procs}));
+        let tab = s
+            .usage_overlay_tab
+            .then(|| self.tabs.get(self.active).filter(|t| t.webview.is_some()).map(|t| json!({"js": t.js_heap, "cpu": t.tab_cpu})))
+            .flatten();
+        json!({"app": app, "tab": tab})
+    }
+
+    /// Laporan lengkap untuk halaman diagnostik dan "Salin laporan".
+    fn diagnostics_report(&self) -> Value {
+        let s = self.settings.borrow();
+        let dir = data_dir();
+        let lists: Vec<Value> = std::fs::read_dir(dir.join("filters"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                let age = m.modified().ok().and_then(|t| t.elapsed().ok()).map(|d| d.as_secs() / 3600).unwrap_or(0);
+                Some(json!({"name": e.file_name().to_string_lossy(), "kb": m.len() / 1024, "ageHours": age}))
+            })
+            .collect();
+        let resources = blocker::load_resources(dir).len();
+        let blocked = self.blocker.borrow().check("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", "https://contoh.id/", "script").block;
+        let vault_ok = vault::self_test();
+        let log_tail: Vec<String> = std::fs::read_to_string(dir.join("ovner.log"))
+            .unwrap_or_default()
+            .lines()
+            .rev()
+            .take(150)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let crashes: Vec<&String> = log_tail.iter().filter(|l| l.contains("CRASH") || l.contains("PANIC") || l.contains("gagal")).collect();
+        let total = usage::total(&self.stats);
+        let exe = std::env::current_exe().unwrap_or_default();
+        json!({
+            "version": update::display_version(),
+            "channel": s.update_channel,
+            "engine": wry::webview_version().unwrap_or_else(|_| "?".into()),
+            "os": win::os_version(),
+            "exe": exe.display().to_string(),
+            "data": dir.display().to_string(),
+            "portable": install::is_portable(&exe, false),
+            "envCustom": self.env_error.is_none(),
+            "envError": self.env_error,
+            "args": self.browser_args,
+            "preset": s.preset, "gpuMode": s.gpu_mode, "dns": s.secure_dns, "security": s.security_level,
+            "antiblock": s.antiblock, "antiblockPort": self.antiblock_port,
+            "antiblockConns": antiblock::CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            "dohOk": antiblock::DOH_OK.load(std::sync::atomic::Ordering::Relaxed),
+            "dohFail": antiblock::DOH_FAIL.load(std::sync::atomic::Ordering::Relaxed),
+            "blockerFull": self.blocker.borrow().full, "blockerTest": blocked, "lists": lists, "resources": resources,
+            "vault": vault_ok, "bookmarks": self.store.bookmarks.len(), "icons": self.store.icon_count(),
+            "tabs": self.tabs.len(), "tabsLive": self.tabs.iter().filter(|t| t.webview.is_some()).count(),
+            "procs": total.procs, "ram": total.working, "cpu": total.cpu, "gpu": total.gpu, "gpuMem": total.gpu_mem,
+            "kinds": self.stats.iter().map(|p| format!("{}:{}", p.kind, p.pid)).collect::<Vec<_>>(),
+            "tests": self.diag.iter().map(|(n, ok, m)| json!({"name": n, "ok": ok, "msg": m})).collect::<Vec<_>>(),
+            "crashes": crashes,
+            "log": log_tail,
+        })
+    }
+
+    /// Tombol di Pengaturan → Sistem dan halaman Diagnostik. Mengembalikan true bila Ovner keluar.
+    fn page_action(&mut self, i: usize, name: &str) -> bool {
+        let exe = std::env::current_exe().unwrap_or_default();
+        match name {
+            "open-app-folder" => win::open_folder(exe.parent().unwrap_or(Path::new("."))),
+            "open-data-folder" => win::open_folder(data_dir()),
+            "open-log" => {
+                let p = data_dir().join("ovner.log");
+                win::open_path(&p.display().to_string(), false);
+            }
+            "diagnostics" => self.open_internal("diagnostics"),
+            "run-tests" => {
+                self.run_diag_tests();
+                self.push_page_state(i);
+            }
+            "copy-report" => {
+                let report = serde_json::to_string_pretty(&self.diagnostics_report()).unwrap_or_default();
+                win::set_clipboard(&report);
+                win::info(t(self.lang, "d.report_copied"));
+            }
+            "uninstall" => {
+                if !win::confirm(t(self.lang, "d.uninstall")) {
+                    return false;
+                }
+                let portable = install::is_portable(&exe, false);
+                let _ = win::set_autostart(false, &exe);
+                install::remove_integration();
+                if install::is_installed_copy(&exe) {
+                    win::delete_dirs_later(&[data_dir(), &install::install_dir()]);
+                    win::info(t(self.lang, "d.uninstalled"));
+                } else {
+                    let _ = portable;
+                    win::delete_dirs_later(&[data_dir()]);
+                    win::info(t(self.lang, "d.uninstalled_portable"));
+                }
+                log("dihapus dari pengaturan");
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Unduh ikon situs untuk bookmark yang belum punya ikon (sekali per sesi per situs).
+    fn fetch_missing_icons(&mut self) {
+        let hosts: Vec<String> = self.store.hosts_without_icon().into_iter().filter(|h| !self.icons_tried.contains(h)).take(150).collect();
+        if hosts.is_empty() {
+            return;
+        }
+        self.icons_tried.extend(hosts.iter().cloned());
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            let tmp = std::env::temp_dir().join(format!("ovner-ikon-{}.bin", std::process::id()));
+            for host in hosts {
+                for url in [format!("https://{host}/favicon.ico"), format!("https://icons.duckduckgo.com/ip3/{host}.ico")] {
+                    let _ = std::fs::remove_file(&tmp);
+                    if win::download(&url, &tmp).is_ok() {
+                        let bytes = std::fs::read(&tmp).unwrap_or_default();
+                        if store::icon_mime(&bytes).is_some() && bytes.len() <= 64 * 1024 {
+                            send(&p, UserEvent::IconFetched(host.clone(), bytes));
+                            break;
+                        }
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&tmp);
+        });
+    }
+
+    /// Uji yang butuh jaringan dijalankan di latar.
+    fn run_diag_tests(&mut self) {
+        self.diag.clear();
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            let (ok, msg) = antiblock::self_test();
+            send(&p, UserEvent::DiagResult("doh".into(), ok, msg));
+            let tmp = std::env::temp_dir().join("ovner-uji-unduh.txt");
+            let r = win::download("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt", &tmp);
+            let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&tmp);
+            send(&p, UserEvent::DiagResult("download".into(), r.is_ok() && size > 1000, format!("{r:?}, {size} byte")));
+            let up = update::latest_url("stable");
+            let tmp2 = std::env::temp_dir().join("ovner-uji-update.json");
+            let r2 = win::download(&up, &tmp2);
+            let body = std::fs::read_to_string(&tmp2).unwrap_or_default();
+            let _ = std::fs::remove_file(&tmp2);
+            send(&p, UserEvent::DiagResult("update".into(), r2.is_ok() && body.contains("version"), body.chars().take(120).collect()));
+        });
     }
 
     /// Segarkan semua tab yang menampilkan halaman internal `name`.
@@ -1473,6 +1748,12 @@ impl App {
                     }
                 }
                 self.refresh_pages("passwords");
+            }
+            "usage_overlay_app" | "usage_overlay_tab" => {
+                if self.usage_wanted() {
+                    self.stats_at = Instant::now() - Duration::from_secs(5);
+                    self.sample_usage();
+                }
             }
             "letterboxing" | "vertical_tabs" => {
                 self.ensure_sidebar();
@@ -1568,6 +1849,8 @@ impl App {
             let n = self.store.add_bookmarks(&import::read_bookmarks(&file));
             msgs.push(tf(self.lang, "d.imported", &[("n", &n.to_string()), ("b", &name)]));
         }
+        // Ikon situs bookmark baru diunduh sebentar lagi.
+        self.icons_due = Some(Instant::now() + Duration::from_secs(3));
         self.refresh_pages("bookmarks");
         self.last_render_key.clear();
         self.render();
@@ -1724,6 +2007,12 @@ impl App {
                 if win::confirm(t(self.lang, "d.pw_clear")) {
                     self.vault.clear();
                     self.push_page_state(i);
+                }
+            }
+            "action" => {
+                let name = msg["name"].as_str().unwrap_or("");
+                if self.page_action(i, name) {
+                    self.quit_requested = true;
                 }
             }
             "allow-http" => {
@@ -2366,7 +2655,7 @@ impl App {
                 self.last_render_key.clear();
                 self.render();
             }
-            "bookmarks" | "history" | "settings" | "tasks" | "passwords" => self.open_internal(id),
+            "bookmarks" | "history" | "settings" | "tasks" | "passwords" | "diagnostics" => self.open_internal(id),
             "shield-settings" => self.open_internal("settings"),
             "shield-allow-js" => {
                 let host = self.tabs.get(self.active).and_then(|t| host_of(&t.url));
@@ -2775,6 +3064,7 @@ fn main() {
     let data = std::env::var_os("OVNER_DATA").map(PathBuf::from).unwrap_or_else(|| install::data_dir(&exe, portable));
     let _ = std::fs::create_dir_all(&data);
     let _ = DATA_DIR.set(data);
+    win::install_crash_logger(&data_dir().join("ovner.log"));
     if install::is_installed_copy(&exe) {
         install::ensure_integration(&exe, false);
     }
@@ -2859,7 +3149,26 @@ fn main() {
         .map_err(|e| log(&format!("tray: {e}")))
         .ok();
 
-    let args_str = settings.browser_args();
+    usage::set_user_data_dir(&data_dir().join("WebView2"));
+    let mut args_str = settings.browser_args();
+    // Anti-blokir: proxy lokal harus jalan sebelum WebView2 dibuat (port masuk argumen).
+    let antiblock_port = if settings.antiblock {
+        match antiblock::start() {
+            Ok(port) => {
+                log(&format!("anti-blokir aktif di 127.0.0.1:{port}"));
+                args_str.push_str(&antiblock::browser_args(port));
+                Some(port)
+            }
+            Err(e) => {
+                log(&format!("anti-blokir gagal dijalankan: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[allow(unused_mut)]
+    let mut env_error: Option<String> = None;
     let mut web_context = WebContext::new(Some(data_dir().join("WebView2")));
     #[cfg(windows)]
     let env = match win::create_environment(
@@ -2872,6 +3181,7 @@ fn main() {
         Ok(e) => Some(e),
         Err(e) => {
             log(&format!("environment WebView2 sendiri gagal ({e}); memakai bawaan wry"));
+            env_error = Some(e.to_string());
             None
         }
     };
@@ -2945,10 +3255,17 @@ fn main() {
         script_gen: 0,
         split: None,
         cname: Arc::new(Mutex::new(HashMap::new())),
-        proc_infos: Vec::new(),
         last_unresponsive: HashMap::new(),
         extensions_loaded: false,
-        proc_req: None,
+        sampler: usage::Sampler::new(),
+        stats: Vec::new(),
+        stats_at: Instant::now(),
+        antiblock_port,
+        env_error,
+        diag: Vec::new(),
+        quit_requested: false,
+        icons_due: Some(Instant::now() + Duration::from_secs(20)),
+        icons_tried: HashSet::new(),
     };
     app.ensure_sidebar();
     // Unduhan dari riwayat mendapat id sendiri (id unduhan baru dimulai dari 1).
@@ -3023,17 +3340,32 @@ fn main() {
                         app.next_trim = if app.background && every > 0 { Some(Instant::now() + Duration::from_secs(every as u64 * 60)) } else { None };
                     }
                 }
+                if app.usage_wanted() {
+                    app.sample_usage();
+                }
+                app.check_background_media();
+                if app.icons_due.is_some_and(|d| Instant::now() >= d) {
+                    app.icons_due = None;
+                    app.fetch_missing_icons();
+                }
                 if app.settings.borrow().diagnostics && app.last_diag.elapsed() >= DIAG_EVERY {
                     app.last_diag = Instant::now();
-                    let pids: Vec<u32> = app.proc_infos.iter().map(|p| p.pid).collect();
-                    let procs = win::process_snapshot(&pids);
-                    let total: u64 = procs.iter().map(|p| p.working).sum();
-                    log(&format!("RAM: {} MB working set, {} proses, {} tab ({} hidup)", total / 1_048_576, procs.len(), app.tabs.len(), app.tabs.iter().filter(|t| t.webview.is_some()).count()));
+                    if app.stats.is_empty() || app.stats_at.elapsed() > Duration::from_secs(10) {
+                        app.stats = app.sampler.sample(false);
+                    }
+                    let t = usage::total(&app.stats);
+                    let kinds: Vec<String> = app.stats.iter().map(|p| p.kind.clone()).collect();
+                    log(&format!(
+                        "RAM: {} MB, CPU {:.1}%, {} proses [{}], {} tab ({} hidup)",
+                        t.working / 1_048_576,
+                        t.cpu,
+                        t.procs,
+                        kinds.join(","),
+                        app.tabs.len(),
+                        app.tabs.iter().filter(|t| t.webview.is_some()).count()
+                    ));
                 }
                 app.store.flush();
-                if app.tabs.iter().any(|t| internal_page(&t.url) == Some("tasks") && t.webview.is_some()) {
-                    app.refresh_proc_infos();
-                }
                 app.refresh_pages("tasks");
                 app.render();
             }
@@ -3140,9 +3472,42 @@ fn main() {
                         }
                     }
                 }
-                UserEvent::ProcInfos(v) => {
-                    app.proc_req = None;
-                    app.proc_infos = v;
+                UserEvent::IconFetched(host, bytes) => {
+                    if app.store.set_icon_host(&host, &bytes) {
+                        app.last_render_key.clear();
+                        app.render();
+                    }
+                }
+                UserEvent::DiagResult(name, ok, msg) => {
+                    log(&format!("diagnostik {name}: {} {msg}", if ok { "OK" } else { "GAGAL" }));
+                    app.diag.retain(|d| d.0 != name);
+                    app.diag.push((name, ok, msg));
+                    app.refresh_pages("diagnostics");
+                }
+                UserEvent::TabMetrics(id, json_text) => {
+                    if let Some(i) = app.tab_index(id) {
+                        let v: Value = serde_json::from_str(&json_text).unwrap_or_default();
+                        let metric = |name: &str| {
+                            v["metrics"].as_array().and_then(|a| a.iter().find(|m| m["name"] == name)).and_then(|m| m["value"].as_f64())
+                        };
+                        let t = &mut app.tabs[i];
+                        if let Some(h) = metric("JSHeapUsedSize") {
+                            t.js_heap = h as u64;
+                        }
+                        if let Some(task) = metric("TaskDuration") {
+                            // Waktu kerja utas utama halaman (detik) → persen dari satu inti,
+                            // dibagi jumlah inti agar sebanding dengan Task Manager.
+                            let now = Instant::now();
+                            if let Some((prev, at)) = t.perf_prev {
+                                let wall = now.duration_since(at).as_secs_f64();
+                                let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+                                if wall > 0.2 {
+                                    t.tab_cpu = ((task - prev).max(0.0) / wall / cores * 100.0).clamp(0.0, 100.0);
+                                }
+                            }
+                            t.perf_prev = Some((task, now));
+                        }
+                    }
                     app.refresh_pages("tasks");
                 }
                 UserEvent::ProcFailed(id, kind) => {
@@ -3246,6 +3611,9 @@ fn main() {
                 },
             },
             _ => {}
+        }
+        if app.quit_requested {
+            quit = true;
         }
         if restart {
             app.save_session();

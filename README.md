@@ -63,6 +63,25 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Fitur baru di 0.6
+
+- **Anti-blokir** (Pengaturan → Privasi dan keamanan): proxy di dalam Ovner yang mencari
+  alamat situs lewat DNS aman (Cloudflare/Google) dan memecah salam TLS di tengah nama situs,
+  sehingga situs yang diblokir lewat DNS maupun SNI oleh ISP bisa dibuka. Isi tetap
+  terenkripsi. Matikan bila jaringan kantor mewajibkan proxy.
+- **Pemakaian realtime**: RAM, CPU, dan GPU Ovner (total semua proses WebView2) serta tab yang
+  sedang dibuka, di ujung kanan baris tab; bisa dinyalakan/dimatikan masing-masing.
+- **Task manager** baru: proses WebView2 dikenali dari folder data Ovner (sebelumnya hanya
+  ovner.exe yang terhitung, sehingga perapian RAM di tray juga hanya mengenai ovner.exe),
+  dengan kolom RAM, CPU, GPU, dan memori GPU per proses.
+- **Video/musik di tab latar**: tetap berputar, langsung berhenti, atau berhenti setelah N menit.
+- **Diagnostik** (☰ → Alat → Diagnostik, atau Pengaturan): uji pemblokir, brankas sandi, DoH,
+  unduhan, cek update, daftar proses, crash, dan log; tombol *Salin laporan*.
+- Pengaturan → Sistem: buka folder aplikasi, folder data, log; **Uninstall Ovner**.
+- Crash tingkat Windows dicatat ke `ovner.log` (kode galat dan modul penyebab).
+- Ikon asli situs di kolom alamat; ikon bookmark yang belum pernah dikunjungi diunduh sendiri.
+- Startpage dan situs yang dikecualikan memakai identitas asli WebView2 tanpa farbling.
+
 ## Fitur baru di 0.4
 
 **Tingkat perlindungan**: tiga preset di atas halaman Pengaturan — **Seimbang** (bawaan),

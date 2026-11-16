@@ -173,7 +173,8 @@ pub fn session_key() -> u64 {
 /// + farbling (semua bingkai). Dibuat ulang setiap tab dibangun, jadi perubahan setelan per
 /// situs berlaku setelah tab dimuat ulang.
 pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
-    let farble_off: Vec<&String> = s.farbling_off.iter().chain(s.exceptions.iter()).collect();
+    let compat: Vec<String> = COMPAT_HOSTS.iter().map(|h| h.to_string()).collect();
+    let farble_off: Vec<&String> = s.farbling_off.iter().chain(s.exceptions.iter()).chain(compat.iter()).collect();
     let cfg = json!({
         "spellcheck": s.spellcheck,
         "noBeforeUnload": s.disable_beforeunload,
@@ -189,6 +190,19 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "key": format!("{:016x}", session ^ if private { 0x9e37_79b9_7f4a_7c15 } else { 0 }),
     });
     format!("(function(){{try{{Object.defineProperty(window,'__ovnerCfg',{{value:{cfg},configurable:false}});}}catch(e){{}}}})();\n{CONTENT_JS}\n{PRIVACY_JS}\n{FARBLE_JS}")
+}
+
+/// Situs yang menolak browser dengan identitas atau sidik jari yang diubah (menganggapnya bot
+/// atau "user-agent switcher"). Di sini Ovner memakai identitas asli WebView2 tanpa farbling;
+/// iklan dan pelacak tetap diblokir.
+pub const COMPAT_HOSTS: &[&str] = &["startpage.com"];
+
+/// Situs ini perlu identitas asli (kompatibilitas bawaan, atau dikecualikan pengguna)?
+pub fn needs_real_identity(s: &Settings, host: &str) -> bool {
+    let h = host.trim_start_matches("www.").to_ascii_lowercase();
+    COMPAT_HOSTS.iter().any(|c| h == *c || h.ends_with(&format!(".{c}")))
+        || crate::settings::host_in(&s.exceptions, &h)
+        || crate::settings::host_in(&s.farbling_off, &h)
 }
 
 /// Perintah protokol DevTools untuk identitas tab: menyamarkan merek "WebView2" agar terlihat

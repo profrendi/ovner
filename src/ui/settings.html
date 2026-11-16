@@ -38,7 +38,12 @@
 <div id="form"></div>
 </div>
 <h2 id="aboutH"></h2>
-<div class="card"><div class="row"><div class="lbl" id="about"></div><button id="update"></button></div></div>
+<div class="card"><div class="row"><div class="lbl" id="about"></div><button id="update"></button></div>
+<div class="row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap">
+  <button data-act="diagnostics" id="aDiag"></button><button data-act="open-log" id="aLog"></button>
+  <button data-act="open-app-folder" id="aApp"></button><button data-act="open-data-folder" id="aData"></button>
+  <span style="flex:1"></span><button class="danger" data-act="uninstall" id="aUn"></button>
+</div></div>
 </div>
 <script>
 (function () {
@@ -126,6 +131,7 @@
       ["disable_jit", "bool", yes("Matikan JIT JavaScript", "Disable JavaScript JIT"), yes("Lebih aman dari celah mesin JavaScript, tetapi YouTube dan situs berat jauh lebih lambat (WebAssembly ikut mati).", "Safer against JavaScript engine exploits, but YouTube and heavy sites get much slower (WebAssembly is disabled too)."), null, [R]],
       ["script_allowed", "list", yes("Situs yang boleh JavaScript (level keamanan)", "Sites allowed JavaScript (security level)"), ""],
       ["always_private", "bool", yes("Selalu mode privat", "Always use private mode"), yes("Tanpa riwayat; cookie dan login hilang saat Ovner ditutup (seperti Mullvad).", "No history; cookies and logins vanish when Ovner closes (like Mullvad).")],
+      ["antiblock", "bool", yes("Anti-blokir (buka situs yang diblokir ISP)", "Anti-block (open sites blocked by your ISP)"), yes("Proxy di dalam Ovner: alamat situs dicari lewat DNS aman (Cloudflare/Google), dan salam TLS dipecah agar filter SNI Internet Positif tidak mengenali situsnya. Isi tetap terenkripsi. Bila kantor memakai proxy wajib, matikan.", "A proxy inside Ovner: site addresses are looked up over secure DNS (Cloudflare/Google) and the TLS hello is split so SNI filters can't recognise the site. Content stays encrypted. Turn off if your office requires a proxy."), null, [R]],
       ["block_local_network", "bool", yes("Blokir akses situs ke jaringan lokal", "Block sites from reaching your local network"), yes("Situs publik tidak bisa memindai komputer/router Anda (0.0.0.0, 127.x, 192.168.x).", "Public sites can't scan your computer/router (0.0.0.0, 127.x, 192.168.x).")],
       ["referrer_policy", "select", yes("Referrer ke situs lain", "Referrer to other sites"), yes("Alamat halaman yang dikirim saat membuka situs lain.", "The page address sent when opening another site."), [["default", "Bawaan", "Default"], ["origin", "Hanya nama situs", "Site name only"], ["none", "Tidak dikirim", "Not sent"]]],
       ["https_strict", "bool", yes("HTTPS-only ketat", "Strict HTTPS-only"), yes("Tanya dulu sebelum membuka situs yang hanya punya http://.", "Ask before opening sites that only have http://.")],
@@ -154,6 +160,12 @@
       ["restore_tabs", "bool", yes("Buka lagi tab terakhir", "Reopen last tabs"), yes("Semua tab tidur sampai diklik.", "All tabs sleep until clicked.")],
       ["autostart", "bool", yes("Mulai bersama Windows (di tray)", "Start with Windows (in tray)"), ""],
     ]],
+    ["usage", ["Pemakaian dan media", "Usage and media"], [
+      ["usage_overlay_app", "bool", yes("Tampilkan RAM/CPU/GPU Ovner di toolbar", "Show Ovner RAM/CPU/GPU in the toolbar"), yes("Total Ovner + semua proses WebView2, diperbarui tiap 2 detik, di ujung kanan baris tab (dekat tombol minimize).", "Ovner + all WebView2 processes, every 2 seconds, at the right end of the tab row (near minimize).")],
+      ["usage_overlay_tab", "bool", yes("Tampilkan RAM/CPU tab yang dibuka", "Show RAM/CPU of the current tab"), yes("Memori JavaScript dan CPU halaman yang sedang dibuka.", "JavaScript memory and CPU of the open page.")],
+      ["background_media", "select", yes("Video/musik saat pindah tab atau ke tray", "Video/music when switching tabs or going to tray"), yes("Tetap berputar seperti Brave/Chrome, langsung berhenti (paling hemat), atau berhenti sendiri setelah beberapa menit.", "Keep playing like Brave/Chrome, stop right away (most frugal), or stop by itself after some minutes."), [["keep", "Tetap berputar", "Keep playing"], ["timer", "Berhenti setelah beberapa menit", "Stop after some minutes"], ["pause", "Langsung berhenti", "Stop right away"]]],
+      ["background_media_minutes", "number", yes("Berhenti setelah (menit)", "Stop after (minutes)"), yes("Untuk pilihan \"Berhenti setelah beberapa menit\".", "For \"Stop after some minutes\".")],
+    ]],
     ["ram", ["Hemat RAM", "Save memory"], [
       ["sleep_tabs_minutes", "number", yes("Tidurkan tab setelah (menit)", "Sleep tabs after (minutes)"), yes("0 = tidak pernah. Tab yang memutar suara tidak ditidurkan.", "0 = never. Tabs playing audio are not slept.")],
       ["suspend_hidden_tabs", "bool", yes("Tangguhkan tab di belakang", "Suspend background tabs"), ""],
@@ -176,6 +188,11 @@
       ["extra_browser_args", "text", yes("Argumen tambahan WebView2", "Extra WebView2 arguments"), "", null, [R]],
     ]],
     ["system", ["Sistem", "System"], [
+      ["open-app-folder", "action", yes("Folder aplikasi", "App folder"), yes("Tempat ovner.exe.", "Where ovner.exe lives."), yes("Buka", "Open")],
+      ["open-data-folder", "action", yes("Folder data", "Data folder"), yes("Pengaturan, bookmark, sandi (terenkripsi), daftar filter, data WebView2.", "Settings, bookmarks, passwords (encrypted), filter lists, WebView2 data."), yes("Buka", "Open")],
+      ["open-log", "action", yes("Log", "Log"), yes("ovner.log: catatan mulai, crash, dan galat.", "ovner.log: start, crash and error records."), yes("Buka", "Open")],
+      ["diagnostics", "action", yes("Diagnostik", "Diagnostics"), yes("Periksa semua fungsi Ovner dan salin laporannya.", "Check all Ovner functions and copy the report."), yes("Buka", "Open")],
+      ["uninstall", "action", yes("Hapus Ovner dari komputer ini", "Uninstall Ovner from this computer"), yes("Menghapus program, ikon Start/Desktop, dan semua data Ovner.", "Removes the program, Start/Desktop icons and all Ovner data."), yes("Uninstall", "Uninstall")],
       ["check_updates", "bool", yes("Periksa versi baru saat dibuka", "Check for updates on start"), ""],
       ["update_channel", "select", yes("Kanal update", "Update channel"), yes("Nightly mendapat fitur baru lebih dulu, mungkin kurang stabil.", "Nightly gets new features first, may be less stable."), [["stable", "Stabil", "Stable"], ["nightly", "Nightly", "Nightly"]]],
       ["devtools", "bool", yes("Izinkan DevTools (F12)", "Allow DevTools (F12)"), yes("Brave Origin: mati.", "Brave Origin: off.")],
@@ -193,6 +210,12 @@
   function control(key, kind, opts) {
     const v = state[key];
     const set = (value) => post({ t: "set", key, value });
+    if (kind === "action") {
+      const b = h("button", { textContent: T(opts) });
+      if (key === "uninstall") b.className = "danger";
+      b.onclick = () => post({ t: "action", name: key });
+      return b;
+    }
     if (kind === "bool") {
       const inp = h("input", { type: "checkbox", checked: !!v });
       inp.onchange = () => set(inp.checked);
@@ -292,6 +315,11 @@
     document.getElementById("q").placeholder = T(UI.search);
     document.getElementById("aboutH").textContent = T(UI.about);
     document.getElementById("update").textContent = T(UI.update);
+    for (const [id, a, b] of [["aDiag", "Diagnostik", "Diagnostics"], ["aLog", "Buka log", "Open log"], ["aApp", "Folder aplikasi", "App folder"], ["aData", "Folder data", "Data folder"], ["aUn", "Uninstall Ovner", "Uninstall Ovner"]]) {
+      const el = document.getElementById(id);
+      el.textContent = L === "id" ? a : b;
+      el.onclick = () => post({ t: "action", name: el.dataset.act });
+    }
     document.getElementById("about").innerHTML = `Ovner ${s.version}<small>${T(UI.engine)}: Microsoft Edge WebView2 ${s.engine}<br>${T(UI.blocker)}: adblock-rust (Brave), ${s.lists}<br>${T(UI.data)}: <span id="dd"></span><br>github.com/profrendi/ovner</small>`;
     document.getElementById("dd").textContent = s.data;
     const a = document.activeElement;

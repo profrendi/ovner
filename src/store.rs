@@ -56,6 +56,27 @@ pub struct Store {
 }
 
 /// Host tanpa "www." untuk kunci ikon.
+/// Jenis gambar ikon dari isinya; None bila bukan gambar (mis. halaman galat HTML).
+pub fn icon_mime(b: &[u8]) -> Option<&'static str> {
+    if b.len() < 16 {
+        return None;
+    }
+    if b.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some("image/png")
+    } else if b.starts_with(&[0, 0, 1, 0]) {
+        Some("image/x-icon")
+    } else if b.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if b.starts_with(&[0xFF, 0xD8]) {
+        Some("image/jpeg")
+    } else if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        let head = String::from_utf8_lossy(&b[..b.len().min(512)]).to_ascii_lowercase();
+        (head.contains("<svg") && !head.contains("<html")).then_some("image/svg+xml")
+    }
+}
+
 pub fn icon_key(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string())).unwrap_or_default()
 }
@@ -456,6 +477,35 @@ impl Store {
     }
 
     /// Simpan ikon situs (PNG) untuk host halaman ini.
+    /// Simpan ikon hasil unduhan (favicon.ico/PNG/SVG) untuk host tertentu.
+    pub fn set_icon_host(&mut self, host: &str, bytes: &[u8]) -> bool {
+        use base64::Engine as _;
+        let Some(mime) = icon_mime(bytes) else { return false };
+        let key = host.trim_start_matches("www.").to_ascii_lowercase();
+        if key.is_empty() || bytes.len() > 64 * 1024 || self.icons.contains_key(&key) {
+            return false;
+        }
+        self.icons.insert(key, format!("data:{mime};base64,{}", base64::prelude::BASE64_STANDARD.encode(bytes)));
+        self.dirty_icons = true;
+        true
+    }
+
+    /// Host bookmark yang belum punya ikon.
+    pub fn hosts_without_icon(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for b in &self.bookmarks {
+            let k = icon_key(&b.url);
+            if !k.is_empty() && !self.icons.contains_key(&k) && !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        out
+    }
+
+    pub fn icon_count(&self) -> usize {
+        self.icons.len()
+    }
+
     pub fn set_icon(&mut self, url: &str, png: &[u8]) {
         use base64::Engine as _;
         let key = icon_key(url);

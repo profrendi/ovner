@@ -66,7 +66,7 @@ fn should_install(want: &str, remote_version: &str, remote_build: u64, my_versio
     }
 }
 
-fn latest_url(channel: &str) -> String {
+pub fn latest_url(channel: &str) -> String {
     if channel == "nightly" {
         format!("https://github.com/{REPO}/releases/download/ovner-nightly/ovner-latest.json")
     } else {

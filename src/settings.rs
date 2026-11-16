@@ -173,6 +173,17 @@ pub struct Settings {
     pub renderer_process_limit: u32,
     /// Satu proses per situs (bukan per tab).
     pub process_per_site: bool,
+    /// Indikator pemakaian (RAM, CPU, GPU) Ovner total di toolbar, diperbarui tiap 2 detik.
+    pub usage_overlay_app: bool,
+    /// Indikator pemakaian tab yang sedang dibuka.
+    pub usage_overlay_tab: bool,
+    /// Media (video/musik) di tab yang ditinggal: "pause" (langsung berhenti), "keep" (tetap
+    /// berputar), "timer" (berhenti setelah `background_media_minutes` menit).
+    pub background_media: String,
+    pub background_media_minutes: u32,
+    /// Anti-blokir: proxy lokal yang mencari alamat situs lewat DNS aman (DoH) dan memecah
+    /// salam TLS supaya filter SNI ISP (Internet Positif) tidak mengenali situsnya.
+    pub antiblock: bool,
     /// Lama: digantikan `gpu_mode` (tetap dibaca untuk migrasi).
     pub no_gpu: bool,
     /// "full" (GPU penuh), "lite" (GPU untuk video dan komposisi, gambar halaman di CPU),
@@ -220,6 +231,11 @@ impl Default for Settings {
             script_allowed: Vec::new(),
             disable_jit: false,
             gpu_mode: "full".into(),
+            usage_overlay_app: false,
+            usage_overlay_tab: false,
+            background_media: "keep".into(),
+            background_media_minutes: 10,
+            antiblock: false,
             youtube_h264: "auto".into(),
             language: "auto".into(),
             theme: "system".into(),
@@ -444,6 +460,8 @@ impl Settings {
         pick(&mut self.referrer_policy, &["default", "origin", "none"], "default");
         pick(&mut self.security_level, &["standard", "safer", "safest"], "standard");
         pick(&mut self.gpu_mode, &["full", "lite", "off"], "full");
+        pick(&mut self.background_media, &["pause", "keep", "timer"], "keep");
+        self.background_media_minutes = self.background_media_minutes.clamp(1, 24 * 60);
         pick(&mut self.youtube_h264, &["auto", "on", "off"], "auto");
         self.filter_update_hours = self.filter_update_hours.clamp(1, 24 * 7);
         pick(&mut self.update_channel, &["stable", "nightly"], "stable");

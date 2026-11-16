@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Diagnostik</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  .ok { color: #1e9e5a; font-weight: 700; }
+  .bad { color: #d93838; font-weight: 700; }
+  .warn { color: #d98a00; font-weight: 700; }
+  .kv { display: grid; grid-template-columns: 220px 1fr; gap: 6px 14px; padding: 12px 16px; font-size: 13.5px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .kv div { word-break: break-all; }
+  pre { margin: 0; padding: 12px 14px; max-height: 360px; overflow: auto; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; word-break: break-all; }
+  .acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1 id="h1"></h1>
+<p class="muted" id="lead"></p>
+<div class="acts">
+  <button class="primary" id="run"></button>
+  <button id="copy"></button>
+  <button id="log"></button>
+  <button id="data"></button>
+  <button id="app"></button>
+</div>
+<div id="out"></div>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  let L = "id";
+  const T = (id, en) => (L === "id" ? id : en);
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const mark = (ok, warn) => (ok ? '<span class="ok">✓</span>' : warn ? '<span class="warn">!</span>' : '<span class="bad">✗</span>');
+  const mb = (b) => (b / 1048576).toFixed(0) + " MB";
+  function card(title, rows) {
+    return `<h2>${title}</h2><div class="card"><div class="kv">${rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("")}</div></div>`;
+  }
+  function render(r) {
+    const tests = Object.fromEntries((r.tests || []).map((t) => [t.name, t]));
+    const test = (name, label) => {
+      const t = tests[name];
+      return [label, t ? `${mark(t.ok)} ${esc(t.msg)}` : `<span class="muted">${T("belum diuji", "not run yet")}</span>`];
+    };
+    let h = "";
+    h += card(T("Ringkasan", "Summary"), [
+      [T("Versi Ovner", "Ovner version"), `${esc(r.version)} (${esc(r.channel)})`],
+      ["Microsoft Edge WebView2", esc(r.engine)],
+      ["Windows", esc(r.os)],
+      [T("Program", "Program"), esc(r.exe)],
+      [T("Folder data", "Data folder"), esc(r.data)],
+      [T("Portabel", "Portable"), r.portable ? T("ya", "yes") : T("tidak", "no")],
+    ]);
+    h += card(T("Mesin WebView2", "WebView2 engine"), [
+      [T("Environment Ovner", "Ovner environment"), r.envCustom ? `${mark(true)} ${T("dipakai", "in use")}` : `${mark(false, true)} ${T("gagal, memakai bawaan", "failed, using default")}: ${esc(r.envError)}`],
+      [T("Argumen mesin", "Engine arguments"), `<code>${esc(r.args)}</code>`],
+      [T("Preset / GPU / keamanan", "Preset / GPU / security"), `${esc(r.preset)} / ${esc(r.gpuMode)} / ${esc(r.security)}`],
+      ["Secure DNS (Chromium)", esc(r.dns)],
+    ]);
+    h += card(T("Pemblokir iklan", "Ad blocker"), [
+      [T("Daftar lengkap", "Full lists"), `${mark(r.blockerFull, true)} ${r.blockerFull ? T("dipakai", "in use") : T("belum, memakai daftar bawaan", "not yet, using built-in list")}`],
+      [T("Uji blokir (adsbygoogle.js)", "Block test (adsbygoogle.js)"), `${mark(r.blockerTest)} ${r.blockerTest ? T("diblokir", "blocked") : T("tidak diblokir", "not blocked")}`],
+      [T("Scriptlet + resource pengganti", "Scriptlets + redirect resources"), `${mark(r.resources > 50, true)} ${r.resources}`],
+      [T("Daftar filter", "Filter lists"), (r.lists || []).map((l) => `${esc(l.name)} · ${l.kb} KB · ${l.ageHours} ${T("jam lalu", "h ago")}`).join("<br>") || "—"],
+    ]);
+    h += card(T("Anti-blokir dan jaringan", "Anti-block and network"), [
+      [T("Anti-blokir", "Anti-block"), r.antiblock ? (r.antiblockPort ? `${mark(true)} 127.0.0.1:${r.antiblockPort} · ${r.antiblockConns} ${T("koneksi", "connections")}` : `${mark(false)} ${T("menyala tapi gagal jalan", "on but failed to start")}`) : `<span class="muted">${T("mati", "off")}</span>`],
+      ["DoH", `${r.dohOk} ${T("berhasil", "ok")}, ${r.dohFail} ${T("gagal (memakai DNS Windows)", "failed (Windows DNS used)")}`],
+      test("doh", T("Uji DoH (1.1.1.1 / 8.8.8.8)", "DoH test (1.1.1.1 / 8.8.8.8)")),
+      test("download", T("Uji unduh daftar filter", "Filter list download test")),
+      test("update", T("Uji cek update", "Update check test")),
+    ]);
+    h += card(T("Data dan sandi", "Data and passwords"), [
+      [T("Brankas sandi (DPAPI)", "Password vault (DPAPI)"), `${mark(r.vault)} ${r.vault ? T("enkripsi dan buka berhasil", "encrypt and decrypt ok") : T("gagal", "failed")}`],
+      [T("Bookmark / ikon situs", "Bookmarks / site icons"), `${r.bookmarks} / ${r.icons}`],
+      [T("Tab (hidup)", "Tabs (live)"), `${r.tabs} (${r.tabsLive})`],
+    ]);
+    h += card(T("Proses", "Processes"), [
+      [T("Jumlah", "Count"), `${mark(r.procs > 1, true)} ${r.procs} ${r.procs > 1 ? "" : T("(proses WebView2 belum terlihat)", "(WebView2 processes not seen yet)")}`],
+      ["RAM / CPU / GPU", r.procs ? `${mb(r.ram)} / ${r.cpu.toFixed(1)}% / ${r.gpu.toFixed(1)}% · ${T("memori GPU", "GPU memory")} ${mb(r.gpuMem)}` : "—"],
+      [T("Jenis:PID", "Type:PID"), esc((r.kinds || []).join("  "))],
+    ]);
+    h += `<h2>${T("Crash dan galat", "Crashes and errors")}</h2><div class="card"><pre>${esc((r.crashes || []).join("\n")) || T("Tidak ada.", "None.")}</pre></div>`;
+    h += `<h2>${T("Log terakhir", "Recent log")}</h2><div class="card"><pre id="logpre">${esc((r.log || []).join("\n"))}</pre></div>`;
+    document.getElementById("out").innerHTML = h;
+    const pre = document.getElementById("logpre");
+    if (pre) pre.scrollTop = pre.scrollHeight;
+  }
+  window.ovnerPage = (s) => {
+    L = s.lang;
+    document.documentElement.lang = L;
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    document.title = T("Diagnostik", "Diagnostics");
+    document.getElementById("h1").textContent = T("Diagnostik Ovner", "Ovner diagnostics");
+    document.getElementById("lead").textContent = T("Periksa semua fungsi utama Ovner. Kalau ada masalah, klik Salin laporan lalu tempelkan ke percakapan.", "Check all of Ovner's main functions. If something is wrong, click Copy report and paste it into the conversation.");
+    document.getElementById("run").textContent = T("Jalankan uji jaringan", "Run network tests");
+    document.getElementById("copy").textContent = T("Salin laporan", "Copy report");
+    document.getElementById("log").textContent = T("Buka log", "Open log");
+    document.getElementById("data").textContent = T("Buka folder data", "Open data folder");
+    document.getElementById("app").textContent = T("Buka folder aplikasi", "Open app folder");
+    render(s.report);
+  };
+  for (const [id, name] of [["run", "run-tests"], ["copy", "copy-report"], ["log", "open-log"], ["data", "open-data-folder"], ["app", "open-app-folder"]]) {
+    document.getElementById(id).onclick = () => post({ t: "action", name });
+  }
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

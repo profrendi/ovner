@@ -27,16 +27,6 @@ pub enum DlEvent {
     Done { id: u64, ok: bool, path: String, received: i64 },
 }
 
-/// Satu proses WebView2 beserta halaman (bingkai utama) yang dilayaninya.
-#[derive(Clone, Debug, Default)]
-pub struct ProcExt {
-    pub pid: u32,
-    /// "browser", "renderer", "gpu", "utility", "lainnya".
-    pub kind: &'static str,
-    /// Alamat bingkai utama halaman yang memakai proses ini.
-    pub mains: Vec<String>,
-}
-
 /// Jenis kegagalan proses WebView2.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ProcFail {
@@ -171,43 +161,9 @@ mod imp {
     // ---------- proses WebView2 ----------
 
     /// Proses ini + semua proses msedgewebview2.exe turunannya.
+    /// Ovner + semua proses WebView2-nya (dikenali dari folder data di baris perintah).
     fn tree_pids() -> Vec<u32> {
-        use windows::Win32::Foundation::CloseHandle;
-        use windows::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-        };
-        use windows::Win32::System::Threading::GetCurrentProcessId;
-        let mut pairs: Vec<(u32, u32)> = Vec::new();
-        unsafe {
-            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
-            let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-            if Process32FirstW(snap, &mut e).is_ok() {
-                loop {
-                    let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-                    let name = String::from_utf16_lossy(&e.szExeFile[..len]);
-                    if name.eq_ignore_ascii_case("msedgewebview2.exe") {
-                        pairs.push((e.th32ProcessID, e.th32ParentProcessID));
-                    }
-                    if Process32NextW(snap, &mut e).is_err() {
-                        break;
-                    }
-                }
-            }
-            let _ = CloseHandle(snap);
-        }
-        let me = unsafe { GetCurrentProcessId() };
-        let mut tree = vec![me];
-        let mut i = 0;
-        while i < tree.len() {
-            let parent = tree[i];
-            for &(pid, ppid) in &pairs {
-                if ppid == parent && pid != parent && !tree.contains(&pid) {
-                    tree.push(pid);
-                }
-            }
-            i += 1;
-        }
-        tree
+        crate::usage::ovner_pids()
     }
 
     /// Snapshot RAM proses ini + semua proses WebView2-nya.
@@ -514,6 +470,108 @@ mod imp {
         }
     }
 
+    static CRASH_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+    /// Catat crash tingkat Windows (akses memori ilegal di COM/WebView2, dsb.) ke ovner.log:
+    /// kode galat, alamat, dan modul (DLL) penyebabnya. Proses tetap berhenti seperti biasa.
+    pub fn install_crash_logger(log_file: &Path) {
+        use windows::Win32::System::Diagnostics::Debug::{SetUnhandledExceptionFilter, EXCEPTION_POINTERS};
+        let _ = CRASH_LOG.set(log_file.to_path_buf());
+        unsafe extern "system" fn filter(ep: *const EXCEPTION_POINTERS) -> i32 {
+            use windows::Win32::Foundation::HMODULE;
+            use windows::Win32::System::LibraryLoader::{
+                GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            };
+            unsafe {
+                let Some(path) = CRASH_LOG.get() else { return 0 };
+                let rec = if ep.is_null() { std::ptr::null_mut() } else { (*ep).ExceptionRecord };
+                let (code, addr) = if rec.is_null() { (0u32, 0usize) } else { ((*rec).ExceptionCode.0 as u32, (*rec).ExceptionAddress as usize) };
+                let mut module = String::from("?");
+                let mut offset = 0usize;
+                let mut hmod = HMODULE::default();
+                if addr != 0
+                    && GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        windows::core::PCWSTR(addr as *const u16),
+                        &mut hmod,
+                    )
+                    .is_ok()
+                {
+                    let mut buf = [0u16; 260];
+                    let n = GetModuleFileNameW(Some(hmod), &mut buf) as usize;
+                    module = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+                    offset = addr.wrapping_sub(hmod.0 as usize);
+                }
+                let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let line = format!(
+                    "{secs} CRASH kode=0x{code:08X} alamat=0x{addr:X} modul={module}+0x{offset:X} versi={}\n",
+                    crate::update::display_version()
+                );
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    use std::io::Write;
+                    let _ = f.write_all(line.as_bytes());
+                }
+            }
+            0 // EXCEPTION_CONTINUE_SEARCH: biarkan Windows menutup proses seperti biasa.
+        }
+        unsafe {
+            let _ = SetUnhandledExceptionFilter(Some(filter));
+        }
+    }
+
+    /// Panggil metode DevTools langsung pada ICoreWebView2 (dari handler navigasi).
+    pub fn cdp_core(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, method: &str, params: &str) {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+        unsafe {
+            let _ = core.CallDevToolsProtocolMethod(
+                &HSTRING::from(method),
+                &HSTRING::from(params),
+                &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(()))),
+            );
+        }
+    }
+
+    /// User agent bawaan WebView2 dari ICoreWebView2.
+    pub fn core_user_agent(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2) -> String {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+        unsafe {
+            let Ok(st) = core.Settings().and_then(|s| s.cast::<ICoreWebView2Settings2>()) else { return String::new() };
+            let mut p = windows::core::PWSTR::null();
+            if st.UserAgent(&mut p).is_ok() {
+                return webview2_com::take_pwstr(p);
+            }
+        }
+        String::new()
+    }
+
+    /// Panggil metode DevTools dan terima hasil JSON-nya.
+    pub fn cdp_call(webview: &wry::WebView, method: &str, params: &str, cb: impl FnOnce(String) + 'static) {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+        use wry::WebViewExtWindows;
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |r, json| {
+            if r.is_ok() {
+                cb(json);
+            }
+            Ok(())
+        }));
+        unsafe {
+            let _ = webview.webview().CallDevToolsProtocolMethod(&HSTRING::from(method), &HSTRING::from(params), &handler);
+        }
+    }
+
+    /// Versi Windows untuk laporan diagnostik, mis. "Windows 10.0.19045".
+    pub fn os_version() -> String {
+        let key = hkcu_local_machine("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion");
+        let get = |n: &str| key.as_ref().and_then(|k| k.get_value::<String, _>(n).ok()).unwrap_or_default();
+        let build = get("CurrentBuildNumber");
+        let ubr = key.as_ref().and_then(|k| k.get_value::<u32, _>("UBR").ok()).map(|u| format!(".{u}")).unwrap_or_default();
+        format!("{} {} (build {build}{ubr})", get("ProductName"), get("DisplayVersion"))
+    }
+
+    fn hkcu_local_machine(path: &str) -> Option<winreg::RegKey> {
+        winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE).open_subkey(path).ok()
+    }
+
     /// Panggil metode protokol DevTools pada tab ini (bekerja walau DevTools dimatikan).
     pub fn cdp(webview: &wry::WebView, method: &str, params: &str) {
         use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
@@ -674,77 +732,6 @@ mod imp {
     }
 
     /// Minta daftar proses WebView2 beserta halaman yang dilayani tiap proses (asinkron).
-    pub fn request_process_infos(
-        env: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment,
-        cb: impl FnOnce(Vec<ProcExt>) + 'static,
-    ) {
-        use webview2_com::Microsoft::Web::WebView2::Win32::*;
-        use webview2_com::{take_pwstr, GetProcessExtendedInfosCompletedHandler};
-        use windows::core::{BOOL, PWSTR};
-        let Ok(env13) = env.cast::<ICoreWebView2Environment13>() else { return };
-        let cb = std::cell::RefCell::new(Some(cb));
-        let handler = GetProcessExtendedInfosCompletedHandler::create(Box::new(move |res, coll| {
-            let mut out = Vec::new();
-            if let (Ok(()), Some(coll)) = (res, coll) {
-                unsafe {
-                    let mut n = 0u32;
-                    let _ = coll.Count(&mut n);
-                    for i in 0..n {
-                        let Ok(info) = coll.GetValueAtIndex(i) else { continue };
-                        let Ok(pi) = info.ProcessInfo() else { continue };
-                        let (mut pid, mut kind) = (0i32, COREWEBVIEW2_PROCESS_KIND::default());
-                        let _ = pi.ProcessId(&mut pid);
-                        let _ = pi.Kind(&mut kind);
-                        let kind = if kind == COREWEBVIEW2_PROCESS_KIND_BROWSER {
-                            "browser"
-                        } else if kind == COREWEBVIEW2_PROCESS_KIND_RENDERER {
-                            "renderer"
-                        } else if kind == COREWEBVIEW2_PROCESS_KIND_GPU {
-                            "gpu"
-                        } else if kind == COREWEBVIEW2_PROCESS_KIND_UTILITY {
-                            "utility"
-                        } else {
-                            "lainnya"
-                        };
-                        let mut mains = Vec::new();
-                        if let Ok(it) = info.AssociatedFrameInfos().and_then(|f| f.GetIterator()) {
-                            let mut has = BOOL::default();
-                            while it.HasCurrent(&mut has).is_ok() && has.as_bool() {
-                                if let Ok(mut fr) = it.GetCurrent() {
-                                    // Naik ke bingkai utama (halaman tab).
-                                    for _ in 0..16 {
-                                        match fr.cast::<ICoreWebView2FrameInfo2>().and_then(|f2| f2.ParentFrameInfo()) {
-                                            Ok(p) => fr = p,
-                                            Err(_) => break,
-                                        }
-                                    }
-                                    let mut src = PWSTR::null();
-                                    if fr.Source(&mut src).is_ok() {
-                                        let s = take_pwstr(src);
-                                        if !s.is_empty() && !mains.contains(&s) {
-                                            mains.push(s);
-                                        }
-                                    }
-                                }
-                                let mut more = BOOL::default();
-                                if it.MoveNext(&mut more).is_err() || !more.as_bool() {
-                                    break;
-                                }
-                            }
-                        }
-                        out.push(ProcExt { pid: pid as u32, kind, mains });
-                    }
-                }
-            }
-            if let Some(cb) = cb.borrow_mut().take() {
-                cb(out);
-            }
-            Ok(())
-        }));
-        unsafe {
-            let _ = env13.GetProcessExtendedInfos(&handler);
-        }
-    }
 
     /// Nama asli (CNAME terakhir) sebuah host, bila ada. Memblokir: panggil dari thread latar.
     pub fn cname_of(host: &str) -> Option<String> {
@@ -817,6 +804,14 @@ mod imp {
     }
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}
     pub fn cdp(_webview: &wry::WebView, _method: &str, _params: &str) {}
+    pub fn cdp_call(_webview: &wry::WebView, _method: &str, _params: &str, _cb: impl FnOnce(String) + 'static) {}
+    pub fn install_crash_logger(_log_file: &Path) {}
+    pub fn os_version() -> String {
+        std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|s| s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
+            .unwrap_or_else(|| "Linux".into())
+    }
     pub fn set_clipboard(_text: &str) {}
     pub fn on_download(_webview: &wry::WebView, _cb: impl Fn(DlEvent) + 'static) {}
     pub fn cancel_download(_id: u64) {}

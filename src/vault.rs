@@ -240,6 +240,12 @@ fn parse_csv(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// Uji enkripsi brankas (DPAPI Windows): sandi bisa dienkripsi lalu dibuka lagi.
+pub fn self_test() -> bool {
+    let sample = b"ovner-uji-brankas";
+    crate::win::protect(sample, true).and_then(|e| crate::win::protect(&e, false)).as_deref() == Some(&sample[..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

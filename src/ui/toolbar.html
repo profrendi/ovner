@@ -48,10 +48,20 @@
   .b svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .b.hidden { display: none; }
   #addrwrap { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; }
-  #addr { width: 100%; height: 30px; border: 1px solid transparent; border-radius: 15px; padding: 0 36px 0 14px;
+  #addr { width: 100%; height: 30px; border: 1px solid transparent; border-radius: 15px; padding: 0 36px 0 36px;
     background: var(--field); color: var(--text); font: inherit; font-size: 14px; outline: none; user-select: text; }
   #addr:focus { background: var(--field-focus); border-color: var(--accent); }
   #star { position: absolute; right: 4px; width: 26px; height: 26px; color: var(--muted); }
+  /* Ikon asli situs di kiri kolom alamat (tanpa kotak warna). */
+  #siteicon { position: absolute; left: 11px; width: 16px; height: 16px; background: center / 16px 16px no-repeat; pointer-events: none; color: var(--muted); }
+  #siteicon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  /* Indikator pemakaian RAM/CPU/GPU (ujung kanan baris tab, dekat tombol minimize). */
+  #usage { flex: none; margin-left: auto; align-self: center; display: none; gap: 10px; padding: 3px 10px; border-radius: 10px;
+    background: var(--field); color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+  #usage.show { display: flex; }
+  #usage b { color: var(--text); font-weight: 600; }
+  #usage .sep { opacity: .5; }
+  #bar #usage { margin-left: 0; }
   #star.on { color: var(--shield); }
   #star.on svg { fill: currentColor; }
   #shield { width: auto; min-width: 32px; padding: 0 8px; gap: 4px; display: flex; align-items: center; color: var(--shield); font-weight: 600; }
@@ -120,13 +130,14 @@
 </head>
 <body>
 <div id="base">
-<div id="tabs"><button id="new">+</button></div>
+<div id="tabs"><button id="new">+</button><span id="usage"></span></div>
 <div id="bar">
   <button class="b" id="back" title="Kembali (Alt+←)"><svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
   <button class="b" id="fwd" title="Maju (Alt+→)"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
   <button class="b" id="reload" title="Muat ulang (F5)"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg></button>
   <button class="b hidden" id="home" title="Beranda"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg></button>
   <div id="addrwrap">
+    <span id="siteicon"></span>
     <input id="addr" spellcheck="false" autocomplete="off">
     <button class="b" id="star" title="Bookmark halaman ini (Ctrl+D)"><svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg></button>
   </div>
@@ -157,13 +168,13 @@
       back: "Kembali (Alt+←)", fwd: "Maju (Alt+→)", reload: "Muat ulang (F5)", stop: "Hentikan (Esc)", home: "Beranda", addr: "Cari atau ketik alamat",
       addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
       find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
-      swap: "Pindah ke sisi lain", other: "Bookmark lain", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      swap: "Pindah ke sisi lain", tab: "Tab", usageApp: "Total Ovner + semua proses WebView2 (RAM = kolom Memory di Task Manager Windows)", usageTab: "Tab yang sedang dibuka: memori JavaScript halaman dan CPU utas utamanya", other: "Bookmark lain", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
       addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
       find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
-      swap: "Switch side", other: "Other bookmarks", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      swap: "Switch side", tab: "Tab", usageApp: "Ovner + all WebView2 processes (RAM = Memory column in Windows Task Manager)", usageTab: "Current tab: page JavaScript memory and main-thread CPU", other: "Other bookmarks", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -215,6 +226,33 @@
       tabsEl.insertBefore(el, plus);
     }
     for (const [id, el] of tabEls) if (!keep.has(id)) { el.remove(); tabEls.delete(id); }
+  }
+
+  const globeSvg = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></svg>';
+  const lockSvg = '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+  function renderSiteIcon() {
+    const el = $("siteicon");
+    const t = (state.tabs || []).find((x) => x.active);
+    const u = t ? t.url : "";
+    const ico = u && state.icons && state.icons[hostOf(u)];
+    if (ico) { el.innerHTML = ""; el.style.backgroundImage = `url("${ico}")`; }
+    else { el.style.backgroundImage = ""; el.innerHTML = /^https:/.test(u) ? lockSvg : globeSvg; }
+  }
+  const mb = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : Math.round(b / 1048576) + " MB");
+  const pct = (v) => (v >= 10 ? Math.round(v) : (Math.round(v * 10) / 10)) + "%";
+  function renderUsage() {
+    const el = $("usage");
+    const u = state.usage;
+    // Saat tab vertikal, baris tab tersembunyi: indikator pindah ke baris alamat.
+    const home = state.vertical ? $("bar") : $("tabs");
+    if (el.parentElement !== home) home.insertBefore(el, state.vertical ? $("menu") : null);
+    if (!u || (!u.app && !u.tab)) { el.classList.remove("show"); return; }
+    let html = "";
+    if (u.app) html += `<span title="${W.usageApp}">Ovner <b>${mb(u.app.ram)}</b> · CPU <b>${pct(u.app.cpu)}</b> · GPU <b>${pct(u.app.gpu)}</b></span>`;
+    if (u.app && u.tab) html += `<span class="sep">|</span>`;
+    if (u.tab) html += `<span title="${W.usageTab}">${W.tab} <b>${mb(u.tab.js)}</b> JS · CPU <b>${pct(u.tab.cpu)}</b></span>`;
+    el.innerHTML = html;
+    el.classList.add("show");
   }
 
   const folderSvg = '<svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>';
@@ -304,6 +342,8 @@
       state = s;
       if (D[s.lang] !== W || !document.documentElement.lang) applyLang(s.lang);
       addr.placeholder = s.noSearch ? W.addrNs : W.addr;
+      renderSiteIcon();
+      renderUsage();
       tabsEl.style.display = s.vertical ? "none" : "";
       let tcss = document.getElementById("usercss");
       if (!tcss) { tcss = document.createElement("style"); tcss.id = "usercss"; document.head.append(tcss); }

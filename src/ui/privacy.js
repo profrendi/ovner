@@ -43,7 +43,10 @@
   }
 
   // ---- Mode seragam (seperti Mullvad Browser) ----
-  if (cfg.uniform) {
+  // Situs kompatibilitas/pengecualian: tanpa mode seragam (lihat farbleOff).
+  const host = location.hostname.replace(/^www\./, "");
+  const exempt = (cfg.farbleOff || []).some((h) => host === h || host.endsWith("." + h));
+  if (cfg.uniform && !exempt) {
     const NP = Navigator.prototype;
     def(NP, "hardwareConcurrency", 8);
     def(NP, "deviceMemory", 8);

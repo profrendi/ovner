@@ -80,6 +80,12 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
             "Export all passwords to a CSV file?\n\nThe file is NOT encrypted: anyone who opens it can read your passwords. Delete it after use.",
         ),
         "d.pw_clear" => ("Hapus semua sandi yang tersimpan di Ovner?", "Delete all passwords saved in Ovner?"),
+        "m.diagnostics" => ("Diagnostik", "Diagnostics"),
+        "p.diagnostics" => ("Diagnostik", "Diagnostics"),
+        "d.report_copied" => (
+            "Laporan diagnostik sudah disalin. Tempelkan (Ctrl+V) ke percakapan untuk dianalisis.",
+            "The diagnostics report has been copied. Paste it (Ctrl+V) into the conversation for analysis.",
+        ),
         "m.new_identity" => ("Identitas baru", "New identity"),
         "tm.copy_urls" => ("Salin alamat semua tab", "Copy all tab addresses"),
         "sh.allow_js" => ("Izinkan JavaScript (level keamanan)", "Allow JavaScript (security level)"),
