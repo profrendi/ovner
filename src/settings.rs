@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 fn zero() -> u32 {
     0
@@ -22,6 +22,10 @@ pub struct Settings {
     pub schema: u32,
     /// Halaman setup awal sudah dilewati.
     pub setup_done: bool,
+
+    /// Preset perlindungan: "balanced" (Seimbang), "strict" (Ketat), "max" (Maksimal), atau
+    /// "custom" bila ada setelan yang diubah sendiri.
+    pub preset: String,
 
     // ---------- tampilan ----------
     /// "auto" (ikut Windows), "id", atau "en".
@@ -38,6 +42,10 @@ pub struct Settings {
     pub force_dark: bool,
     /// CSS sendiri yang dipasang di semua halaman.
     pub user_css: String,
+    /// CSS sendiri untuk toolbar Ovner (seperti userChrome.css Waterfox).
+    pub toolbar_css: String,
+    /// Tab di sisi kiri (vertikal), bukan di atas.
+    pub vertical_tabs: bool,
 
     // ---------- pencarian dan kolom alamat ----------
     /// google, duckduckgo, bing, brave, atau URL berisi `%s`.
@@ -50,6 +58,8 @@ pub struct Settings {
     pub address_suggestions: bool,
     /// Kolom alamat hanya menerima alamat, tidak pernah mencari ("No Search").
     pub no_search: bool,
+    /// Mesin pencari tab privat; kosong = sama dengan mesin biasa.
+    pub private_search_engine: String,
 
     // ---------- Shields ----------
     pub block_ads: bool,
@@ -71,6 +81,10 @@ pub struct Settings {
     /// Ungkap pelacak yang menyamar lewat CNAME (pencarian DNS di latar).
     pub cname_uncloak: bool,
     pub auto_update_filters: bool,
+    /// Daftar kecil yang cepat berubah (perbaikan YouTube/anti-adblock) diperbarui tiap N jam.
+    pub filter_update_hours: u32,
+    /// Daftar gangguan: notifikasi, widget sosial, popup newsletter, "pasang aplikasi kami".
+    pub block_annoyances: bool,
     /// Alamat daftar filter tambahan (format EasyList/uBlock).
     pub custom_lists: Vec<String>,
     /// Aturan filter sendiri (format EasyList/uBlock), satu per baris.
@@ -83,6 +97,29 @@ pub struct Settings {
     pub farbling_off: Vec<String>,
 
     // ---------- privasi dan keamanan ----------
+    /// Blokir situs publik yang mencoba mengakses jaringan lokal / komputer ini (0.0.0.0, 127.x, 192.168.x).
+    pub block_local_network: bool,
+    /// Referrer ke situs lain: "default", "origin" (hanya asal situs), "none" (kosong).
+    pub referrer_policy: String,
+    /// HTTPS-only ketat: tampilkan peringatan sebelum membuka situs http.
+    pub https_strict: bool,
+    /// Secure DNS tanpa fallback ke DNS Windows.
+    pub dns_strict: bool,
+    /// Bulatkan ukuran area halaman ke kelipatan 200×100 (seperti Mullvad/Tor).
+    pub letterboxing: bool,
+    /// Mode seragam: identitas generik (user agent, inti CPU, timer kasar, API langka mati).
+    pub uniform_fingerprint: bool,
+    /// Bagian dari mode seragam: laporkan zona waktu UTC (jam di situs bisa bergeser).
+    pub uniform_utc: bool,
+    /// Sembunyikan tanda bahwa ini aplikasi WebView2 (chrome.webview, merek user agent).
+    pub hide_webview2: bool,
+    /// Semua tab dibuka privat: tanpa riwayat, cookie hilang saat Ovner ditutup.
+    pub always_private: bool,
+    /// Level keamanan: "standard", "safer" (JS mati di http, JIT mati, media klik dulu),
+    /// "safest" (JS mati di semua situs kecuali yang diizinkan).
+    pub security_level: String,
+    /// Situs yang tetap boleh menjalankan JavaScript di level "Paling aman".
+    pub script_allowed: Vec<String>,
     pub clear_on_exit: bool,
     pub save_history: bool,
     pub deny_sensitive_permissions: bool,
@@ -129,7 +166,13 @@ pub struct Settings {
     pub renderer_process_limit: u32,
     /// Satu proses per situs (bukan per tab).
     pub process_per_site: bool,
+    /// Lama: digantikan `gpu_mode` (tetap dibaca untuk migrasi).
     pub no_gpu: bool,
+    /// "full" (GPU penuh), "lite" (GPU untuk video dan komposisi, gambar halaman di CPU),
+    /// "off" (tanpa GPU, paling hemat RAM tapi video lebih berat).
+    pub gpu_mode: String,
+    /// Paksa YouTube memakai H.264 (lebih ringan didekode CPU): "auto" (saat GPU mati), "on", "off".
+    pub youtube_h264: String,
     pub zero_copy: bool,
     pub parallel_downloading: bool,
     pub extra_browser_args: String,
@@ -151,6 +194,25 @@ impl Default for Settings {
         Settings {
             schema: SCHEMA,
             setup_done: false,
+            preset: "balanced".into(),
+            toolbar_css: String::new(),
+            vertical_tabs: false,
+            private_search_engine: String::new(),
+            filter_update_hours: 6,
+            block_annoyances: false,
+            block_local_network: true,
+            referrer_policy: "default".into(),
+            https_strict: false,
+            dns_strict: false,
+            letterboxing: false,
+            uniform_fingerprint: false,
+            uniform_utc: false,
+            hide_webview2: true,
+            always_private: false,
+            security_level: "standard".into(),
+            script_allowed: Vec::new(),
+            gpu_mode: "full".into(),
+            youtube_h264: "auto".into(),
             language: "auto".into(),
             theme: "system".into(),
             bookmark_bar: false,
@@ -230,12 +292,44 @@ impl Default for Settings {
     }
 }
 
+/// Isi preset perlindungan: (kunci, Seimbang, Ketat, Maksimal). Setelan lain tidak disentuh.
+pub const PRESETS: &[(&str, &str, &str, &str)] = &[
+    ("block_ads", "true", "true", "true"),
+    ("cosmetic_filtering", "true", "true", "true"),
+    ("block_cookie_notices", "true", "true", "true"),
+    ("block_annoyances", "false", "true", "true"),
+    ("farbling", "\"standard\"", "\"strict\"", "\"strict\""),
+    ("strip_tracking_params", "true", "true", "true"),
+    ("debounce", "true", "true", "true"),
+    ("de_amp", "true", "true", "true"),
+    ("https_only", "true", "true", "true"),
+    ("https_strict", "false", "false", "true"),
+    ("gpc", "true", "true", "true"),
+    ("block_telemetry", "true", "true", "true"),
+    ("block_privacy_sandbox", "true", "true", "true"),
+    ("cname_uncloak", "false", "true", "true"),
+    ("block_local_network", "true", "true", "true"),
+    ("referrer_policy", "\"default\"", "\"origin\"", "\"none\""),
+    ("secure_dns", "\"off\"", "\"quad9\"", "\"mullvad_adblock\""),
+    ("webrtc_policy", "\"default\"", "\"proxy_only\"", "\"proxy_only\""),
+    ("deny_sensitive_permissions", "false", "false", "true"),
+    ("letterboxing", "false", "false", "true"),
+    ("uniform_fingerprint", "false", "false", "true"),
+    ("hide_webview2", "true", "true", "true"),
+    ("security_level", "\"standard\"", "\"standard\"", "\"safer\""),
+    ("disable_webgl", "false", "false", "true"),
+    ("save_history", "true", "true", "false"),
+    ("clear_on_exit", "false", "false", "true"),
+];
+
 /// Alamat DoH untuk pilihan Secure DNS.
 pub fn doh_template(choice: &str) -> Option<String> {
     match choice {
         "cloudflare" => Some("https://cloudflare-dns.com/dns-query".into()),
         "quad9" => Some("https://dns.quad9.net/dns-query".into()),
         "adguard" => Some("https://dns.adguard-dns.com/dns-query".into()),
+        "mullvad" => Some("https://dns.mullvad.net/dns-query".into()),
+        "mullvad_adblock" => Some("https://adblock.dns.mullvad.net/dns-query".into()),
         c if c.starts_with("https://") => Some(c.to_string()),
         _ => None,
     }
@@ -302,6 +396,12 @@ impl Settings {
             self.devtools = false;
             self.spellcheck = false;
         }
+        if self.schema < 2 {
+            // 0.3.1: "Matikan GPU" menjadi pilihan mode GPU.
+            self.gpu_mode = if self.no_gpu { "off".into() } else { "full".into() };
+            self.no_gpu = false;
+            self.preset = "custom".into();
+        }
         self.schema = SCHEMA;
     }
 
@@ -316,15 +416,21 @@ impl Settings {
         pick(&mut self.newtab, &["blank", "ovner"], "blank");
         pick(&mut self.webrtc_policy, &["default", "proxy_only"], "default");
         pick(&mut self.farbling, &["off", "standard", "strict"], "standard");
+        pick(&mut self.preset, &["balanced", "strict", "max", "custom"], "custom");
+        pick(&mut self.referrer_policy, &["default", "origin", "none"], "default");
+        pick(&mut self.security_level, &["standard", "safer", "safest"], "standard");
+        pick(&mut self.gpu_mode, &["full", "lite", "off"], "full");
+        pick(&mut self.youtube_h264, &["auto", "on", "off"], "auto");
+        self.filter_update_hours = self.filter_update_hours.clamp(1, 24 * 7);
         pick(&mut self.update_channel, &["stable", "nightly"], "stable");
-        if !["off", "cloudflare", "quad9", "adguard"].contains(&self.secure_dns.as_str()) && !self.secure_dns.starts_with("https://") {
+        if !["off", "cloudflare", "quad9", "adguard", "mullvad", "mullvad_adblock"].contains(&self.secure_dns.as_str()) && !self.secure_dns.starts_with("https://") {
             self.secure_dns = "off".into();
         }
         self.default_zoom = self.default_zoom.clamp(25, 500);
         self.sleep_tabs_minutes = self.sleep_tabs_minutes.min(24 * 60);
         self.trim_every_minutes = self.trim_every_minutes.min(24 * 60);
         self.renderer_process_limit = self.renderer_process_limit.min(64);
-        for list in [&mut self.exceptions, &mut self.script_blocked, &mut self.farbling_off] {
+        for list in [&mut self.exceptions, &mut self.script_blocked, &mut self.farbling_off, &mut self.script_allowed] {
             *list = list.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
             list.sort();
             list.dedup();
@@ -360,11 +466,68 @@ impl Settings {
         match serde_json::from_value::<Settings>(map) {
             Ok(mut s) => {
                 s.normalize();
+                if PRESETS.iter().any(|p| p.0 == key) {
+                    s.preset = s.detect_preset().into();
+                }
                 *self = s;
                 true
             }
             Err(_) => false,
         }
+    }
+
+    /// Apakah JavaScript boleh jalan di alamat ini (blokir per situs + level keamanan).
+    pub fn scripts_allowed(&self, url: &str) -> bool {
+        let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        if host_in(&self.script_blocked, &host) {
+            return false;
+        }
+        match self.security_level.as_str() {
+            "safer" => !url.starts_with("http://") || host_in(&self.script_allowed, &host),
+            "safest" => host_in(&self.script_allowed, &host),
+            _ => true,
+        }
+    }
+
+    /// Terapkan preset "balanced" / "strict" / "max".
+    pub fn apply_preset(&mut self, name: &str) -> bool {
+        let col = match name {
+            "balanced" => 0,
+            "strict" => 1,
+            "max" => 2,
+            _ => return false,
+        };
+        let Ok(mut map) = serde_json::to_value(&*self) else { return false };
+        for (key, a, b, c) in PRESETS {
+            let v = [a, b, c][col];
+            if let (Some(slot), Ok(val)) = (map.get_mut(*key), serde_json::from_str::<serde_json::Value>(v)) {
+                *slot = val;
+            }
+        }
+        match serde_json::from_value::<Settings>(map) {
+            Ok(mut s) => {
+                s.normalize();
+                s.preset = name.into();
+                *self = s;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Preset yang cocok persis dengan setelan sekarang, atau "custom".
+    pub fn detect_preset(&self) -> &'static str {
+        let Ok(map) = serde_json::to_value(self) else { return "custom" };
+        for (col, name) in ["balanced", "strict", "max"].iter().enumerate() {
+            let all = PRESETS.iter().all(|(key, a, b, c)| {
+                let want: serde_json::Value = serde_json::from_str([a, b, c][col]).unwrap_or_default();
+                map.get(*key) == Some(&want)
+            });
+            if all {
+                return name;
+            }
+        }
+        "custom"
     }
 
     /// Argumen baris perintah WebView2 dari pengaturan (berlaku saat Ovner dibuka).
@@ -417,7 +580,8 @@ impl Settings {
             on.push("WebContentsForceDark".into());
         }
         if let Some(t) = doh_template(&self.secure_dns) {
-            on.push(format!("DnsOverHttps:Fallback/true/Templates/{}", escape_param(&t)));
+            let fallback = if self.dns_strict { "false" } else { "true" };
+            on.push(format!("DnsOverHttps:Fallback/{fallback}/Templates/{}", escape_param(&t)));
         }
         if !self.network_prediction {
             extra.push_str(" --dns-prefetch-disable");
@@ -425,15 +589,34 @@ impl Settings {
         if self.low_end_mode {
             extra.push_str(" --enable-low-end-device-mode");
         }
+        // Semua flag V8 harus dalam satu --js-flags.
+        let mut js: Vec<&str> = Vec::new();
         if self.v8_optimize_for_size {
-            extra.push_str(" --js-flags=--optimize-for-size");
+            js.push("--optimize-for-size");
         }
-        if self.no_gpu {
-            extra.push_str(" --disable-gpu");
+        if self.security_level != "standard" {
+            // Seperti "Enhance security" Edge: JIT JavaScript mati (lebih aman, sedikit lebih lambat).
+            js.push("--jitless");
         }
-        if self.zero_copy {
-            extra.push_str(" --enable-zero-copy");
+        if !js.is_empty() {
+            if js.len() == 1 {
+                extra.push_str(&format!(" --js-flags={}", js[0]));
+            } else {
+                extra.push_str(&format!(" --js-flags=\"{}\"", js.join(" ")));
+            }
         }
+        match self.gpu_mode.as_str() {
+            "off" => extra.push_str(" --disable-gpu"),
+            // GPU tetap untuk dekode video dan komposisi (video tajam dan lancar), tetapi
+            // gambar halaman dirender CPU dan anggaran memori GPU dibatasi.
+            "lite" => extra.push_str(" --disable-gpu-rasterization --disable-accelerated-2d-canvas --force-gpu-mem-available-mb=256"),
+            _ => {
+                if self.zero_copy {
+                    extra.push_str(" --enable-zero-copy");
+                }
+            }
+        }
+
         if self.disable_webgl {
             extra.push_str(" --disable-webgl");
         }
@@ -468,6 +651,11 @@ impl Settings {
             "bing" => "https://www.bing.com/search?q=%s",
             "brave" => "https://search.brave.com/search?q=%s",
             "google" => "https://www.google.com/search?q=%s",
+            "qwant" => "https://www.qwant.com/?q=%s",
+            "startpage" => "https://www.startpage.com/do/search?q=%s",
+            "leta" => "https://leta.mullvad.net/search?q=%s",
+            "ecosia" => "https://www.ecosia.org/search?q=%s",
+            "mojeek" => "https://www.mojeek.com/search?q=%s",
             other if other.contains("%s") && other.starts_with("http") => self.search_engine.as_str(),
             _ => "https://www.google.com/search?q=%s",
         };
@@ -552,7 +740,7 @@ mod tests {
         assert!(!a.contains("--dns-prefetch-disable"));
         assert!(!a.contains("--disable-gpu") && !a.contains("DnsOverHttps"));
         let s = Settings {
-            no_gpu: true,
+            gpu_mode: "off".into(),
             site_isolation: false,
             webrtc_policy: "proxy_only".into(),
             secure_dns: "quad9".into(),
@@ -567,6 +755,38 @@ mod tests {
         assert!(a.contains("--renderer-process-limit=4") && a.contains("WebContentsForceDark") && a.ends_with("--foo"));
         // Hanya satu --enable-features (Chromium memakai yang terakhir).
         assert_eq!(a.matches("--enable-features=").count(), 1);
+    }
+
+    #[test]
+    fn presets_and_gpu() {
+        let mut s = Settings::default();
+        assert_eq!(s.detect_preset(), "balanced");
+        assert!(s.apply_preset("max"));
+        assert_eq!((s.preset.as_str(), s.farbling.as_str(), s.security_level.as_str()), ("max", "strict", "safer"));
+        assert!(s.browser_args().contains("--jitless") && s.browser_args().contains("adblock.dns.mullvad.net"));
+        assert!(s.set("letterboxing", &serde_json::json!(false)));
+        assert_eq!(s.preset, "custom");
+        assert!(s.set("letterboxing", &serde_json::json!(true)));
+        assert_eq!(s.preset, "max");
+        let lite = Settings { gpu_mode: "lite".into(), ..Settings::default() }.browser_args();
+        assert!(lite.contains("--disable-gpu-rasterization") && !lite.contains("--disable-gpu "));
+        // Migrasi 0.3: "Matikan GPU" → mode GPU mati.
+        let mut old: Settings = serde_json::from_str(r#"{"schema":1,"no_gpu":true}"#).unwrap();
+        old.migrate();
+        assert_eq!(old.gpu_mode, "off");
+    }
+
+    #[test]
+    fn security_levels() {
+        let mut s = Settings::default();
+        assert!(s.scripts_allowed("http://a.id/") && s.scripts_allowed("https://a.id/"));
+        s.security_level = "safer".into();
+        assert!(!s.scripts_allowed("http://a.id/") && s.scripts_allowed("https://a.id/"));
+        s.security_level = "safest".into();
+        s.script_allowed = vec!["bank.co.id".into()];
+        assert!(!s.scripts_allowed("https://a.id/") && s.scripts_allowed("https://ib.bank.co.id/"));
+        s.script_blocked = vec!["bank.co.id".into()];
+        assert!(!s.scripts_allowed("https://ib.bank.co.id/"));
     }
 
     #[test]

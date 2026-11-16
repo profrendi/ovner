@@ -151,15 +151,17 @@
     }
   }
 
-  // ---- CPU dan RAM yang dilaporkan ----
+  // ---- CPU dan RAM yang dilaporkan (mode seragam sudah memakai nilai tetap) ----
   const NP = window.Navigator && Navigator.prototype;
-  wrapGetter(NP, "hardwareConcurrency", (get) => {
+  if (!cfg.uniform) wrapGetter(NP, "hardwareConcurrency", (get) => {
     const real = get.call(navigator) || 4;
     const v = strict ? 2 : Math.max(2, Math.min(real, 2 + Math.floor(rng(3)() * (real - 1))));
     return function () { return v; };
   });
-  if (strict) {
+  if (strict && !cfg.uniform) {
     wrapGetter(NP, "deviceMemory", () => function () { return 4; });
+  }
+  if (strict) {
     // getClientRects/getBoundingClientRect: skala sangat kecil (seperti ungoogled-chromium).
     const f = 1 + (rng(13)() - 0.5) * 0.000006;
     const scaleRect = (r) => { try { return new DOMRect(r.x * f, r.y * f, r.width * f, r.height * f); } catch (e) { return r; } };

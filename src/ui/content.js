@@ -9,8 +9,12 @@
 (function () {
   if (window.top !== window || window.__ovner) return;
   Object.defineProperty(window, "__ovner", { value: true });
+  // Saluran ke Ovner diambil sekarang: privacy.js lalu menyembunyikan chrome.webview/ipc
+  // dari skrip situs.
+  const cw = window.chrome && window.chrome.webview;
+  const send = cw && cw.postMessage ? cw.postMessage.bind(cw) : null;
   const ipc = window.ipc;
-  const post = (o) => { try { ipc.postMessage(JSON.stringify(o)); } catch (e) {} };
+  const post = (o) => { try { const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s); } catch (e) {} };
   const cfg = window.__ovnerCfg || {};
 
   // Dialog "Tinggalkan situs?" (seperti --disable-beforeunload di ungoogled-chromium).
@@ -127,6 +131,115 @@
   }, true);
 
   // Alamat berubah lewat history API (YouTube, Gmail, dsb.).
+  // ---- Filter kosmetik procedural (:has-text, :upward, :matches-css, :remove, ...) ----
+  // Format JSON dari adblock-rust: {selector:[{type, arg}...], action:{type, arg}?}.
+  // Dijalankan ulang saat halaman berubah (MutationObserver, dibatasi).
+  (function () {
+    let rules = [];
+    const toRe = (s) => {
+      const m = /^\/(.*)\/([a-z]*)$/.exec(s);
+      if (m) { try { return new RegExp(m[1], m[2]); } catch (e) { return null; } }
+      return null;
+    };
+    const textTest = (pat) => {
+      const re = toRe(pat);
+      return re ? (t) => re.test(t) : (t) => t.includes(pat);
+    };
+    const unq = (s) => String(s).trim().replace(/^"(.*)"$/, "$1");
+    function step(els, op) {
+      const a = op.arg;
+      switch (op.type) {
+        case "css-selector": {
+          const out = [];
+          const sel = a.trim();
+          for (const el of els) {
+            if (/^[+~]/.test(sel)) {
+              const rest = sel.slice(1).trim();
+              let s = el.nextElementSibling;
+              while (s) { if (s.matches(rest)) { out.push(s); if (sel[0] === "+") break; } else if (sel[0] === "+") break; s = s.nextElementSibling; }
+            } else {
+              try { out.push(...el.querySelectorAll(":scope " + sel)); } catch (e) {}
+            }
+          }
+          return out;
+        }
+        case "has-text": { const t = textTest(a); return els.filter((e) => t(e.textContent || "")); }
+        case "min-text-length": { const n = parseInt(a, 10) || 0; return els.filter((e) => (e.textContent || "").length >= n); }
+        case "matches-path": { const t = textTest(a); return t(location.pathname + location.search) ? els : []; }
+        case "matches-attr": {
+          const [rawName, ...rest] = a.split("=");
+          const name = unq(rawName), val = rest.length ? unq(rest.join("=")) : null;
+          const nRe = toRe(name), vRe = val !== null ? toRe(val) : null;
+          return els.filter((e) => [...e.attributes].some((at) =>
+            (nRe ? nRe.test(at.name) : at.name === name) && (val === null || (vRe ? vRe.test(at.value) : at.value === val))));
+        }
+        case "matches-css": case "matches-css-before": case "matches-css-after": {
+          const pseudo = op.type === "matches-css" ? null : op.type.endsWith("before") ? "::before" : "::after";
+          const i = a.indexOf(":");
+          const prop = a.slice(0, i).trim(), want = a.slice(i + 1).trim();
+          const re = toRe(want);
+          return els.filter((e) => { const v = getComputedStyle(e, pseudo).getPropertyValue(prop); return re ? re.test(v) : v === want; });
+        }
+        case "upward": {
+          const n = parseInt(a, 10);
+          const out = [];
+          for (const e of els) {
+            let p = e;
+            if (String(n) === a.trim()) { for (let k = 0; k < n && p; k++) p = p.parentElement; }
+            else { p = e.parentElement && e.parentElement.closest(a); }
+            if (p && p !== document.documentElement) out.push(p);
+          }
+          return out;
+        }
+        case "xpath": {
+          const out = [];
+          for (const e of els) {
+            try {
+              const r = document.evaluate(a, e, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              for (let k = 0; k < r.snapshotLength; k++) { const n = r.snapshotItem(k); if (n.nodeType === 1) out.push(n); }
+            } catch (e2) {}
+          }
+          return out;
+        }
+        default: return [];
+      }
+    }
+    function select(ops) {
+      if (!ops.length) return [];
+      let els;
+      if (ops[0].type === "css-selector") { try { els = [...document.querySelectorAll(ops[0].arg)]; } catch (e) { return []; } ops = ops.slice(1); }
+      else els = [...document.querySelectorAll("*")].filter((e) => e !== document.documentElement && e !== document.body);
+      for (const op of ops) { els = step(els, op); if (!els.length) break; }
+      return [...new Set(els)];
+    }
+    function apply() {
+      for (const r of rules) {
+        let els;
+        try { els = select(r.selector || []); } catch (e) { continue; }
+        const act = r.action || { type: "hide" };
+        for (const e of els) {
+          if (e.__ovnerDone === r) continue;
+          e.__ovnerDone = r;
+          if (act.type === "remove") e.remove();
+          else if (act.type === "style") e.style.cssText += ";" + act.arg.split(";").map((d) => d.trim() ? d + " !important" : "").join(";");
+          else if (act.type === "remove-attr") e.removeAttribute(act.arg);
+          else if (act.type === "remove-class") act.arg.split("|").forEach((c) => e.classList.remove(c.trim()));
+          else e.style.setProperty("display", "none", "important");
+        }
+      }
+    }
+    let pending = false;
+    const later = () => { if (pending) return; pending = true; setTimeout(() => { pending = false; apply(); }, 150); };
+    window.__ovnerProc = (list) => {
+      rules = (list || []).filter((r) => r && Array.isArray(r.selector));
+      if (!rules.length) return;
+      onReady(() => {
+        apply();
+        new MutationObserver(later).observe(document.documentElement, { childList: true, subtree: true });
+      });
+    };
+  })();
+
   const notifyUrl = () => post({ t: "url" });
   for (const fn of ["pushState", "replaceState"]) {
     const orig = history[fn];

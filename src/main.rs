@@ -35,7 +35,7 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Icon, Window, WindowBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use wry::dpi::{LogicalPosition as WLogicalPosition, LogicalSize as WLogicalSize};
 use wry::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse, Rect, WebContext, WebView, WebViewBuilder};
@@ -46,12 +46,15 @@ use settings::{host_in, toggle_host, Settings};
 use store::Store;
 
 const TOOLBAR_HTML: &str = include_str!("ui/toolbar.html");
+const SIDEBAR_HTML: &str = include_str!("ui/sidebar.html");
+const SIDEBAR_W: f64 = 230.0;
 const NEWTAB_HTML: &str = include_str!("ui/newtab.html");
 const SETTINGS_HTML: &str = include_str!("ui/settings.html");
 const HISTORY_HTML: &str = include_str!("ui/history.html");
 const BOOKMARKS_HTML: &str = include_str!("ui/bookmarks.html");
 const TASKS_HTML: &str = include_str!("ui/tasks.html");
 const SETUP_HTML: &str = include_str!("ui/setup.html");
+const HTTPS_HTML: &str = include_str!("ui/https.html");
 const PAGE_CSS: &str = include_str!("ui/page.css");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
 /// `http://ovner.<nama>/` (WebView2 belum mendukung skema sendiri secara penuh).
@@ -205,6 +208,8 @@ enum UserEvent {
     UpdateReady(String),
     UpdateInfo(String),
     Menu(String),
+    /// Tab terakhir ditutup: tutup jendela seperti tombol X.
+    CloseWindow,
     TrayClick,
     Remote(Remote),
 }
@@ -260,6 +265,8 @@ struct Menus {
 struct App {
     window: Window,
     toolbar: WebView,
+    /// Daftar tab vertikal di kiri (bila dinyalakan).
+    sidebar: Option<WebView>,
     toolbar_ready: bool,
     toolbar_h: f64,
     tabs: Vec<Tab>,
@@ -325,6 +332,7 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "bookmarks" => page_response(BOOKMARKS_HTML),
         "tasks" => page_response(TASKS_HTML),
         "setup" => page_response(SETUP_HTML),
+        "https" => page_response(HTTPS_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
 }
@@ -337,6 +345,22 @@ fn set_memory_low(wv: &WebView, low: bool) {
     }
     #[cfg(not(windows))]
     let _ = (wv, low);
+}
+
+/// Teks aman untuk menu Windows: "&" berarti huruf pintas, jadi digandakan; judul panjang dipotong.
+fn menu_label(text: &str) -> String {
+    let mut t: String = text.trim().chars().take(70).collect();
+    if text.trim().chars().count() > 70 {
+        t.push('…');
+    }
+    if t.is_empty() {
+        t.push('—');
+    }
+    if cfg!(windows) {
+        t.replace('&', "&&")
+    } else {
+        t
+    }
 }
 
 fn build_menus(lang: Lang) -> Menus {
@@ -367,6 +391,7 @@ fn build_menus(lang: Lang) -> Menus {
         &item("newtab", "m.newtab"),
         &item("private", "m.private"),
         &item("reopen", "m.reopen"),
+        &item("new-identity", "m.new_identity"),
         &PredefinedMenuItem::separator(),
         &bookmarks,
         &item("history", "m.history"),
@@ -390,6 +415,7 @@ fn build_menus(lang: Lang) -> Menus {
         &item("tab-sleep", "tm.sleep"),
         &item("tab-split", "tm.split"),
         &PredefinedMenuItem::separator(),
+        &item("copy-urls", "tm.copy_urls"),
         &item("tab-close", "tm.close"),
         &item("tab-close-others", "tm.close_others"),
     ]);
@@ -404,12 +430,86 @@ impl App {
         Rect { position: WLogicalPosition::new(0.0, 0.0).into(), size: WLogicalSize::new(size.width.max(1.0), self.toolbar_h).into() }
     }
 
+    fn side_w(&self) -> f64 {
+        if self.sidebar.is_some() {
+            SIDEBAR_W
+        } else {
+            0.0
+        }
+    }
+
     fn content_rect(&self) -> Rect {
+        let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
+        let x = self.side_w();
+        Rect {
+            position: WLogicalPosition::new(x, self.toolbar_h).into(),
+            size: WLogicalSize::new((size.width - x).max(1.0), (size.height - self.toolbar_h).max(1.0)).into(),
+        }
+    }
+
+    fn sidebar_rect(&self) -> Rect {
         let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
         Rect {
             position: WLogicalPosition::new(0.0, self.toolbar_h).into(),
-            size: WLogicalSize::new(size.width.max(1.0), (size.height - self.toolbar_h).max(1.0)).into(),
+            size: WLogicalSize::new(SIDEBAR_W, (size.height - self.toolbar_h).max(1.0)).into(),
         }
+    }
+
+    /// Buat/buang daftar tab vertikal sesuai setelan.
+    fn ensure_sidebar(&mut self) {
+        let want = self.settings.borrow().vertical_tabs;
+        if !want {
+            self.sidebar = None;
+            return;
+        }
+        if self.sidebar.is_some() {
+            return;
+        }
+        let p = self.proxy.clone();
+        let theme = self.settings.borrow().theme.clone();
+        let rect = self.sidebar_rect();
+        let b = WebViewBuilder::new_with_web_context(&mut self.web_context)
+            .with_html(SIDEBAR_HTML)
+            .with_bounds(rect)
+            .with_hotkeys_zoom(false)
+            .with_devtools(cfg!(debug_assertions))
+            .with_ipc_handler(move |req| send(&p, UserEvent::Toolbar(req.body().clone())));
+        #[cfg(windows)]
+        let b = {
+            use wry::WebViewBuilderExtWindows;
+            let mut b = b
+                .with_additional_browser_args(self.browser_args.clone())
+                .with_browser_accelerator_keys(false)
+                .with_default_context_menus(false)
+                .with_theme(wry_theme(&theme));
+            if let Some(env) = &self.env {
+                b = b.with_environment(env.clone());
+            }
+            b
+        };
+        #[cfg(not(windows))]
+        let _ = theme;
+        match b.build_as_child(&self.window) {
+            Ok(w) => self.sidebar = Some(w),
+            Err(e) => log(&format!("tab vertikal gagal dibuat: {e}")),
+        }
+        self.last_render_key.clear();
+    }
+
+    /// Terapkan ulang semua setelan (setelah preset dipilih).
+    fn apply_all_settings(&mut self) {
+        let s = self.settings.borrow().clone();
+        start_filter_update(self.proxy.clone(), s);
+        self.script_gen += 1;
+        let shown: Vec<usize> = (0..self.tabs.len()).filter(|&j| self.is_shown(j) && internal_page(&self.tabs[j].url).is_none()).collect();
+        for j in shown {
+            self.rebuild_tab(j);
+        }
+        self.ensure_sidebar();
+        self.layout();
+        self.refresh_pages("settings");
+        self.last_render_key.clear();
+        self.render();
     }
 
     fn tab_index(&self, id: u64) -> Option<usize> {
@@ -450,6 +550,16 @@ impl App {
 
     /// Kotak untuk tab `i`: penuh, atau separuh kiri/kanan saat split view.
     fn rect_for(&self, i: usize) -> Rect {
+        let r = self.rect_for_raw(i);
+        if !self.settings.borrow().letterboxing {
+            return r;
+        }
+        let (pos, size): (WLogicalPosition<f64>, WLogicalSize<f64>) = (r.position.to_logical(1.0), r.size.to_logical(1.0));
+        let (dx, dy, w, h) = shields::letterbox(size.width, size.height);
+        Rect { position: WLogicalPosition::new(pos.x + dx, pos.y + dy).into(), size: WLogicalSize::new(w, h).into() }
+    }
+
+    fn rect_for_raw(&self, i: usize) -> Rect {
         let full = self.content_rect();
         let Some(partner) = self.split.and_then(|id| self.tab_index(id)) else { return full };
         if i != self.active && i != partner {
@@ -496,6 +606,7 @@ impl App {
         let p_new = self.proxy.clone();
         let (nav_blocked, nav_page) = (blocked.clone(), page.clone());
         let nav_settings = self.settings.clone();
+        let nav_blocker = self.blocker.clone();
         let (deny_perm, autoplay, popups_to_tabs) = (s.deny_sensitive_permissions, s.autoplay, s.popups_to_tabs);
 
         let mut builder = if private { WebViewBuilder::new().with_incognito(true) } else { WebViewBuilder::new_with_web_context(&mut self.web_context) };
@@ -520,6 +631,13 @@ impl App {
                     if let Some(t) = blocker::strip_tracking_params(target.as_deref().unwrap_or(&url)) {
                         target = Some(t);
                     }
+                    // Aturan $removeparam dari daftar filter (AdGuard URL Tracking, uBO).
+                    if s.block_ads {
+                        let cur = target.clone().unwrap_or_else(|| url.clone());
+                        if let Some(t) = nav_blocker.borrow().check(&cur, &cur, "document").rewritten {
+                            target = Some(t);
+                        }
+                    }
                 }
                 if s.https_only && allow_http.borrow().as_deref() != Some(url.as_str()) {
                     if let Some(up) = upgrade_https(target.as_deref().unwrap_or(&url)) {
@@ -533,7 +651,7 @@ impl App {
                 }
                 // 4. Blokir JavaScript per situs: setelan berlaku untuk navigasi berikutnya,
                 //    jadi navigasi ini dibatalkan lalu diulang dengan setelan yang benar.
-                let want = internal_page(&url).is_some() || !host_of(&url).is_some_and(|h| host_in(&s.script_blocked, &h));
+                let want = internal_page(&url).is_some() || s.scripts_allowed(&url);
                 if want != scripts_on.get() {
                     send(&p_nav, UserEvent::ScriptNav(id, url, want));
                     return false;
@@ -577,6 +695,9 @@ impl App {
         match builder.build_as_child(&self.window) {
             Ok(wv) => {
                 win::tune_webview(&wv, &s);
+                for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
+                    win::cdp(&wv, method, &params);
+                }
                 #[cfg(windows)]
                 {
                     let ctx = netfilter::FilterCtx {
@@ -586,6 +707,7 @@ impl App {
                         page: page.clone(),
                         cname: self.cname.clone(),
                     };
+                    netfilter::attach_scriptlets(&wv, ctx.clone());
                     if let Err(e) = netfilter::attach(&wv, ctx) {
                         log(&format!("pemblokir tidak terpasang: {e}"));
                     }
@@ -626,6 +748,7 @@ impl App {
     }
 
     fn open_tab(&mut self, url: &str, activate: bool, private: bool) {
+        let private = private || self.settings.borrow().always_private;
         let url = if url.is_empty() { self.newtab_url() } else { url.to_string() };
         let title = if is_newtab(&url) { "Tab baru" } else { "" };
         let tab = self.new_tab_struct(&url, title, private);
@@ -724,8 +847,11 @@ impl App {
         }
         drop(t);
         if self.tabs.is_empty() {
+            // Seperti Brave: menutup tab terakhir menutup jendela (ke tray atau keluar).
+            // Tab baru disiapkan supaya jendela tidak kosong saat dibuka lagi.
             self.active = 0;
             self.open_tab("", true, false);
+            send(&self.proxy, UserEvent::CloseWindow);
             return;
         }
         if i < self.active || self.active >= self.tabs.len() {
@@ -919,7 +1045,7 @@ impl App {
         let shield_on = s.block_ads && !host.as_deref().is_some_and(|h| s.is_exception(h));
         let site = host.as_deref().filter(|_| tab.is_some_and(|t| internal_page(&t.url).is_none())).unwrap_or("");
         let (can_back, can_forward) = tab.and_then(|t| t.webview.as_ref()).map(nav_state).unwrap_or((false, false));
-        let bookmarks: Vec<Value> = self.store.bookmarks.iter().map(|b| json!({"title": b.title, "url": b.url})).collect();
+        let bookmarks: Vec<Value> = self.store.bookmarks.iter().map(|b| json!({"title": b.title, "url": b.url, "folder": b.folder})).collect();
         let state = json!({
             "tabs": tabs,
             "url": url,
@@ -945,6 +1071,8 @@ impl App {
             "farbling": s.farbling,
             "suggest": s.address_suggestions,
             "noSearch": s.no_search,
+            "vertical": s.vertical_tabs,
+            "toolbarCss": s.toolbar_css,
         });
         drop(s);
         let text = state.to_string();
@@ -952,6 +1080,9 @@ impl App {
             return;
         }
         let _ = self.toolbar.evaluate_script(&format!("window.ovner && ovner.render({text})"));
+        if let Some(sb) = &self.sidebar {
+            let _ = sb.evaluate_script(&format!("window.ovner && ovner.render({text})"));
+        }
         if let Some(t) = tab {
             let title = if t.title.is_empty() { "Ovner".to_string() } else { format!("{} - Ovner", t.title) };
             self.window.set_title(&title);
@@ -980,6 +1111,9 @@ impl App {
 
     fn layout(&mut self) {
         let _ = self.toolbar.set_bounds(self.toolbar_rect());
+        if let Some(sb) = &self.sidebar {
+            let _ = sb.set_bounds(self.sidebar_rect());
+        }
         for i in 0..self.tabs.len() {
             let r = self.rect_for(i);
             if let Some(wv) = &self.tabs[i].webview {
@@ -1185,7 +1319,18 @@ impl App {
             }
             "block_cookie_notices" | "custom_lists" => start_filter_update(self.proxy.clone(), s.clone()),
             // Skrip halaman dibuat saat tab dibangun: tandai semua tab untuk dibangun ulang.
-            "farbling" | "farbling_off" | "spellcheck" | "disable_beforeunload" | "de_amp" | "user_css" => {
+            "letterboxing" | "vertical_tabs" => {
+                self.ensure_sidebar();
+                self.layout();
+            }
+            "block_annoyances" | "strip_tracking_params" | "filter_update_hours" => start_filter_update(self.proxy.clone(), s.clone()),
+            "security_level" | "script_allowed" => {
+                if let Some(wv) = self.active_webview() {
+                    let _ = wv.reload();
+                }
+            }
+            "farbling" | "farbling_off" | "spellcheck" | "disable_beforeunload" | "de_amp" | "user_css" | "hide_webview2" | "uniform_fingerprint"
+            | "uniform_utc" | "youtube_h264" | "referrer_policy" | "gpu_mode" => {
                 self.script_gen += 1;
                 let shown: Vec<usize> = (0..self.tabs.len()).filter(|&j| self.is_shown(j) && internal_page(&self.tabs[j].url).is_none()).collect();
                 for j in shown {
@@ -1299,10 +1444,17 @@ impl App {
                 if current_url.is_empty() || !self.blocking_active_for(&current_url) || internal.is_some() {
                     return false;
                 }
-                let (css, exc, generichide) = self.blocker.borrow().page_cosmetics(&current_url);
-                self.tabs[i].cos_exceptions = exc;
-                self.tabs[i].generichide = generichide;
-                self.inject_css(i, &css);
+                let pr = self.blocker.borrow().page_resources(&current_url);
+                self.tabs[i].cos_exceptions = pr.exceptions;
+                self.tabs[i].generichide = pr.generichide;
+                self.inject_css(i, &pr.css);
+                if !pr.procedural.is_empty() {
+                    // Aturan procedural (:has-text, :upward, :remove, ...) dijalankan content.js.
+                    let list = format!("[{}]", pr.procedural.join(","));
+                    if let Some(wv) = &self.tabs[i].webview {
+                        let _ = wv.evaluate_script(&format!("window.__ovnerProc && __ovnerProc({list})"));
+                    }
+                }
             }
             "cos" => {
                 if self.tabs[i].generichide || current_url.is_empty() || !self.blocking_active_for(&current_url) || internal.is_some() {
@@ -1324,6 +1476,23 @@ impl App {
             "pick" => {
                 if let Some(sel) = msg["sel"].as_str() {
                     self.add_hide_rule(i, sel);
+                }
+            }
+            "allow-http" => {
+                if let Some(u) = msg["url"].as_str().filter(|u| u.starts_with("http://")) {
+                    *self.tabs[i].allow_http.borrow_mut() = Some(u.to_string());
+                    if let Some(wv) = &self.tabs[i].webview {
+                        let _ = wv.load_url(u);
+                    }
+                }
+            }
+            "preset" => {
+                let name = msg["name"].as_str().unwrap_or("");
+                let ok = self.settings.borrow_mut().apply_preset(name);
+                if ok {
+                    self.settings.borrow().save(data_dir());
+                    log(&format!("preset: {name}"));
+                    self.apply_all_settings();
                 }
             }
             "import" => {
@@ -1472,7 +1641,7 @@ impl App {
                 }
             }
             "go" => {
-                let url = to_url(msg["text"].as_str().unwrap_or(""), &self.settings.borrow());
+                let url = to_url(msg["text"].as_str().unwrap_or(""), &self.search_settings());
                 if let Some(url) = url {
                     if msg["newtab"].as_bool().unwrap_or(false) {
                         self.open_tab(&url, true, false);
@@ -1512,6 +1681,13 @@ impl App {
                 }
             }
             "newtab" => self.open_tab("", true, false),
+            "bm-folder" => {
+                let f = msg["folder"].as_str().unwrap_or("").to_string();
+                self.show_bookmark_folder(&f, msg["x"].as_f64().unwrap_or(0.0), msg["y"].as_f64().unwrap_or(self.toolbar_h));
+            }
+            "bm-more" => {
+                self.show_bookmark_overflow(&msg["items"], msg["x"].as_f64().unwrap_or(0.0), msg["y"].as_f64().unwrap_or(self.toolbar_h));
+            }
             "activate" => {
                 if let Some(i) = self.tab_index(id) {
                     self.activate(i);
@@ -1589,12 +1765,43 @@ impl App {
             }
             "tabmenu" => {
                 self.menu_tab = Some(id);
-                self.show_menu(true, msg["x"].as_f64().unwrap_or(0.0), msg["y"].as_f64().unwrap_or(0.0));
+                let dy = if msg["side"].as_bool().unwrap_or(false) { self.toolbar_h } else { 0.0 };
+                self.show_menu(true, msg["x"].as_f64().unwrap_or(0.0), msg["y"].as_f64().unwrap_or(0.0) + dy);
             }
             "restart" => return true,
             _ => {}
         }
         false
+    }
+
+    /// Setelan untuk mencari dari kolom alamat: tab privat bisa memakai mesin pencari lain.
+    fn search_settings(&self) -> Settings {
+        let mut s = self.settings.borrow().clone();
+        let private = self.tabs.get(self.active).is_some_and(|t| t.private);
+        if private && !s.private_search_engine.trim().is_empty() {
+            s.search_engine = s.private_search_engine.clone();
+        }
+        s
+    }
+
+    /// Identitas baru: semua tab ditutup, data penjelajahan dihapus, mulai dari tab kosong.
+    fn new_identity(&mut self) {
+        self.split = None;
+        self.closed.clear();
+        let tabs = std::mem::take(&mut self.tabs);
+        drop(tabs);
+        self.store.clear_history();
+        self.store.flush();
+        self.session_key = shields::session_key();
+        self.script_gen += 1;
+        self.active = 0;
+        self.open_tab("", true, false);
+        // Toolbar memakai profil yang sama dengan tab biasa.
+        let _ = self.toolbar.clear_all_browsing_data();
+        let _ = std::fs::remove_file(data_dir().join("session.json"));
+        log("identitas baru");
+        self.last_render_key.clear();
+        self.render();
     }
 
     /// Panel Shields: menu kecil dengan sakelar untuk situs di tab aktif.
@@ -1611,9 +1818,15 @@ impl App {
         let scripts = CheckMenuItem::with_id("shield-scripts", t(lang, "sh.scripts"), true, host_in(&s.script_blocked, &host), None);
         let fp = CheckMenuItem::with_id("shield-fp", t(lang, "sh.fp"), s.farbling != "off", s.farbling_for(&host) != "off", None);
         let pick = MenuItem::with_id("pick", t(lang, "sh.pick"), true, None);
+        let level = s.security_level.clone();
+        let allow_js = CheckMenuItem::with_id("shield-allow-js", t(lang, "sh.allow_js"), level != "standard", host_in(&s.script_allowed, &host), None);
         let more = MenuItem::with_id("shield-settings", t(lang, "sh.settings"), true, None);
         drop(s);
-        let _ = m.append_items(&[&head, &count, &PredefinedMenuItem::separator(), &ads, &scripts, &fp, &PredefinedMenuItem::separator(), &pick, &more]);
+        let _ = m.append_items(&[&head, &count, &PredefinedMenuItem::separator(), &ads, &scripts, &fp]);
+        if level != "standard" {
+            let _ = m.append(&allow_js);
+        }
+        let _ = m.append_items(&[&PredefinedMenuItem::separator(), &pick, &more]);
         #[cfg(windows)]
         {
             use tao::platform::windows::WindowExtWindows;
@@ -1627,6 +1840,84 @@ impl App {
         {
             let _ = (x, y, m);
         }
+    }
+
+    /// Tampilkan menu sementara di posisi (x, y) toolbar.
+    fn popup(&self, m: &Menu, x: f64, y: f64) {
+        #[cfg(windows)]
+        {
+            use tao::platform::windows::WindowExtWindows;
+            use tray_icon::menu::ContextMenu;
+            let pos = tray_icon::dpi::Position::Logical(tray_icon::dpi::LogicalPosition::new(x, y));
+            unsafe {
+                m.show_context_menu_for_hwnd(self.window.hwnd() as isize, Some(pos));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (m, x, y);
+        }
+    }
+
+    /// Isi satu folder bookmark: subfolder sebagai submenu, lalu bookmark-nya.
+    fn fill_bookmark_folder(&self, path: &str, push: &mut dyn FnMut(&dyn IsMenuItem)) {
+        let prefix = format!("{path}/");
+        let mut subs: Vec<String> = Vec::new();
+        for b in &self.store.bookmarks {
+            if let Some(rest) = b.folder.strip_prefix(&prefix) {
+                let name = rest.split('/').next().unwrap_or("").to_string();
+                if !subs.contains(&name) {
+                    subs.push(name);
+                }
+            }
+        }
+        for name in subs {
+            let sm = Submenu::new(menu_label(&name), true);
+            self.fill_bookmark_folder(&format!("{prefix}{name}"), &mut |it| {
+                let _ = sm.append(it);
+            });
+            push(&sm);
+        }
+        for (i, b) in self.store.bookmarks.iter().enumerate().filter(|(_, b)| b.folder == path) {
+            let item = MenuItem::with_id(format!("bmo:{i}"), menu_label(&b.title), true, None);
+            push(&item);
+        }
+    }
+
+    fn folder_label(&self, folder: &str) -> String {
+        if folder == "@other" {
+            t(self.lang, "m.other_bookmarks").to_string()
+        } else {
+            folder.to_string()
+        }
+    }
+
+    /// Menu satu folder bilah bookmark.
+    fn show_bookmark_folder(&self, folder: &str, x: f64, y: f64) {
+        let m = Menu::new();
+        self.fill_bookmark_folder(folder, &mut |it| {
+            let _ = m.append(it);
+        });
+        self.popup(&m, x, y);
+    }
+
+    /// Menu » untuk item bilah bookmark yang tidak muat.
+    fn show_bookmark_overflow(&self, items: &Value, x: f64, y: f64) {
+        let m = Menu::new();
+        for it in items.as_array().into_iter().flatten() {
+            if let Some(f) = it["f"].as_str() {
+                let sm = Submenu::new(menu_label(&self.folder_label(f)), true);
+                self.fill_bookmark_folder(f, &mut |x| {
+                    let _ = sm.append(x);
+                });
+                let _ = m.append(&sm);
+            } else if let Some(i) = it["i"].as_u64().map(|i| i as usize) {
+                if let Some(b) = self.store.bookmarks.get(i) {
+                    let _ = m.append(&MenuItem::with_id(format!("bmo:{i}"), menu_label(&b.title), true, None));
+                }
+            }
+        }
+        self.popup(&m, (x - 280.0).max(0.0), y);
     }
 
     fn show_menu(&self, tab_menu: bool, x: f64, y: f64) {
@@ -1661,6 +1952,12 @@ impl App {
     /// Mengembalikan true bila Ovner harus keluar.
     fn on_menu(&mut self, id: &str) -> bool {
         let tab_target = self.menu_tab.and_then(|id| self.tab_index(id));
+        if let Some(i) = id.strip_prefix("bmo:").and_then(|i| i.parse::<usize>().ok()) {
+            if let Some(url) = self.store.bookmarks.get(i).map(|b| b.url.clone()) {
+                self.navigate_active(&url, false);
+            }
+            return false;
+        }
         match id {
             "newtab" => {
                 if self.in_tray {
@@ -1701,6 +1998,27 @@ impl App {
             }
             "bookmarks" | "history" | "settings" | "tasks" => self.open_internal(id),
             "shield-settings" => self.open_internal("settings"),
+            "shield-allow-js" => {
+                let host = self.tabs.get(self.active).and_then(|t| host_of(&t.url));
+                if let Some(h) = host {
+                    toggle_host(&mut self.settings.borrow_mut().script_allowed, &h);
+                    self.settings.borrow().save(data_dir());
+                    if let Some(wv) = self.active_webview() {
+                        let _ = wv.reload();
+                    }
+                    self.refresh_pages("settings");
+                }
+            }
+            "copy-urls" => {
+                let text: String = self.tabs.iter().filter(|t| !is_newtab(&t.url)).map(|t| format!("{}\n", display_url(&t.url))).collect();
+                win::set_clipboard(&text);
+            }
+            "new-identity" => {
+                // Seperti Mullvad/Tor: tutup semua tab, hapus cookie, cache, dan riwayat.
+                if win::confirm(t(self.lang, "d.new_identity")) {
+                    self.new_identity();
+                }
+            }
             "shield-scripts" => self.toggle_site("scripts"),
             "shield-fp" => self.toggle_site("fp"),
             "shield-ads" => {
@@ -1913,18 +2231,18 @@ fn filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings, force: bool) {
         blocker::write_custom_rules(&dir, &s.custom_rules);
         blocker::prune_lists(&dir, &wanted);
         let had_cache = blocker::load_cached(&dir).is_some();
-        let stale = blocker::lists_need_refresh(&dir, &wanted);
+        let stale = if force { wanted.clone() } else { blocker::stale_lists(&dir, &wanted, s.filter_update_hours) };
         let mut changed = false;
-        if force || (stale && s.auto_update_filters) {
+        if force || (!stale.is_empty() && s.auto_update_filters) {
             if !force {
                 std::thread::sleep(Duration::from_secs(3));
             }
-            let n = blocker::download_lists(&dir, &wanted, false);
-            log(&format!("daftar filter diunduh: {n}/{}", wanted.len()));
+            let n = blocker::download_lists(&dir, &stale, false);
+            log(&format!("daftar filter berubah: {n}/{}", stale.len()));
             changed = n > 0;
-        } else if stale {
+        } else if !stale.is_empty() {
             // Pembaruan otomatis mati: hanya unduh daftar yang belum ada sama sekali.
-            changed = blocker::download_lists(&dir, &wanted, true) > 0;
+            changed = blocker::download_lists(&dir, &stale, true) > 0;
         }
         if changed || !had_cache {
             let started = Instant::now();
@@ -2127,7 +2445,7 @@ fn main() {
     let lang = i18n::resolve(&settings.language);
     let cached = blocker::load_cached(data_dir());
     let full = cached.is_some();
-    let blocker = Rc::new(RefCell::new(Blocker::new(cached.unwrap_or_else(blocker::builtin_engine), full)));
+    let blocker = Rc::new(RefCell::new(Blocker::new(cached.unwrap_or_else(blocker::builtin_engine), full, data_dir())));
     start_filter_update(proxy.clone(), settings.clone());
     if settings.check_updates && cfg!(windows) {
         let p = proxy.clone();
@@ -2221,6 +2539,7 @@ fn main() {
     let mut app = App {
         window,
         toolbar,
+        sidebar: None,
         toolbar_ready: false,
         toolbar_h: 77.0,
         tabs: Vec::new(),
@@ -2255,6 +2574,7 @@ fn main() {
         last_unresponsive: HashMap::new(),
         extensions_loaded: false,
     };
+    app.ensure_sidebar();
 
     // Pulihkan tab terakhir: hanya tab aktif yang dimuat, sisanya tidur sampai diklik.
     let restore = app.settings.borrow().restore_tabs;
@@ -2412,6 +2732,13 @@ fn main() {
                         }
                     }
                 }
+                UserEvent::CloseWindow => {
+                    if app.settings.borrow().close_to_tray && app._tray.is_some() {
+                        app.hide_to_tray();
+                    } else {
+                        quit = true;
+                    }
+                }
                 UserEvent::ScriptNav(id, url, enabled) => {
                     if let Some(i) = app.tab_index(id) {
                         let t = &app.tabs[i];
@@ -2472,10 +2799,18 @@ fn main() {
                         // Galat koneksi/sertifikat (kode 1-12), bukan galat HTTP dari server.
                         if !ok && (1..=12).contains(&status) {
                             if let Some(orig) = t.upgraded_from.take() {
-                                log(&format!("HTTPS gagal ({status}), kembali ke {orig}"));
-                                *t.allow_http.borrow_mut() = Some(orig.clone());
+                                let strict = app.settings.borrow().https_strict;
+                                log(&format!("HTTPS gagal ({status}), {} {orig}", if strict { "peringatan untuk" } else { "kembali ke" }));
+                                let to = if strict {
+                                    // HTTPS-only ketat: tanya dulu sebelum membuka versi http.
+                                    let enc: String = url::form_urlencoded::byte_serialize(orig.as_bytes()).collect();
+                                    format!("{}#{enc}", internal_url("https"))
+                                } else {
+                                    *t.allow_http.borrow_mut() = Some(orig.clone());
+                                    orig
+                                };
                                 if let Some(wv) = &t.webview {
-                                    let _ = wv.load_url(&orig);
+                                    let _ = wv.load_url(&to);
                                 }
                             }
                         } else if ok {
@@ -2485,7 +2820,7 @@ fn main() {
                 }
                 UserEvent::EngineReady(bytes) => {
                     if let Some(engine) = blocker::engine_from_bytes(&bytes) {
-                        *app.blocker.borrow_mut() = Blocker::new(engine, true);
+                        *app.blocker.borrow_mut() = Blocker::new(engine, true, data_dir());
                         log("pemblokir memakai daftar filter lengkap");
                         app.refresh_pages("settings");
                         app.render();

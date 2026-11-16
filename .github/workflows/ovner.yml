@@ -10,6 +10,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Scriptlet dan resource pengganti uBlock Origin/Brave disusun ulang setiap hari.
+  schedule:
+    - cron: "17 21 * * *"
 
 permissions:
   contents: write
@@ -19,7 +22,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # resources.json untuk pemblokir Ovner: scriptlet (+js) dan resource pengganti ($redirect)
+  # dari uBlock Origin, ditambah scriptlet khusus Brave. Diunduh Ovner tiap beberapa jam.
+  resources:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Susun resources.json
+        run: |
+          git clone --depth 1 https://github.com/gorhill/uBlock.git ubo
+          node tools/build-resources.mjs ubo ubo-resources.json
+          curl -fsSL https://raw.githubusercontent.com/brave/adblock-resources/master/dist/resources.json -o brave-resources.json || echo "[]" > brave-resources.json
+          node -e '
+            const fs = require("fs");
+            const ubo = JSON.parse(fs.readFileSync("ubo-resources.json"));
+            const brave = JSON.parse(fs.readFileSync("brave-resources.json"));
+            const names = new Set(ubo.flatMap((r) => [r.name, ...(r.aliases || [])]));
+            const extra = brave.filter((r) => !names.has(r.name));
+            fs.writeFileSync("resources.json", JSON.stringify(ubo.concat(extra)));
+            console.log(`uBO ${ubo.length} + Brave ${extra.length} resource`);
+          '
+          test "$(stat -c%s resources.json)" -gt 100000
+      - name: Terbitkan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          if ! gh release view ovner-resources --repo "$repo" >/dev/null 2>&1; then
+            gh release create ovner-resources --repo "$repo" --prerelease --latest=false \
+              --title "Ovner: scriptlet pemblokir" \
+              --notes "Scriptlet (+js) dan resource pengganti uBlock Origin + Brave untuk pemblokir Ovner. Diperbarui otomatis setiap hari; tidak perlu diunduh manual."
+          fi
+          gh release upload ovner-resources resources.json --repo "$repo" --clobber
+
   windows:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

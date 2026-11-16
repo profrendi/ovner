@@ -59,11 +59,19 @@
   #upd { display: none; height: 26px; padding: 0 10px; border: 0; border-radius: 13px; background: var(--ok); color: #fff;
     font: inherit; font-weight: 600; cursor: pointer; }
   #upd.show { display: block; }
-  #bmbar { height: 28px; display: none; align-items: center; gap: 2px; padding: 0 8px; background: var(--bar); overflow: hidden; }
+  #bmbar { height: 30px; display: none; align-items: center; gap: 2px; padding: 0 6px; background: var(--bar); overflow: hidden; }
   #bmbar.show { display: flex; }
-  .bm { flex: 0 1 auto; max-width: 180px; height: 22px; padding: 0 8px; border: 0; border-radius: 5px; background: none; color: var(--text);
-    font: inherit; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  #bmitems { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; }
+  .bm { flex: none; max-width: 170px; height: 24px; padding: 0 8px 0 6px; border: 0; border-radius: 6px; background: none; color: var(--text);
+    font: inherit; font-size: 12.5px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .bm:hover { background: var(--field); }
+  .bm .lb { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .bm .fi { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: #fff; }
+  .bm svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+  .bm.hide { display: none; }
+  #bmmore, #bmother { flex: none; }
+  #bmmore { width: 26px; padding: 0; justify-content: center; font-size: 15px; }
+  .bmsep { flex: none; width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
   #find { height: 34px; display: none; align-items: center; gap: 6px; padding: 0 8px 0 14px; background: var(--bar); }
   #find.show { display: flex; }
   #findq { width: 280px; height: 26px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; background: var(--field); color: var(--text);
@@ -95,7 +103,7 @@
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
   <button class="b" id="menu" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </div>
-<div id="bmbar"></div>
+<div id="bmbar"><div id="bmitems"></div><button class="bm" id="bmmore">»</button><span class="bmsep" id="bmsep"></span><button class="bm" id="bmother"></button></div>
 <div id="find">
   <input id="findq">
   <button class="b" id="findprev" title="Sebelumnya (Shift+Enter)"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
@@ -111,13 +119,13 @@
       back: "Kembali (Alt+←)", fwd: "Maju (Alt+→)", reload: "Muat ulang (F5)", stop: "Hentikan (Esc)", home: "Beranda", addr: "Cari atau ketik alamat",
       addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
       find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
-      swap: "Pindah ke sisi lain", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      swap: "Pindah ke sisi lain", other: "Bookmark lain", more: "Bookmark lainnya", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
       addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
       find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
-      swap: "Switch side", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      swap: "Switch side", other: "Other bookmarks", more: "More bookmarks", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -132,53 +140,147 @@
     return m ? m[0].toUpperCase() : "•";
   }
 
+  // Elemen tab dipakai ulang (berdasarkan id) supaya klik tidak hilang saat toolbar
+  // diperbarui di tengah klik, misalnya tombol × pada tab yang sedang dimuat.
+  const tabEls = new Map();
+  function tabEl(id) {
+    let el = tabEls.get(id);
+    if (el) return el;
+    el = document.createElement("div");
+    const ic = document.createElement("span"); ic.className = "ic";
+    const ti = document.createElement("span"); ti.className = "t";
+    const x = document.createElement("button"); x.className = "x"; x.textContent = "×";
+    x.addEventListener("mousedown", (e) => { e.stopPropagation(); e.preventDefault(); });
+    x.addEventListener("click", (e) => { e.stopPropagation(); send({ cmd: "close", id }); });
+    el.addEventListener("mousedown", (e) => { if (e.button === 0) send({ cmd: "activate", id }); else if (e.button === 1) e.preventDefault(); });
+    el.addEventListener("auxclick", (e) => { if (e.button === 1) send({ cmd: "close", id }); });
+    el.addEventListener("contextmenu", (e) => { e.preventDefault(); send({ cmd: "tabmenu", id, x: e.clientX, y: e.clientY }); });
+    el.append(ic, ti, x);
+    tabEls.set(id, el);
+    return el;
+  }
   function renderTabs() {
-    tabsEl.querySelectorAll(".tab").forEach((e) => e.remove());
     const plus = $("new");
+    const keep = new Set();
     for (const t of state.tabs) {
-      const el = document.createElement("div");
+      keep.add(t.id);
+      const el = tabEl(t.id);
       el.className = "tab" + (t.active ? " active" : "") + (t.sleeping ? " sleep" : "") + (t.loading ? " loading" : "") + (t.private ? " private" : "") + (t.split ? " split" : "");
       el.title = (t.title || W.newtab) + (t.private ? W.priv : "") + (t.sleeping ? W.sleep : "");
-      const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = letter(t);
-      const ti = document.createElement("span"); ti.className = "t"; ti.textContent = t.title || W.newtab;
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = W.close;
-      x.onclick = (e) => { e.stopPropagation(); send({ cmd: "close", id: t.id }); };
-      el.onmousedown = (e) => { if (e.button === 0) send({ cmd: "activate", id: t.id }); };
-      el.onauxclick = (e) => { if (e.button === 1) send({ cmd: "close", id: t.id }); };
-      el.oncontextmenu = (e) => { e.preventDefault(); send({ cmd: "tabmenu", id: t.id, x: e.clientX, y: e.clientY }); };
-      el.append(ic, ti, x);
+      el.children[0].textContent = letter(t);
+      el.children[1].textContent = t.title || W.newtab;
+      el.children[2].title = W.close;
+      if (el.nextSibling !== plus && tabsEl.lastChild !== el) { /* urutan diperbaiki di bawah */ }
       tabsEl.insertBefore(el, plus);
     }
+    for (const [id, el] of tabEls) if (!keep.has(id)) { el.remove(); tabEls.delete(id); }
   }
 
+  const folderSvg = '<svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>';
+  function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } }
+  function badge(u, title) {
+    const h = hostOf(u) || title || "?";
+    let n = 0; for (const c of h) n = (n * 31 + c.charCodeAt(0)) >>> 0;
+    const el = document.createElement("span"); el.className = "fi";
+    el.style.background = `hsl(${n % 360} 55% 45%)`;
+    el.textContent = (h.match(/[a-z0-9]/i) || ["•"])[0].toUpperCase();
+    return el;
+  }
+  let bmKey = "";
   function renderBookmarks() {
     const bar = $("bmbar");
     bar.classList.toggle("show", !!state.bookmarkBar);
-    bar.textContent = "";
-    for (const b of state.bookmarks || []) {
-      const el = document.createElement("button"); el.className = "bm"; el.textContent = b.title; el.title = b.url;
-      el.onclick = () => send({ cmd: "open", url: b.url });
-      el.onauxclick = (e) => { if (e.button === 1) send({ cmd: "open", url: b.url, newtab: true }); };
-      bar.append(el);
-    }
-    if (!(state.bookmarks || []).length) {
+    if (!state.bookmarkBar) return;
+    const list = state.bookmarks || [];
+    const key = JSON.stringify(list) + W.other;
+    if (key === bmKey) { fitBookmarks(); return; }
+    bmKey = key;
+    const box = $("bmitems"); box.textContent = "";
+    // Item di bilah: bookmark tanpa folder dan folder tingkat pertama, sesuai urutan.
+    const seen = new Set();
+    list.forEach((b, i) => {
+      if (b.folder === "@other" || b.folder.startsWith("@other/")) return;
+      if (!b.folder) {
+        const el = document.createElement("button"); el.className = "bm"; el.title = b.title + "\n" + b.url;
+        const lb = document.createElement("span"); lb.className = "lb"; lb.textContent = b.title;
+        el.append(badge(b.url, b.title), lb);
+        el.dataset.i = i;
+        el.onclick = () => send({ cmd: "open", url: b.url });
+        el.onauxclick = (e) => { if (e.button === 1) send({ cmd: "open", url: b.url, newtab: true }); };
+        box.append(el);
+        return;
+      }
+      const top = b.folder.split("/")[0];
+      if (seen.has(top)) return;
+      seen.add(top);
+      const el = document.createElement("button"); el.className = "bm"; el.title = top;
+      el.innerHTML = folderSvg;
+      const lb = document.createElement("span"); lb.className = "lb"; lb.textContent = top;
+      el.append(lb);
+      el.dataset.f = top;
+      el.onclick = (e) => { const r = el.getBoundingClientRect(); send({ cmd: "bm-folder", folder: top, x: r.left, y: r.bottom }); };
+      box.append(el);
+    });
+    if (!box.children.length) {
       const el = document.createElement("span"); el.className = "bm"; el.style.color = "var(--muted)";
       el.textContent = W.bmEmpty;
-      bar.append(el);
+      box.append(el);
     }
+    const hasOther = list.some((b) => b.folder === "@other" || b.folder.startsWith("@other/"));
+    const other = $("bmother");
+    other.style.display = hasOther ? "" : "none";
+    $("bmsep").style.display = hasOther ? "" : "none";
+    other.innerHTML = folderSvg + `<span class="lb"></span>`;
+    other.querySelector(".lb").textContent = W.other;
+    fitBookmarks();
   }
+  // Sembunyikan item yang tidak muat lalu tampilkan tombol » seperti Brave.
+  function fitBookmarks() {
+    const box = $("bmitems"), more = $("bmmore");
+    const items = [...box.children].filter((e) => e.dataset.i || e.dataset.f);
+    items.forEach((e) => e.classList.remove("hide"));
+    more.style.display = "none";
+    const limit = box.getBoundingClientRect().right;
+    let over = items.some((e) => e.getBoundingClientRect().right > limit + 0.5);
+    if (!over) return;
+    more.style.display = "";
+    const limit2 = box.getBoundingClientRect().right;
+    for (const e of items) if (e.getBoundingClientRect().right > limit2 + 0.5) e.classList.add("hide");
+  }
+  $("bmmore").onclick = (e) => {
+    const hidden = [...$("bmitems").children].filter((x) => x.classList.contains("hide"))
+      .map((x) => (x.dataset.f ? { f: x.dataset.f } : { i: Number(x.dataset.i) }));
+    const r = e.currentTarget.getBoundingClientRect();
+    send({ cmd: "bm-more", items: hidden, x: r.right, y: r.bottom });
+  };
+  $("bmother").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); send({ cmd: "bm-folder", folder: "@other", x: r.left, y: r.bottom }); };
+  window.addEventListener("resize", () => fitBookmarks());
 
   window.ovner = {
     render(s) {
       state = s;
       if (D[s.lang] !== W || !document.documentElement.lang) applyLang(s.lang);
       addr.placeholder = s.noSearch ? W.addrNs : W.addr;
+      tabsEl.style.display = s.vertical ? "none" : "";
+      let tcss = document.getElementById("usercss");
+      if (!tcss) { tcss = document.createElement("style"); tcss.id = "usercss"; document.head.append(tcss); }
+      if (tcss.textContent !== (s.toolbarCss || "")) tcss.textContent = s.toolbarCss || "";
       $("splitbox").classList.toggle("show", !!s.split);
       document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
       renderTabs();
       renderBookmarks();
       $("home").classList.toggle("hidden", !s.homeButton);
-      if (document.activeElement !== addr) addr.value = s.url;
+      // Kolom alamat selalu mengikuti tab aktif; teks yang sedang diketik hanya
+      // dipertahankan selama tab yang sama masih aktif.
+      const act = (s.tabs.find((t) => t.active) || {}).id;
+      if (act !== activeId) {
+        activeId = act; typing = false;
+        addr.value = s.url;
+        if (document.activeElement === addr && s.url) addr.blur();
+      } else if (!typing || document.activeElement !== addr) {
+        typing = false;
+        addr.value = s.url;
+      }
       $("reload").innerHTML = s.loading ? stopIcon : reloadIcon;
       $("reload").title = s.loading ? W.stop : W.reload;
       $("back").disabled = !s.canBack; $("fwd").disabled = !s.canForward;
@@ -214,7 +316,7 @@
     for (const k in tt) $(k).title = tt[k];
     findq.placeholder = W.find;
   }
-  let sugTimer = 0, picked = false;
+  let sugTimer = 0, picked = false, typing = false, activeId = null;
   addr.addEventListener("input", (e) => {
     // Pilihan dari daftar saran: langsung buka.
     if (!e.inputType || e.inputType === "insertReplacementText") {
@@ -222,21 +324,23 @@
       if (text) { picked = true; send({ cmd: "go", text }); addr.blur(); }
       return;
     }
+    typing = true;
     if (!state.suggest) return;
     clearTimeout(sugTimer);
     const text = addr.value.trim();
     if (!text) { $("sug").textContent = ""; return; }
     sugTimer = setTimeout(() => send({ cmd: "suggest", text }), 120);
   });
-  addr.addEventListener("blur", () => { $("sug").textContent = ""; });
+  addr.addEventListener("blur", () => { $("sug").textContent = ""; if (!addr.value.trim()) typing = false; });
   addr.addEventListener("focus", () => setTimeout(() => addr.select(), 0));
   addr.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const text = addr.value.trim();
       if (text) send({ cmd: "go", text, newtab: e.altKey });
+      typing = false;
       addr.blur();
     } else if (e.key === "Escape") {
-      addr.value = state.url; addr.blur(); send({ cmd: "focus-page" });
+      typing = false; addr.value = state.url; addr.blur(); send({ cmd: "focus-page" });
     }
   });
   findq.addEventListener("keydown", (e) => {

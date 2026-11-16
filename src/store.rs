@@ -20,6 +20,10 @@ pub struct Bookmark {
     pub url: String,
     pub title: String,
     pub added: u64,
+    /// Folder di bilah bookmark, mis. "Kerja" atau "Kerja/HR"; kosong = langsung di bilah.
+    /// "@other" = folder "Bookmark lain" di ujung kanan (seperti Chrome/Brave).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 pub fn now() -> u64 {
@@ -129,7 +133,7 @@ impl Store {
             false
         } else {
             let title = if title.is_empty() { url.to_string() } else { title.to_string() };
-            self.bookmarks.push(Bookmark { url: url.to_string(), title, added: now() });
+            self.bookmarks.push(Bookmark { url: url.to_string(), title, added: now(), folder: String::new() });
             true
         };
         write(&self.bookmarks_path, &self.bookmarks);
@@ -138,16 +142,26 @@ impl Store {
 
     /// Tambah banyak bookmark sekaligus (impor); alamat yang sudah ada dilewati.
     /// Mengembalikan jumlah yang ditambahkan.
-    pub fn add_bookmarks(&mut self, items: &[(String, String)]) -> usize {
+    /// Bookmark yang sudah ada tanpa folder ikut mendapat foldernya (impor ulang dari 0.3).
+    pub fn add_bookmarks(&mut self, items: &[(String, String, String)]) -> usize {
         let mut n = 0;
-        for (title, url) in items {
-            if !url.is_empty() && !self.is_bookmarked(url) {
-                let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
-                self.bookmarks.push(Bookmark { url: url.clone(), title, added: now() });
-                n += 1;
+        let mut changed = false;
+        for (title, url, folder) in items {
+            if url.is_empty() {
+                continue;
             }
+            if let Some(b) = self.bookmarks.iter_mut().find(|b| &b.url == url) {
+                if b.folder.is_empty() && !folder.is_empty() {
+                    b.folder = folder.clone();
+                    changed = true;
+                }
+                continue;
+            }
+            let title = if title.trim().is_empty() { url.clone() } else { title.trim().to_string() };
+            self.bookmarks.push(Bookmark { url: url.clone(), title, added: now(), folder: folder.clone() });
+            n += 1;
         }
-        if n > 0 {
+        if n > 0 || changed {
             write(&self.bookmarks_path, &self.bookmarks);
         }
         n
@@ -247,7 +261,7 @@ mod tests {
         assert!(s.is_bookmarked("https://a.id/"));
         s.rename_bookmark("https://a.id/", "Situs A");
 
-        assert_eq!(s.add_bookmarks(&[("B".into(), "https://b.id/".into()), ("A".into(), "https://a.id/".into())]), 1);
+        assert_eq!(s.add_bookmarks(&[("B".into(), "https://b.id/".into(), "Kerja".into()), ("A".into(), "https://a.id/".into(), String::new())]), 1);
         let sug = s.suggest("b.i", 5);
         assert_eq!(sug[0].1, "https://b.id/");
         assert!(sug[0].2, "bookmark diutamakan");

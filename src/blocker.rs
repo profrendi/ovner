@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adblock::lists::{FilterFormat, FilterSet, ParseOptions};
+use adblock::resources::PermissionMask;
 use adblock::request::Request;
 use adblock::Engine;
 use url::Url;
@@ -22,6 +23,39 @@ pub const FILTER_LISTS: &[(&str, &str)] = &[
     ("ublock-privacy.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt"),
 ];
 
+/// Daftar yang selalu dipakai juga, mengikuti Brave dan uBlock Origin: perbaikan cepat
+/// (YouTube, anti-adblock), daftar "unbreak" agar situs tidak rusak, dan situs berbahaya.
+pub const EXTRA_LISTS: &[(&str, &str)] = &[
+    ("ublock-quick-fixes.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt"),
+    ("ublock-unbreak.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/unbreak.txt"),
+    ("ublock-badware.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt"),
+    ("brave-unbreak.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-unbreak.txt"),
+    ("brave-specific.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-specific.txt"),
+];
+
+/// Parameter pelacak di alamat ($removeparam), seperti yang ditambahkan Mullvad Browser ke uBO.
+pub const URL_TRACKING_LIST: (&str, &str) = ("adguard-url-tracking.txt", "https://filters.adtidy.org/extension/ublock/filters/17.txt");
+
+/// Daftar gangguan: notifikasi, widget sosial, popup newsletter, banner aplikasi.
+pub const ANNOYANCE_LISTS: &[(&str, &str)] = &[
+    ("ublock-annoyances.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances-others.txt"),
+    ("fanboy-annoyance.txt", "https://secure.fanboy.co.nz/fanboy-annoyance.txt"),
+];
+
+/// Scriptlet (+js) dan resource pengganti ($redirect) dari uBlock Origin dan Brave, disusun
+/// oleh CI Ovner setiap hari (tools/build-resources.mjs).
+pub const RESOURCES: (&str, &str) = ("resources.json", "https://github.com/profrendi/ovner/releases/download/ovner-resources/resources.json");
+
+/// Daftar kecil yang cepat berubah: diperbarui tiap `filter_update_hours`.
+fn is_fast(name: &str) -> bool {
+    matches!(name, "ublock-quick-fixes.txt" | "ublock-unbreak.txt" | "brave-unbreak.txt" | "resources.json")
+}
+
+/// Daftar tepercaya (uBO dan Brave) boleh memakai scriptlet "trusted-*".
+fn is_trusted(name: &str) -> bool {
+    name.starts_with("ublock-") || name.starts_with("brave-")
+}
+
 /// Daftar popup persetujuan cookie (seperti "cookie consent blocking" Brave).
 pub const COOKIE_LISTS: &[(&str, &str)] = &[
     ("ublock-cookies.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances-cookies.txt"),
@@ -33,10 +67,18 @@ pub const CUSTOM_RULES_FILE: &str = "zz-aturan-saya.txt";
 
 /// Semua daftar yang diinginkan menurut setelan: (nama file, URL).
 pub fn wanted_lists(s: &crate::settings::Settings) -> Vec<(String, String)> {
-    let mut v: Vec<(String, String)> = FILTER_LISTS.iter().map(|(n, u)| (n.to_string(), u.to_string())).collect();
+    let pair = |(n, u): &(&str, &str)| (n.to_string(), u.to_string());
+    let mut v: Vec<(String, String)> = FILTER_LISTS.iter().chain(EXTRA_LISTS).map(pair).collect();
     if s.block_cookie_notices {
-        v.extend(COOKIE_LISTS.iter().map(|(n, u)| (n.to_string(), u.to_string())));
+        v.extend(COOKIE_LISTS.iter().map(pair));
     }
+    if s.strip_tracking_params {
+        v.push(pair(&URL_TRACKING_LIST));
+    }
+    if s.block_annoyances {
+        v.extend(ANNOYANCE_LISTS.iter().map(pair));
+    }
+    v.push(pair(&RESOURCES));
     for u in &s.custom_lists {
         if u.starts_with("https://") || u.starts_with("http://") {
             v.push((format!("kustom-{:08x}.txt", fnv(u)), u.clone()));
@@ -79,8 +121,8 @@ pub fn write_custom_rules(data_dir: &Path, rules: &str) -> bool {
     std::fs::write(&p, text).is_ok()
 }
 
-/// Daftar diperbarui bila sudah lebih tua dari ini.
-pub const REFRESH_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Daftar besar diperbarui bila sudah lebih tua dari ini (daftar kecil: `filter_update_hours`).
+pub const REFRESH_AFTER: Duration = Duration::from_secs(3 * 24 * 3600);
 
 /// Daftar kecil bawaan: tetap memblokir pelacak besar sebelum daftar lengkap selesai diunduh.
 const BUILTIN_HOSTS: &[&str] = &[
@@ -101,7 +143,7 @@ const TRACKING_PARAMS: &[&str] = &[
 
 const CACHE_FILE: &str = ".mesin-filter.bin";
 /// Format serialisasi mesin bisa berubah antar versi adblock-rust; naikkan bila berubah.
-const CACHE_TAG: &str = "ovner-filter-v1;adblock-0.13";
+const CACHE_TAG: &str = "ovner-filter-v2;adblock-0.13";
 
 pub fn filters_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("filters")
@@ -173,7 +215,9 @@ pub fn build_and_cache(data_dir: &Path) -> Option<Vec<u8>> {
     set.add_filter_list(builtin_rules(), ParseOptions::default());
     for f in &files {
         if let Ok(text) = std::fs::read_to_string(f) {
-            set.add_filter_list(text, ParseOptions { format: FilterFormat::Standard, ..ParseOptions::default() });
+            let name = f.file_name().unwrap_or_default().to_string_lossy();
+            let permissions = if is_trusted(&name) { PermissionMask::from_bits(1) } else { PermissionMask::default() };
+            set.add_filter_list(text, ParseOptions { format: FilterFormat::Standard, permissions, ..ParseOptions::default() });
         }
     }
     let engine = Engine::new_with_filter_set(set);
@@ -191,13 +235,27 @@ pub fn engine_from_bytes(body: &[u8]) -> Option<Engine> {
     Some(engine)
 }
 
-/// Apakah ada daftar yang belum ada atau sudah lebih tua dari `REFRESH_AFTER`.
-pub fn lists_need_refresh(data_dir: &Path, wanted: &[(String, String)]) -> bool {
+/// Daftar yang perlu diunduh: belum ada, atau lebih tua dari batasnya (daftar kecil yang
+/// cepat berubah: `fast_hours`; daftar besar: `REFRESH_AFTER`).
+pub fn stale_lists(data_dir: &Path, wanted: &[(String, String)], fast_hours: u32) -> Vec<(String, String)> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    wanted.iter().any(|(name, _)| {
-        let p = filters_dir(data_dir).join(name);
-        !p.is_file() || now.saturating_sub(mtime_secs(&p)) > REFRESH_AFTER.as_secs()
-    })
+    wanted
+        .iter()
+        .filter(|(name, _)| {
+            let p = filters_dir(data_dir).join(name);
+            let max = if is_fast(name) { fast_hours as u64 * 3600 } else { REFRESH_AFTER.as_secs() };
+            !p.is_file() || now.saturating_sub(mtime_secs(&p)) > max
+        })
+        .cloned()
+        .collect()
+}
+
+/// Scriptlet dan resource pengganti yang sudah diunduh.
+pub fn load_resources(data_dir: &Path) -> Vec<adblock::resources::Resource> {
+    std::fs::read_to_string(filters_dir(data_dir).join(RESOURCES.0))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 /// Unduh daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berhasil.
@@ -215,7 +273,13 @@ pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing
         match crate::win::download(url, &tmp) {
             // Berkas HTML (halaman galat proxy kantor, misalnya) bukan daftar filter.
             Ok(()) if std::fs::read_to_string(&tmp).is_ok_and(|t| t.len() > 1000 && !t.trim_start().starts_with('<')) => {
-                if std::fs::rename(&tmp, dir.join(name)).is_ok() {
+                let new = std::fs::read(&tmp).unwrap_or_default();
+                if std::fs::read(dir.join(name)).ok().as_deref() == Some(new.as_slice()) {
+                    // Isi sama: cukup segarkan waktunya supaya tidak diunduh lagi, tanpa
+                    // menyusun ulang mesin.
+                    let _ = std::fs::rename(&tmp, dir.join(name));
+                    let _ = std::fs::File::options().write(true).open(dir.join(name)).and_then(|f| f.set_modified(SystemTime::now()));
+                } else if std::fs::rename(&tmp, dir.join(name)).is_ok() {
                     ok += 1;
                 }
             }
@@ -256,9 +320,63 @@ pub struct Blocker {
     pub full: bool,
 }
 
+/// Keputusan untuk satu permintaan jaringan.
+#[derive(Default, Debug, PartialEq)]
+pub struct Verdict {
+    pub block: bool,
+    /// Ganti dengan resource kosong (data URL), bukan diblokir mentah-mentah.
+    pub redirect: Option<String>,
+    /// Alamat tanpa parameter pelacak ($removeparam).
+    pub rewritten: Option<String>,
+}
+
+/// Bahan kosmetik satu halaman.
+pub struct PageResources {
+    pub css: String,
+    pub exceptions: HashSet<String>,
+    pub generichide: bool,
+    /// Aturan procedural (JSON), dijalankan skrip halaman.
+    pub procedural: Vec<String>,
+}
+
 impl Blocker {
-    pub fn new(engine: Engine, full: bool) -> Blocker {
+    /// Mesin + scriptlet/resource pengganti dari folder data.
+    pub fn new(mut engine: Engine, full: bool, data_dir: &Path) -> Blocker {
+        let res = load_resources(data_dir);
+        if !res.is_empty() {
+            engine.use_resources(res);
+        }
         Blocker { engine, full }
+    }
+
+    /// Pemeriksaan lengkap: blokir, ganti dengan resource kosong, atau tulis ulang alamat.
+    pub fn check(&self, url: &str, source: &str, request_type: &str) -> Verdict {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Verdict::default();
+        }
+        let Ok(req) = Request::new(url, source, request_type, "GET") else { return Verdict::default() };
+        let r = self.engine.check_network_request(&req);
+        let block = request_type != "document" && r.should_block();
+        Verdict {
+            block,
+            redirect: if block { r.redirect } else { None },
+            rewritten: if block { None } else { r.rewritten_url },
+        }
+    }
+
+    /// Skrip scriptlet (+js) untuk halaman/iframe di alamat ini (kosong bila tidak ada).
+    pub fn scriptlets(&self, url: &str) -> String {
+        self.engine.url_cosmetic_resources(url).injected_script
+    }
+
+    pub fn page_resources(&self, page_url: &str) -> PageResources {
+        let res = self.engine.url_cosmetic_resources(page_url);
+        PageResources {
+            css: css_for(res.hide_selectors.iter()),
+            procedural: res.procedural_actions.into_iter().collect(),
+            exceptions: res.exceptions,
+            generichide: res.generichide,
+        }
     }
 
     /// `true` bila permintaan ini harus dibatalkan. `source` adalah alamat halaman (tab).
@@ -282,12 +400,6 @@ impl Blocker {
         self.should_block(u.as_str(), source, request_type)
     }
 
-    /// CSS penyembunyi kotak iklan khusus situs ini (aturan `situs##selektor`).
-    /// Mengembalikan (css, pengecualian, generichide).
-    pub fn page_cosmetics(&self, page_url: &str) -> (String, HashSet<String>, bool) {
-        let res = self.engine.url_cosmetic_resources(page_url);
-        (css_for(res.hide_selectors.iter()), res.exceptions, res.generichide)
-    }
 
     /// CSS untuk aturan umum (`##.kelas`, `###id`) yang cocok dengan kelas/id di halaman.
     pub fn generic_cosmetics(&self, classes: &[String], ids: &[String], exceptions: &HashSet<String>) -> String {
@@ -347,7 +459,7 @@ mod tests {
 
     #[test]
     fn builtin_blocks_big_trackers_only() {
-        let b = Blocker::new(builtin_engine(), false);
+        let b = Blocker::new(builtin_engine(), false, Path::new("/tidak-ada"));
         assert!(b.should_block("https://www.googletagmanager.com/gtag/js?id=1", PAGE, "script"));
         assert!(b.should_block("https://stats.g.doubleclick.net/x", PAGE, "image"));
         assert!(!b.should_block("https://cdn.contoh.id/app.js", PAGE, "script"));
@@ -361,27 +473,50 @@ mod tests {
         std::fs::write(
             filters_dir(&d).join("uji.txt"),
             "/iklan/banner.\n@@||contoh.id/iklan/banner.js\n||pelacak.example^$third-party\n\
-             contoh.id##.kotak-iklan\n##.adsbygoogle\n",
+             contoh.id##.kotak-iklan\n##.adsbygoogle\ncontoh.id##div.kartu:has-text(Sponsor)\n\
+             contoh.id##+js(set-constant, iklanAktif, false)\n||lain.id/ads/ima3.js$script,redirect=google-ima.js\n\
+             $removeparam=utm_campaign\n",
         )
         .unwrap();
+        // Resource uji dalam format tools/build-resources.mjs.
+        let b64 = |s: &str| {
+            use base64::Engine as _;
+            base64::prelude::BASE64_STANDARD.encode(s)
+        };
+        let res = serde_json::json!([
+            {"name": "set-constant.js", "aliases": [], "kind": {"mime": "application/javascript"},
+             "content": b64("function setConstant(a, b) { window[a] = b === 'false' ? false : b; }")},
+            {"name": "google-ima.js", "aliases": ["google-ima3"], "kind": {"mime": "application/javascript"}, "content": b64("/* kosong */")},
+        ]);
+        std::fs::write(filters_dir(&d).join(RESOURCES.0), res.to_string()).unwrap();
         assert!(load_cached(&d).is_none());
         let bytes = build_and_cache(&d).unwrap();
-        let b = Blocker::new(engine_from_bytes(&bytes).unwrap(), true);
+        let b = Blocker::new(engine_from_bytes(&bytes).unwrap(), true, &d);
         assert!(b.should_block("https://lain.id/iklan/banner.js", PAGE, "script"));
         assert!(!b.should_block("https://contoh.id/iklan/banner.js", PAGE, "script"));
         assert!(b.should_block("https://pelacak.example/p.gif", PAGE, "image"));
         assert!(!b.should_block("https://pelacak.example/p.gif", "https://pelacak.example/", "image"));
 
         // Cache dipakai ulang selama daftar tidak berubah.
-        let cached = Blocker::new(load_cached(&d).unwrap(), true);
+        let cached = Blocker::new(load_cached(&d).unwrap(), true, &d);
         assert!(cached.should_block("https://lain.id/iklan/banner.js", PAGE, "script"));
 
         // CNAME: subdomain situs yang aslinya pelacak.
         assert!(cached.should_block_cname("https://metrik.contoh.id/t.js", "pelacak.example", PAGE, "script"));
         assert!(!cached.should_block_cname("https://cdn.contoh.id/a.js", "cdn.cloudflare.net", PAGE, "script"));
-        let (css, exc, generichide) = cached.page_cosmetics("https://www.contoh.id/berita");
+        let pr = cached.page_resources("https://www.contoh.id/berita");
+        let (css, exc) = (pr.css, pr.exceptions);
         assert!(css.contains(".kotak-iklan{display:none!important}"));
-        assert!(!generichide);
+        assert!(!pr.generichide);
+        assert_eq!(pr.procedural.len(), 1);
+        assert!(pr.procedural[0].contains("has-text") && pr.procedural[0].contains("Sponsor"));
+        // Scriptlet dari resources.json, dan resource pengganti untuk skrip iklan.
+        let s = cached.scriptlets("https://www.contoh.id/");
+        assert!(s.contains("function setConstant") && s.contains("setConstant(\"iklanAktif\", \"false\")"), "{s}");
+        let v = cached.check("https://lain.id/ads/ima3.js", PAGE, "script");
+        assert!(v.block && v.redirect.as_deref().is_some_and(|r| r.starts_with("data:application/javascript;base64,")), "{v:?}");
+        let v = cached.check("https://toko.id/p?id=7&utm_campaign=x", PAGE, "xmlhttprequest");
+        assert_eq!(v.rewritten.as_deref(), Some("https://toko.id/p?id=7"));
         let generic = cached.generic_cosmetics(&["adsbygoogle".into(), "artikel".into()], &[], &exc);
         assert!(generic.contains(".adsbygoogle{display:none!important}"));
         assert!(!generic.contains("artikel"));
@@ -393,12 +528,16 @@ mod tests {
         let d = tmp("refresh");
         let s = crate::settings::Settings::default();
         let wanted = wanted_lists(&s);
-        assert_eq!(wanted.len(), FILTER_LISTS.len() + COOKIE_LISTS.len());
-        assert!(lists_need_refresh(&d, &wanted));
+        // Utama + tambahan + cookie + parameter pelacak + resources.json.
+        assert_eq!(wanted.len(), FILTER_LISTS.len() + EXTRA_LISTS.len() + COOKIE_LISTS.len() + 2);
+        assert_eq!(stale_lists(&d, &wanted, 6).len(), wanted.len());
         for (name, _) in &wanted {
             std::fs::write(filters_dir(&d).join(name), "! daftar\n").unwrap();
         }
-        assert!(!lists_need_refresh(&d, &wanted));
+        assert!(stale_lists(&d, &wanted, 6).is_empty());
+        let mut s_ann = s.clone();
+        s_ann.block_annoyances = true;
+        assert_eq!(stale_lists(&d, &wanted_lists(&s_ann), 6).len(), ANNOYANCE_LISTS.len());
         // Daftar cookie dimatikan: berkasnya dibuang, aturan sendiri tetap.
         assert!(write_custom_rules(&d, "contoh.id##.iklan"));
         assert!(!write_custom_rules(&d, "contoh.id##.iklan"));

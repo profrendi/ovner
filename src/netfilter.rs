@@ -7,12 +7,16 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
-use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+use webview2_com::{
+    take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler, FrameNavigationStartingEventHandler, NavigationStartingEventHandler,
+    WebResourceRequestedEventHandler,
+};
 use windows::core::{Interface, BOOL, HSTRING, PWSTR};
 use wry::WebViewExtWindows;
 
 use crate::blocker::{self, Blocker};
 use crate::settings::Settings;
+use crate::shields::{decode_data_url, is_local_target};
 
 /// Telemetri Microsoft Edge/WebView2 dan Office: tidak dibutuhkan halaman mana pun.
 const TELEMETRY_HOSTS: &[&str] = &[
@@ -105,35 +109,73 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                     return Ok(());
                 }
-                let (block_ads, gpc, block_telemetry, exception, cname_on) = {
+                let page = ctx.page.borrow().clone();
+                let page_host = url::Url::parse(&page).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
+                let (block_ads, gpc, block_telemetry, exception, cname_on, local_block, referrer) = {
                     let s = ctx.settings.borrow();
-                    let page = ctx.page.borrow();
-                    let host = url::Url::parse(&page).ok().and_then(|u| u.host_str().map(str::to_string));
-                    (s.block_ads, s.gpc, s.block_telemetry, host.is_some_and(|h| s.is_exception(&h)), s.cname_uncloak)
+                    (
+                        s.block_ads,
+                        s.gpc,
+                        s.block_telemetry,
+                        !page_host.is_empty() && s.is_exception(&page_host),
+                        s.cname_uncloak,
+                        s.block_local_network,
+                        s.referrer_policy.clone(),
+                    )
                 };
-                if gpc {
-                    if let Ok(h) = req.Headers() {
+                let host = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
+                if let Ok(h) = req.Headers() {
+                    if gpc {
                         let _ = h.SetHeader(&HSTRING::from("Sec-GPC"), &HSTRING::from("1"));
                         let _ = h.SetHeader(&HSTRING::from("DNT"), &HSTRING::from("1"));
                     }
+                    // Referrer ke situs lain dipangkas (seperti LibreWolf/Waterfox).
+                    if referrer != "default" && !page_host.is_empty() && base_domain(&host) != base_domain(&page_host) {
+                        let name = HSTRING::from("Referer");
+                        let mut has = BOOL(0);
+                        if h.Contains(&name, &mut has).is_ok() && has.as_bool() {
+                            if referrer == "none" {
+                                let _ = h.RemoveHeader(&name);
+                            } else if let Ok(origin) = url::Url::parse(&page).map(|u| u.origin().ascii_serialization()) {
+                                let _ = h.SetHeader(&name, &HSTRING::from(format!("{origin}/")));
+                            }
+                        }
+                    }
                 }
-                let host = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
-                let mut block = block_telemetry && host_matches(&host, TELEMETRY_HOSTS);
+                // Situs publik yang mencoba menghubungi jaringan lokal/komputer ini.
+                let mut block = local_block && is_local_target(&host) && !page_host.is_empty() && !is_local_target(&page_host);
+                block |= block_telemetry && host_matches(&host, TELEMETRY_HOSTS);
+                let mut redirect = None;
+                let mut rewritten = None;
                 if !block && block_ads && !exception {
-                    let page = ctx.page.borrow().clone();
                     let mut kind = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
                     args.ResourceContext(&mut kind)?;
                     let is_main = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (uri == page || page.is_empty());
                     let rtype = blocker::request_type_from_webview2(kind.0, is_main);
-                    block = ctx.blocker.borrow().should_block(&uri, &page, rtype);
+                    let v = ctx.blocker.borrow().check(&uri, &page, rtype);
+                    block = v.block;
+                    redirect = v.redirect;
+                    rewritten = v.rewritten.filter(|_| !is_main);
                     if !block && cname_on {
                         block = cname_blocked(&ctx, &uri, &host, &page, rtype);
                     }
                 }
-                if block {
+                if let Some((mime, bytes)) = redirect.as_deref().filter(|_| block).and_then(decode_data_url) {
+                    // Resource pengganti (mis. google-ima.js kosong): pemutar video tetap jalan.
+                    let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(&bytes));
+                    let headers = format!("Content-Type: {mime}\r\nAccess-Control-Allow-Origin: *");
+                    let resp = env.CreateWebResourceResponse(stream.as_ref(), 200, &HSTRING::from("OK"), &HSTRING::from(headers))?;
+                    args.SetResponse(&resp)?;
+                    ctx.blocked.set(ctx.blocked.get() + 1);
+                } else if block {
                     let resp = env.CreateWebResourceResponse(None, 403, &HSTRING::from("Diblokir Ovner"), &HSTRING::new())?;
                     args.SetResponse(&resp)?;
                     ctx.blocked.set(ctx.blocked.get() + 1);
+                } else if let Some(to) = rewritten {
+                    // $removeparam: alihkan ke alamat tanpa parameter pelacak.
+                    let headers = format!("Location: {to}\r\nAccess-Control-Allow-Origin: *");
+                    let resp = env.CreateWebResourceResponse(None, 307, &HSTRING::from("Temporary Redirect"), &HSTRING::from(headers))?;
+                    args.SetResponse(&resp)?;
                 }
                 Ok(())
             })),
@@ -141,6 +183,85 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Suntikkan scriptlet (+js) sedini mungkin: saat navigasi halaman atau iframe dimulai,
+/// skrip untuk alamat tujuannya didaftarkan sebagai skrip awal dokumen (tidak terkena CSP
+/// situs). Skrip dijaga nama host-nya, dan semua dibuang lagi saat halaman utama berganti.
+pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
+    let core = wv.webview();
+    let ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let add = {
+        let ctx = ctx.clone();
+        let ids = ids.clone();
+        Rc::new(move |core: &ICoreWebView2, uri: &str| {
+            let (on, page_host) = {
+                let s = ctx.settings.borrow();
+                let h = url::Url::parse(uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+                (s.block_ads && !h.is_empty() && !s.is_exception(&h), h)
+            };
+            if !on {
+                return;
+            }
+            let script = ctx.blocker.borrow().scriptlets(uri);
+            if script.trim().is_empty() {
+                return;
+            }
+            let host = serde_json::to_string(&page_host).unwrap_or_default();
+            let js = format!("(function(){{if(location.hostname!=={host})return;\n{script}\n}})();");
+            let ids = ids.clone();
+            unsafe {
+                let _ = core.AddScriptToExecuteOnDocumentCreated(
+                    &HSTRING::from(js),
+                    &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |r, id| {
+                        if r.is_ok() {
+                            ids.borrow_mut().push(id);
+                        }
+                        Ok(())
+                    })),
+                );
+            }
+        })
+    };
+    let uri_of = |args: &ICoreWebView2NavigationStartingEventArgs| -> String {
+        let mut p = PWSTR::null();
+        unsafe {
+            if args.Uri(&mut p).is_ok() {
+                return take_pwstr(p);
+            }
+        }
+        String::new()
+    };
+    let main = {
+        let (add, ids) = (add.clone(), ids.clone());
+        NavigationStartingEventHandler::create(Box::new(move |sender, args| {
+            let (Some(core), Some(args)) = (sender, args) else { return Ok(()) };
+            let uri = uri_of(&args);
+            if !(uri.starts_with("http://") || uri.starts_with("https://")) {
+                return Ok(());
+            }
+            for id in ids.borrow_mut().drain(..) {
+                unsafe {
+                    let _ = core.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
+                }
+            }
+            (*add)(&core, &uri);
+            Ok(())
+        }))
+    };
+    let frame = FrameNavigationStartingEventHandler::create(Box::new(move |sender, args| {
+        let (Some(core), Some(args)) = (sender, args) else { return Ok(()) };
+        let uri = uri_of(&args);
+        if uri.starts_with("http://") || uri.starts_with("https://") {
+            (*add)(&core, &uri);
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    unsafe {
+        let _ = core.add_NavigationStarting(&main, &mut token);
+        let _ = core.add_FrameNavigationStarting(&frame, &mut token);
+    }
 }
 
 /// Panggil `cb(berhasil, status_error)` setiap navigasi halaman utama selesai.

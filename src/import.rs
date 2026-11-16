@@ -47,34 +47,41 @@ fn profiles(root: &Path) -> Vec<String> {
     v
 }
 
-/// Semua bookmark (judul, alamat) dalam berkas Bookmarks Chromium.
-pub fn read_bookmarks(file: &Path) -> Vec<(String, String)> {
+/// Semua bookmark (judul, alamat, folder) dalam berkas Bookmarks Chromium. Folder ditulis
+/// sebagai jalur "A/B" relatif terhadap bilah bookmark; isi "Bookmark lain" dan "seluler"
+/// masuk folder "@other".
+pub fn read_bookmarks(file: &Path) -> Vec<(String, String, String)> {
     let Ok(text) = std::fs::read_to_string(file) else { return Vec::new() };
     let Ok(json) = serde_json::from_str::<Value>(&text) else { return Vec::new() };
     let mut out = Vec::new();
     if let Some(roots) = json["roots"].as_object() {
-        for key in ["bookmark_bar", "other", "synced"] {
-            if let Some(node) = roots.get(key) {
-                walk(node, &mut out);
+        for (key, base) in [("bookmark_bar", ""), ("other", "@other"), ("synced", "@other")] {
+            if let Some(children) = roots.get(key).and_then(|n| n["children"].as_array()) {
+                for c in children {
+                    walk(c, base, &mut out);
+                }
             }
         }
     }
     out
 }
 
-fn walk(node: &Value, out: &mut Vec<(String, String)>) {
+fn walk(node: &Value, folder: &str, out: &mut Vec<(String, String, String)>) {
     match node["type"].as_str() {
         Some("url") => {
             if let Some(u) = node["url"].as_str() {
                 if u.starts_with("http://") || u.starts_with("https://") {
-                    out.push((node["name"].as_str().unwrap_or(u).to_string(), u.to_string()));
+                    out.push((node["name"].as_str().unwrap_or(u).to_string(), u.to_string(), folder.to_string()));
                 }
             }
         }
         _ => {
+            // Garis miring di nama folder diganti agar tidak dianggap pemisah jalur.
+            let name = node["name"].as_str().unwrap_or("").replace('/', "\u{2215}");
+            let sub = if folder.is_empty() { name } else { format!("{folder}/{name}") };
             if let Some(children) = node["children"].as_array() {
                 for c in children {
-                    walk(c, out);
+                    walk(c, &sub, out);
                 }
             }
         }
@@ -102,7 +109,9 @@ mod tests {
         .unwrap();
         let b = read_bookmarks(&f);
         assert_eq!(b.len(), 3);
-        assert_eq!(b[1], ("HR".to_string(), "https://hr.kantor.id/".to_string()));
+        assert_eq!(b[0].2, "");
+        assert_eq!(b[1], ("HR".to_string(), "https://hr.kantor.id/".to_string(), "Kerja".to_string()));
+        assert_eq!(b[2].2, "@other");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

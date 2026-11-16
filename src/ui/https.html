@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HTTPS</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  .warn { max-width: 620px; margin: 12vh auto 0; }
+  .warn h1 { display: flex; align-items: center; gap: 12px; }
+  .warn svg { width: 40px; height: 40px; flex: none; }
+  .addr { font-family: Consolas, "Cascadia Mono", monospace; word-break: break-all; padding: 10px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); }
+  .acts { display: flex; gap: 10px; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap warn">
+  <h1><svg viewBox="0 0 24 24" fill="none" stroke="#e8730c" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M12 8v5M12 16.5v.5"/></svg><span id="h"></span></h1>
+  <p class="muted" id="p"></p>
+  <div class="addr" id="u"></div>
+  <div class="acts"><button class="primary" id="back"></button><button id="go"></button></div>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const target = decodeURIComponent(location.hash.slice(1));
+  const W = {
+    id: ["Situs ini tidak mendukung koneksi aman", "Mode HTTPS-only ketat menyala. Alamat di bawah hanya tersedia lewat http://, jadi data yang Anda kirim atau terima bisa dibaca dan diubah orang lain di jaringan yang sama (Wi-Fi umum, misalnya).", "Kembali", "Tetap buka (tidak aman)"],
+    en: ["This site doesn't support a secure connection", "Strict HTTPS-only mode is on. The address below is only available over http://, so anything you send or receive can be read or changed by others on the same network (public Wi-Fi, for example).", "Go back", "Open anyway (not secure)"],
+  };
+  function show(l) {
+    const w = W[l] || W.id;
+    document.documentElement.lang = l; document.title = w[0];
+    document.getElementById("h").textContent = w[0];
+    document.getElementById("p").textContent = w[1];
+    document.getElementById("back").textContent = w[2];
+    document.getElementById("go").textContent = w[3];
+  }
+  show((navigator.language || "id").toLowerCase().startsWith("id") ? "id" : "en");
+  document.getElementById("u").textContent = target;
+  window.ovnerPage = (s) => { show(s.lang); document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme; };
+  document.getElementById("back").onclick = () => history.length > 2 ? history.go(-2) : post({ t: "go", text: "ovner://newtab" });
+  document.getElementById("go").onclick = () => post({ t: "allow-http", url: target });
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

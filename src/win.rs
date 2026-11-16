@@ -315,6 +315,57 @@ mod imp {
 
     /// Pengaturan WebView2 per tab yang tidak disediakan wry: pengelola kata sandi, isi
     /// otomatis, SmartScreen, folder unduhan, dan penolakan izin sensitif.
+    /// Salin teks ke clipboard Windows.
+    pub fn set_clipboard(text: &str) {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+        use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+        const CF_UNICODETEXT: u32 = 13;
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            if OpenClipboard(None).is_err() {
+                return;
+            }
+            let _ = EmptyClipboard();
+            if let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) {
+                let p = GlobalLock(h) as *mut u16;
+                if !p.is_null() {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                    let _ = GlobalUnlock(h);
+                    let _ = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0)));
+                }
+            }
+            let _ = CloseClipboard();
+        }
+    }
+
+    /// Panggil metode protokol DevTools pada tab ini (bekerja walau DevTools dimatikan).
+    pub fn cdp(webview: &wry::WebView, method: &str, params: &str) {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+        use wry::WebViewExtWindows;
+        unsafe {
+            let _ = webview.webview().CallDevToolsProtocolMethod(
+                &HSTRING::from(method),
+                &HSTRING::from(params),
+                &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(()))),
+            );
+        }
+    }
+
+    /// User agent bawaan WebView2 tab ini.
+    pub fn user_agent(webview: &wry::WebView) -> String {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+        use wry::WebViewExtWindows;
+        unsafe {
+            let Ok(st) = webview.webview().Settings().and_then(|s| s.cast::<ICoreWebView2Settings2>()) else { return String::new() };
+            let mut p = windows::core::PWSTR::null();
+            if st.UserAgent(&mut p).is_ok() {
+                return webview2_com::take_pwstr(p);
+            }
+        }
+        String::new()
+    }
+
     pub fn tune_webview(webview: &wry::WebView, s: &crate::settings::Settings) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             ICoreWebView2Settings4, ICoreWebView2Settings8, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND,
@@ -589,6 +640,11 @@ mod imp {
         0
     }
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}
+    pub fn cdp(_webview: &wry::WebView, _method: &str, _params: &str) {}
+    pub fn set_clipboard(_text: &str) {}
+    pub fn user_agent(_webview: &wry::WebView) -> String {
+        String::new()
+    }
     pub fn try_suspend(_webview: &wry::WebView) {}
     pub fn resume(_webview: &wry::WebView) {}
     pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}

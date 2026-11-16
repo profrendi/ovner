@@ -12,6 +12,7 @@ use crate::settings::Settings;
 
 const CONTENT_JS: &str = include_str!("ui/content.js");
 const FARBLE_JS: &str = include_str!("ui/farble.js");
+const PRIVACY_JS: &str = include_str!("ui/privacy.js");
 
 /// Bang bawaan: (kode, URL dengan %s).
 pub const BANGS: &[(&str, &str)] = &[
@@ -180,10 +181,96 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "userCss": s.user_css,
         "farbling": s.farbling,
         "farbleOff": farble_off,
+        "uniform": s.uniform_fingerprint,
+        "hideWv": s.hide_webview2 || s.uniform_fingerprint,
+        "referrer": s.referrer_policy,
+        "h264": s.youtube_h264 == "on" || (s.youtube_h264 == "auto" && s.gpu_mode == "off"),
         // Tab privat memakai kunci berbeda supaya tidak bisa dicocokkan dengan tab biasa.
         "key": format!("{:016x}", session ^ if private { 0x9e37_79b9_7f4a_7c15 } else { 0 }),
     });
-    format!("(function(){{try{{Object.defineProperty(window,'__ovnerCfg',{{value:{cfg},configurable:false}});}}catch(e){{}}}})();\n{CONTENT_JS}\n{FARBLE_JS}")
+    format!("(function(){{try{{Object.defineProperty(window,'__ovnerCfg',{{value:{cfg},configurable:false}});}}catch(e){{}}}})();\n{CONTENT_JS}\n{PRIVACY_JS}\n{FARBLE_JS}")
+}
+
+/// Perintah protokol DevTools untuk identitas tab: menyamarkan merek "WebView2" agar terlihat
+/// seperti Microsoft Edge biasa, dan (mode seragam) identitas generik seperti Mullvad.
+pub fn identity_overrides(s: &Settings, ua: &str) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if !(s.hide_webview2 || s.uniform_fingerprint) || ua.is_empty() {
+        return out;
+    }
+    let version = |key: &str| ua.split(key).nth(1).and_then(|r| r.split([' ', ';', ')']).next()).unwrap_or("").to_string();
+    let edg = version("Edg/");
+    let chrome = version("Chrome/");
+    let full = if edg.is_empty() { chrome.clone() } else { edg.clone() };
+    let major = full.split('.').next().unwrap_or("").to_string();
+    if major.is_empty() {
+        return out;
+    }
+    // Versi lengkap juga disamarkan menjadi X.0.0.0 dalam mode seragam.
+    let full = if s.uniform_fingerprint { format!("{major}.0.0.0") } else { full };
+    let ua_text = if s.uniform_fingerprint {
+        format!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36 Edg/{major}.0.0.0")
+    } else {
+        ua.to_string()
+    };
+    let brands = json!([
+        {"brand": "Chromium", "version": major},
+        {"brand": "Microsoft Edge", "version": major},
+        {"brand": "Not_A Brand", "version": "24"},
+    ]);
+    let full_list = json!([
+        {"brand": "Chromium", "version": full},
+        {"brand": "Microsoft Edge", "version": full},
+        {"brand": "Not_A Brand", "version": "24.0.0.0"},
+    ]);
+    let meta = json!({
+        "brands": brands, "fullVersionList": full_list, "fullVersion": full,
+        "platform": "Windows", "platformVersion": "10.0.0", "architecture": "x86", "bitness": "64",
+        "model": "", "mobile": false, "wow64": false,
+    });
+    out.push(("Emulation.setUserAgentOverride", json!({"userAgent": ua_text, "userAgentMetadata": meta}).to_string()));
+    if s.uniform_fingerprint {
+        out.push(("Emulation.setHardwareConcurrencyOverride", json!({"hardwareConcurrency": 8}).to_string()));
+        if s.uniform_utc {
+            out.push(("Emulation.setTimezoneOverride", json!({"timezoneId": "UTC"}).to_string()));
+        }
+    }
+    out
+}
+
+/// Ukuran area halaman dengan letterboxing: dibulatkan ke bawah ke kelipatan 200×100
+/// (seperti Tor/Mullvad), sisanya jadi margin di tengah. Mengembalikan (x, y, lebar, tinggi).
+pub fn letterbox(w: f64, h: f64) -> (f64, f64, f64, f64) {
+    let lw = if w >= 400.0 { (w / 200.0).floor() * 200.0 } else { w };
+    let lh = if h >= 200.0 { (h / 100.0).floor() * 100.0 } else { h };
+    (((w - lw) / 2.0).floor(), ((h - lh) / 2.0).floor(), lw, lh)
+}
+
+/// Host di jaringan lokal atau komputer ini (0.0.0.0, localhost, 127.x, 10.x, 172.16-31.x,
+/// 192.168.x, 169.254.x, IPv6 lokal). Situs publik yang memanggilnya biasanya memindai port
+/// untuk sidik jari (Waterfox dan Chromium baru juga memblokirnya).
+pub fn is_local_target(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local") {
+        return true;
+    }
+    match h.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_unspecified() || ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_unspecified() || ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00 || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
+/// Isi dan jenis dari data URL `data:<mime>;base64,<isi>` (resource pengganti adblock-rust).
+pub fn decode_data_url(u: &str) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+    let rest = u.strip_prefix("data:")?;
+    let (head, body) = rest.split_once(',')?;
+    let mime = head.trim_end_matches(";base64").to_string();
+    let bytes = if head.ends_with(";base64") { base64::prelude::BASE64_STANDARD.decode(body).ok()? } else { body.as_bytes().to_vec() };
+    Some((mime, bytes))
 }
 
 #[cfg(test)]
@@ -242,4 +329,31 @@ mod tests {
         assert!(js.contains("__ovnerCfg") && js.contains("bank.co.id") && js.contains("\"farbling\":\"standard\""));
         assert_ne!(page_scripts(&s, 42, true), js);
     }
+    #[test]
+    fn identity_and_letterbox() {
+        let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.3595.65";
+        let s = Settings::default();
+        let o = identity_overrides(&s, ua);
+        assert_eq!(o.len(), 1);
+        assert!(o[0].1.contains("\"Microsoft Edge\"") && o[0].1.contains("142.0.3595.65") && !o[0].1.contains("WebView2"));
+        let u = Settings { uniform_fingerprint: true, uniform_utc: true, ..Settings::default() };
+        let o = identity_overrides(&u, ua);
+        assert_eq!(o.len(), 3);
+        assert!(o[0].1.contains("Edg/142.0.0.0") && o[2].1.contains("UTC"));
+        assert!(identity_overrides(&Settings { hide_webview2: false, ..Settings::default() }, ua).is_empty());
+        assert_eq!(letterbox(1366.0, 657.0), (83.0, 28.0, 1200.0, 600.0));
+        assert_eq!(letterbox(300.0, 150.0), (0.0, 0.0, 300.0, 150.0));
+    }
+
+    #[test]
+    fn local_targets_and_data_urls() {
+        for h in ["0.0.0.0", "localhost", "127.0.0.1", "192.168.1.1", "10.0.0.5", "172.20.1.1", "[::1]", "printer.local"] {
+            assert!(is_local_target(h), "{h}");
+        }
+        for h in ["8.8.8.8", "kompas.com", "172.32.0.1"] {
+            assert!(!is_local_target(h), "{h}");
+        }
+        assert_eq!(decode_data_url("data:application/javascript;base64,Ly8="), Some(("application/javascript".into(), b"//".to_vec())));
+    }
+
 }

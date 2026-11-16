@@ -40,6 +40,39 @@ File `portable.txt` membuat semua data disimpan di folder `Data` di sebelah exe.
 Catatan: sandi dan cookie yang disimpan WebView2 dienkripsi dengan akun Windows, jadi login
 situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut.
 
+## Fitur baru di 0.4
+
+**Tingkat perlindungan**: tiga preset di atas halaman Pengaturan — **Seimbang** (bawaan),
+**Ketat**, dan **Maksimal**. Setelan rinci disembunyikan di balik *Tampilkan semua setelan*,
+tetap bisa diubah satu per satu (preset lalu menjadi *Kustom*).
+
+**Pemblokir sekuat Brave Shields**:
+- scriptlet uBlock Origin (`+js(...)`) disuntikkan sebelum skrip situs: iklan video YouTube
+  dan popup anti-adblock;
+- resource pengganti (`$redirect`): skrip iklan diganti versi kosong supaya pemutar video
+  situs berita tetap jalan;
+- filter procedural (`:has-text`, `:upward`, `:matches-css`, `:remove()`): iklan "Bersponsor";
+- `$removeparam` dan daftar AdGuard URL Tracking; daftar uBO Quick fixes, Unbreak, Badware,
+  Brave Unbreak; daftar gangguan (opsional);
+- perbaikan cepat dan scriptlet diperbarui tiap 6 jam, daftar besar tiap 3 hari.
+
+**Privasi ala LibreWolf, Waterfox, dan Mullvad**: blokir akses situs ke jaringan lokal,
+pangkas referrer, Mullvad DNS dan DNS ketat tanpa cadangan, HTTPS-only ketat, letterboxing,
+mode seragam, samarkan WebView2 sebagai Edge biasa, **Identitas baru**, selalu mode privat,
+mesin pencari terpisah untuk tab privat (Qwant, Startpage, Mullvad Leta, Ecosia, Mojeek),
+salin alamat semua tab, CSS sendiri untuk toolbar.
+
+**Level keamanan** (seperti Tor/Mullvad): Standar, Lebih aman (JavaScript mati di situs http,
+JIT mati), Paling aman (JavaScript mati kecuali situs yang diizinkan lewat tameng).
+
+**Tab vertikal** di kiri, dan **bilah bookmark seperti Brave**: folder, ikon, tombol `»`,
+dan *Bookmark lain*. Impor ulang bookmark sekali agar foldernya ikut.
+
+**Mode GPU**: *Penuh*, *Hemat* (GPU tetap untuk video, gambar halaman di CPU, memori GPU
+dibatasi), atau *Mati*. Saat GPU mati, YouTube otomatis memakai H.264 yang paling ringan
+untuk CPU. Pengguna "Matikan GPU" di 0.3 otomatis dipindah ke mode *Mati*; coba *Hemat*
+bila video terasa buram.
+
 ## Fitur baru di 0.3
 
 **Setelan Brave Origin dikoreksi**: prediksi jaringan nyala, zero-copy nyala, pemeriksa ejaan
@@ -138,8 +171,15 @@ Choose the **Stable** or **Nightly** update channel in Settings → System.
 **Address bar**: `!bangs` (`rust !w`, `!yt`, `!gh`, custom bangs), local suggestions from history
 and bookmarks, optional *No Search* mode, punycode display for internationalized domains.
 
-**Privacy**: Secure DNS (Cloudflare, Quad9, AdGuard), Privacy Sandbox APIs and field trials
-disabled, optional WebGL disabling, ignore "Leave site?" dialogs, all pop-ups as tabs.
+**Privacy**: Secure DNS (Cloudflare, Quad9, AdGuard, Mullvad) with an optional no-fallback mode,
+Privacy Sandbox APIs and field trials disabled, local-network access blocking, referrer trimming,
+strict HTTPS-only, letterboxing, Mullvad-style uniform mode, WebView2 disguised as regular Edge,
+New identity, always-private mode, security levels (Standard / Safer / Safest).
+
+**0.4**: protection presets (Balanced / Strict / Maximum, detailed settings still editable),
+uBlock Origin scriptlets, redirect resources, procedural cosmetic filters, `$removeparam`,
+quick-fix lists refreshed every 6 hours, Brave-style bookmarks bar with folders, vertical tabs,
+GPU modes (Full / Lite / Off) with automatic H.264 on YouTube when the GPU is off.
 
 **Also**: forced dark mode, custom CSS, split view, crash and hang recovery, experimental
 WebView2 extensions, bookmark import from Chrome/Edge/Brave.

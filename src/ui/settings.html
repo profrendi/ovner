@@ -13,6 +13,14 @@
   nav a:hover { color: var(--accent); border-color: var(--accent); }
   #q { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
   .hide { display: none !important; }
+  .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 4px; }
+  .preset { text-align: left; padding: 14px; border: 2px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; cursor: pointer; }
+  .preset:hover { border-color: var(--accent); }
+  .preset.on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .preset b { display: block; font-size: 15px; margin-bottom: 6px; }
+  .preset span { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  #details { margin: 14px 0 4px; }
+  @media (max-width: 640px) { .presets { grid-template-columns: 1fr; } }
   h2 { scroll-margin-top: 96px; }
 </style>
 </head>
@@ -20,9 +28,15 @@
 <div class="wrap">
 <h1><span id="h1"></span> <span class="tag" id="ver"></span></h1>
 <p class="muted" id="intro"></p>
+<h2 id="presetH"></h2>
+<div class="presets" id="presets"></div>
+<p class="muted" id="presetNote"></p>
+<button id="details"></button>
+<div id="all">
 <input type="search" id="q">
 <nav id="nav"></nav>
 <div id="form"></div>
+</div>
 <h2 id="aboutH"></h2>
 <div class="card"><div class="row"><div class="lbl" id="about"></div><button id="update"></button></div></div>
 </div>
@@ -42,11 +56,22 @@
     importNone: ["Tidak ada Chrome, Edge, atau Brave di komputer ini.", "No Chrome, Edge or Brave found on this computer."],
     importBtn: ["Impor", "Import"],
     engine: ["Mesin", "Engine"], blocker: ["Pemblokir", "Blocker"], data: ["Folder data", "Data folder"],
+    presetH: ["Tingkat perlindungan", "Protection level"],
+    showAll: ["Tampilkan semua setelan ▾", "Show all settings ▾"], hideAll: ["Sembunyikan setelan rinci ▴", "Hide detailed settings ▴"],
+    custom: ["Saat ini: Kustom (ada setelan yang Anda ubah sendiri). Pilih salah satu preset untuk kembali.", "Currently: Custom (you changed some settings yourself). Pick a preset to go back."],
+    presetNote: ["Preset hanya mengubah setelan perlindungan; setelan RAM, tampilan, dan lainnya tetap. Beberapa setelan berlaku setelah Ovner dibuka ulang ↻.", "Presets only change protection settings; memory, appearance and other settings stay. Some apply after Ovner restarts ↻."],
   };
   const R = "r"; // berlaku setelah dibuka ulang
   const X = "x"; // eksperimen
   const yes = (id, en) => [id, en];
+  const ENGINES = [["google", "Google", "Google"], ["duckduckgo", "DuckDuckGo", "DuckDuckGo"], ["brave", "Brave Search", "Brave Search"], ["bing", "Bing", "Bing"],
+    ["qwant", "Qwant", "Qwant"], ["startpage", "Startpage", "Startpage"], ["leta", "Mullvad Leta", "Mullvad Leta"], ["ecosia", "Ecosia", "Ecosia"], ["mojeek", "Mojeek", "Mojeek"]];
   // [kunci, jenis, label, keterangan, pilihan, tanda]
+  const PRESETS = [
+    ["balanced", ["Seimbang", "Balanced"], ["Blokir iklan, pelacak, popup cookie, dan acak sidik jari standar. Hampir semua situs jalan normal. Disarankan.", "Blocks ads, trackers, cookie pop-ups, standard fingerprint randomization. Nearly every site works normally. Recommended."]],
+    ["strict", ["Ketat", "Strict"], ["Ditambah: blokir gangguan, sidik jari ketat, referrer dipangkas, ungkap pelacak CNAME, DNS Quad9, WebRTC tanpa IP lokal. Sesekali situs perlu diizinkan.", "Adds: annoyance blocking, strict fingerprinting, trimmed referrers, CNAME uncloaking, Quad9 DNS, WebRTC without local IP. Occasionally a site needs allowing."]],
+    ["max", ["Maksimal", "Maximum"], ["Ditambah: mode seragam ala Mullvad, letterboxing, HTTPS-only ketat, level keamanan Lebih aman, WebGL mati, tanpa riwayat, data dihapus saat keluar. Lebih banyak situs rewel.", "Adds: Mullvad-style uniform mode, letterboxing, strict HTTPS-only, Safer security level, WebGL off, no history, data cleared on exit. More sites break."]],
+  ];
   const schema = [
     ["look", ["Bahasa dan tampilan", "Language and appearance"], [
       ["language", "select", yes("Bahasa", "Language"), "", [["auto", "Ikuti Windows", "Follow Windows"], ["id", "Bahasa Indonesia", "Bahasa Indonesia"], ["en", "English", "English"]]],
@@ -57,10 +82,13 @@
       ["newtab", "select", yes("Halaman tab baru", "New tab page"), "", [["blank", "Kosong (Brave Origin)", "Blank (Brave Origin)"], ["ovner", "Kotak cari Ovner", "Ovner search box"]]],
       ["default_zoom", "number", yes("Zoom bawaan (%)", "Default zoom (%)"), yes("Untuk tab baru. Ctrl + / − untuk tiap tab.", "For new tabs. Ctrl + / − per tab.")],
       ["force_dark", "bool", yes("Paksa mode gelap di semua situs", "Force dark mode on all sites"), yes("Fitur Chromium (seperti Servo: gaya pengguna).", "Chromium feature (like Servo user styles)."), null, [R]],
+      ["vertical_tabs", "bool", yes("Tab vertikal (di kiri)", "Vertical tabs (on the left)"), yes("Seperti Waterfox/Edge; cocok untuk layar lebar dan banyak tab.", "Like Waterfox/Edge; good for wide screens and many tabs.")],
       ["user_css", "textarea", yes("CSS sendiri", "Custom CSS"), yes("Dipasang di semua halaman. Berlaku saat tab dimuat ulang.", "Applied to every page. Takes effect when a tab reloads.")],
+      ["toolbar_css", "textarea", yes("CSS sendiri untuk toolbar Ovner", "Custom CSS for the Ovner toolbar"), yes("Seperti userChrome.css di Waterfox. Contoh: #bmbar{height:26px}", "Like Waterfox's userChrome.css. Example: #bmbar{height:26px}")],
     ]],
     ["search", ["Pencarian dan kolom alamat", "Search and address bar"], [
-      ["search_engine", "select", yes("Mesin pencari", "Search engine"), yes("Ovner tidak mengirim saran pencarian saat mengetik.", "Ovner never sends search suggestions while you type."), [["google", "Google", "Google"], ["duckduckgo", "DuckDuckGo", "DuckDuckGo"], ["brave", "Brave Search", "Brave Search"], ["bing", "Bing", "Bing"]]],
+      ["search_engine", "select", yes("Mesin pencari", "Search engine"), yes("Ovner tidak mengirim saran pencarian saat mengetik.", "Ovner never sends search suggestions while you type."), ENGINES],
+      ["private_search_engine", "select", yes("Mesin pencari tab privat", "Private tab search engine"), yes("Seperti Waterfox dan Mullvad.", "Like Waterfox and Mullvad."), [["", "Sama dengan biasa", "Same as normal"], ...ENGINES]],
       ["search_engine", "text", yes("…atau alamat pencarian sendiri", "…or your own search URL"), yes("Gunakan %s untuk kata kunci, mis. https://www.ecosia.org/search?q=%s", "Use %s for the query, e.g. https://www.ecosia.org/search?q=%s")],
       ["bangs", "bool", yes("!bangs", "!bangs"), yes("Ketik !w, !yt, !gh, !g, !tok, !shp, !kbbi, !tr… di awal atau akhir kata kunci (seperti Helium).", "Type !w, !yt, !gh, !g, !tok, !shp, !tr… at the start or end of a query (like Helium).")],
       ["custom_bangs", "lines", yes("Bang sendiri", "Custom bangs"), yes("Satu per baris: !kode https://alamat?q=%s", "One per line: !code https://address?q=%s")],
@@ -80,18 +108,31 @@
       ["block_telemetry", "bool", yes("Blokir telemetri Microsoft Edge/Office", "Block Microsoft Edge/Office telemetry"), ""],
       ["block_privacy_sandbox", "bool", yes("Matikan API iklan Chromium dan eksperimen", "Disable Chromium ad APIs and field trials"), yes("Topics, FLEDGE, Attribution Reporting, FedCM (seperti Helium).", "Topics, FLEDGE, Attribution Reporting, FedCM (like Helium)."), null, [R]],
       ["cname_uncloak", "bool", yes("Ungkap pelacak yang menyamar (CNAME)", "Uncloak disguised trackers (CNAME)"), yes("Mencari nama asli subdomain lewat DNS di latar. Permintaan pertama ke subdomain baru tetap lewat.", "Looks up subdomains' real names via DNS in the background. The first request to a new subdomain still passes."), null, [X]],
-      ["auto_update_filters", "bool", yes("Perbarui daftar filter otomatis", "Update filter lists automatically"), yes("Seminggu sekali di latar.", "Weekly in the background.")],
+      ["block_annoyances", "bool", yes("Blokir gangguan", "Block annoyances"), yes("Notifikasi, widget sosial, popup newsletter, banner \"pasang aplikasi\" (uBO Annoyances, Fanboy).", "Notifications, social widgets, newsletter pop-ups, \"get our app\" banners (uBO Annoyances, Fanboy).")],
+      ["auto_update_filters", "bool", yes("Perbarui daftar filter otomatis", "Update filter lists automatically"), yes("Daftar besar tiap 3 hari, scriptlet dan perbaikan cepat (YouTube, anti-adblock) lebih sering.", "Big lists every 3 days; scriptlets and quick fixes (YouTube, anti-adblock) more often.")],
+      ["filter_update_hours", "number", yes("Perbarui perbaikan cepat tiap (jam)", "Update quick fixes every (hours)"), yes("Bawaan 6 jam.", "Default 6 hours.")],
       ["exceptions", "list", yes("Situs tanpa pemblokir iklan", "Sites without ad blocking"), yes("Pisahkan dengan koma. Juga lewat tameng.", "Comma-separated. Also via the shield.")],
       ["script_blocked", "list", yes("Situs dengan JavaScript diblokir", "Sites with JavaScript blocked"), ""],
       ["farbling_off", "list", yes("Situs tanpa acak sidik jari", "Sites without fingerprint randomization"), yes("Mis. situs bank yang rewel.", "E.g. picky banking sites.")],
+      ["hide_webview2", "bool", yes("Samarkan sebagai Microsoft Edge", "Look like regular Microsoft Edge"), yes("Sembunyikan tanda aplikasi WebView2 yang membuat Ovner mudah dikenali.", "Hide WebView2 app traits that make Ovner easy to recognize."), null, [X]],
+      ["uniform_fingerprint", "bool", yes("Mode seragam (seperti Mullvad)", "Uniform mode (like Mullvad)"), yes("Identitas generik: versi Edge umum, 8 inti CPU, layar seukuran jendela, timer kasar, API langka mati.", "Generic identity: common Edge version, 8 CPU cores, screen = window size, coarse timers, rare APIs off."), null, [X]],
+      ["uniform_utc", "bool", yes("Mode seragam: zona waktu UTC", "Uniform mode: UTC time zone"), yes("Jam di situs bisa bergeser 7 jam. Pakai bila benar-benar perlu.", "Times on sites can shift by hours. Use only if you really need it."), null, [X]],
+      ["letterboxing", "bool", yes("Letterboxing", "Letterboxing"), yes("Area halaman dibulatkan ke kelipatan 200×100 agar ukuran jendela tidak jadi sidik jari.", "Page area rounded to multiples of 200×100 so window size is not a fingerprint.")],
       ["custom_lists", "lines", yes("Daftar filter tambahan (alamat)", "Extra filter lists (URLs)"), yes("Satu alamat per baris, format EasyList/uBlock.", "One URL per line, EasyList/uBlock format.")],
       ["custom_rules", "textarea", yes("Aturan filter sendiri", "My filter rules"), yes("Format EasyList/uBlock. Pemilih elemen menambah aturan ke sini.", "EasyList/uBlock format. The element picker adds rules here.")],
     ]],
     ["privacy", ["Privasi dan keamanan", "Privacy and security"], [
+      ["security_level", "select", yes("Level keamanan", "Security level"), yes("Lebih aman: JavaScript mati di situs http, JIT mati, media harus diklik. Paling aman: JavaScript mati di semua situs kecuali yang diizinkan lewat tameng.", "Safer: JavaScript off on http sites, JIT off, click-to-play media. Safest: JavaScript off everywhere except sites allowed from the shield."), [["standard", "Standar", "Standard"], ["safer", "Lebih aman", "Safer"], ["safest", "Paling aman", "Safest"]], [R]],
+      ["script_allowed", "list", yes("Situs yang boleh JavaScript (level keamanan)", "Sites allowed JavaScript (security level)"), ""],
+      ["always_private", "bool", yes("Selalu mode privat", "Always use private mode"), yes("Tanpa riwayat; cookie dan login hilang saat Ovner ditutup (seperti Mullvad).", "No history; cookies and logins vanish when Ovner closes (like Mullvad).")],
+      ["block_local_network", "bool", yes("Blokir akses situs ke jaringan lokal", "Block sites from reaching your local network"), yes("Situs publik tidak bisa memindai komputer/router Anda (0.0.0.0, 127.x, 192.168.x).", "Public sites can't scan your computer/router (0.0.0.0, 127.x, 192.168.x).")],
+      ["referrer_policy", "select", yes("Referrer ke situs lain", "Referrer to other sites"), yes("Alamat halaman yang dikirim saat membuka situs lain.", "The page address sent when opening another site."), [["default", "Bawaan", "Default"], ["origin", "Hanya nama situs", "Site name only"], ["none", "Tidak dikirim", "Not sent"]]],
+      ["https_strict", "bool", yes("HTTPS-only ketat", "Strict HTTPS-only"), yes("Tanya dulu sebelum membuka situs yang hanya punya http://.", "Ask before opening sites that only have http://.")],
       ["save_history", "bool", yes("Simpan riwayat kunjungan", "Save browsing history"), ""],
       ["clear_on_exit", "bool", yes("Hapus cookie, cache, dan data situs saat keluar", "Clear cookies, cache and site data on exit"), ""],
       ["deny_sensitive_permissions", "bool", yes("Tolak kamera, mikrofon, dan lokasi", "Deny camera, microphone and location"), ""],
-      ["secure_dns", "select", yes("Secure DNS (DNS-over-HTTPS)", "Secure DNS (DNS-over-HTTPS)"), yes("Saran Brave Origin bila halaman terasa lambat.", "Brave Origin's suggestion when pages feel slow."), [["off", "Mati (DNS Windows)", "Off (Windows DNS)"], ["cloudflare", "Cloudflare", "Cloudflare"], ["quad9", "Quad9", "Quad9"], ["adguard", "AdGuard", "AdGuard"]], [R, X]],
+      ["secure_dns", "select", yes("Secure DNS (DNS-over-HTTPS)", "Secure DNS (DNS-over-HTTPS)"), yes("Saran Brave Origin bila halaman terasa lambat.", "Brave Origin's suggestion when pages feel slow."), [["off", "Mati (DNS Windows)", "Off (Windows DNS)"], ["cloudflare", "Cloudflare", "Cloudflare"], ["quad9", "Quad9", "Quad9"], ["adguard", "AdGuard (blokir iklan)", "AdGuard (blocks ads)"], ["mullvad", "Mullvad", "Mullvad"], ["mullvad_adblock", "Mullvad (blokir iklan)", "Mullvad (blocks ads)"]], [R, X]],
+      ["dns_strict", "bool", yes("Secure DNS tanpa cadangan", "Secure DNS without fallback"), yes("Bila DNS aman gagal, jangan kembali ke DNS Windows. Di jaringan kantor yang memblokir DNS aman, internet bisa putus.", "If secure DNS fails, never fall back to Windows DNS. On office networks that block secure DNS, browsing may stop."), null, [R]],
       ["network_prediction", "bool", yes("Prediksi jaringan (prefetch DNS, preconnect)", "Network prediction (DNS prefetch, preconnect)"), yes("Brave Origin: nyala (speed fix).", "Brave Origin: on (speed fix)."), null, [R]],
       ["webrtc_policy", "select", yes("Kebijakan WebRTC", "WebRTC policy"), "", [["default", "Bawaan", "Default"], ["proxy_only", "Sembunyikan IP lokal", "Hide local IP"]], [R]],
       ["autoplay", "bool", yes("Putar media otomatis", "Autoplay media"), "", null, [R]],
@@ -127,7 +168,8 @@
       ["renderer_process_limit", "number", yes("Batas proses halaman", "Page process limit"), yes("0 = otomatis. 2–4 menghemat RAM bila banyak tab (seperti mode satu proses Servo).", "0 = automatic. 2–4 saves RAM with many tabs (like Servo's single-process mode)."), null, [R]],
       ["process_per_site", "bool", yes("Satu proses per situs", "One process per site"), yes("Tab dari situs yang sama berbagi proses.", "Tabs of the same site share a process."), null, [R]],
       ["spare_renderer", "bool", yes("Proses renderer cadangan", "Spare renderer process"), "", null, [R]],
-      ["no_gpu", "bool", yes("Matikan akselerasi GPU", "Disable GPU acceleration"), "", null, [R]],
+      ["gpu_mode", "select", yes("Mode GPU", "GPU mode"), yes("Hemat: GPU tetap untuk video (tajam dan lancar), gambar halaman di CPU, memori GPU dibatasi. Mati: RAM paling kecil, tetapi video dikerjakan CPU sehingga YouTube bisa buram/lambat naik resolusi.", "Lite: GPU still handles video (sharp and smooth), pages drawn on CPU, GPU memory capped. Off: least RAM, but video falls to the CPU so YouTube can look blurry or slow to reach full resolution."), [["full", "Penuh", "Full"], ["lite", "Hemat (disarankan)", "Lite (recommended)"], ["off", "Mati", "Off"]], [R]],
+      ["youtube_h264", "select", yes("YouTube pakai H.264", "YouTube uses H.264"), yes("H.264 paling ringan untuk CPU (maksimal 1080p). Otomatis = hanya saat GPU mati.", "H.264 is lightest on the CPU (up to 1080p). Auto = only when the GPU is off."), [["auto", "Otomatis", "Auto"], ["on", "Selalu", "Always"], ["off", "Tidak", "Never"]]],
       ["zero_copy", "bool", yes("Zero-copy rasterizer", "Zero-copy rasterizer"), yes("Brave Origin: nyala.", "Brave Origin: on."), null, [R]],
       ["parallel_downloading", "bool", yes("Unduhan paralel", "Parallel downloading"), yes("Brave Origin: nyala.", "Brave Origin: on."), null, [R]],
       ["extra_browser_args", "text", yes("Argumen tambahan WebView2", "Extra WebView2 arguments"), "", null, [R]],
@@ -145,7 +187,7 @@
   let state = {}, browsers = [];
   const form = document.getElementById("form");
   const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); for (const k in attrs) if (k === "html") e.innerHTML = attrs[k]; else e[k] = attrs[k]; e.append(...kids); return e; };
-  const known = ["google", "duckduckgo", "brave", "bing"];
+  const known = ["google", "duckduckgo", "brave", "bing", "qwant", "startpage", "leta", "ecosia", "mojeek"];
 
   function control(key, kind, opts) {
     const v = state[key];
@@ -209,6 +251,28 @@
     filter();
   }
 
+  let showAll = false;
+  try { showAll = localStorage.getItem("ovner-settings-all") === "1"; } catch (e) {}
+  function renderPresets() {
+    document.getElementById("presetH").textContent = T(UI.presetH);
+    const box = document.getElementById("presets"); box.textContent = "";
+    for (const [id, name, desc] of PRESETS) {
+      const b = h("button", { className: "preset" + (state.preset === id ? " on" : "") });
+      b.append(h("b", { textContent: T(name) }), h("span", { textContent: T(desc) }));
+      b.onclick = () => post({ t: "preset", name: id });
+      box.append(b);
+    }
+    document.getElementById("presetNote").textContent = state.preset === "custom" ? T(UI.custom) : T(UI.presetNote);
+    const d = document.getElementById("details");
+    d.textContent = showAll ? T(UI.hideAll) : T(UI.showAll);
+    document.getElementById("all").classList.toggle("hide", !showAll);
+  }
+  document.getElementById("details").onclick = () => {
+    showAll = !showAll;
+    try { localStorage.setItem("ovner-settings-all", showAll ? "1" : "0"); } catch (e) {}
+    renderPresets();
+  };
+
   function filter() {
     const q = document.getElementById("q").value.trim().toLowerCase();
     for (const r of form.querySelectorAll(".row[data-text]")) r.classList.toggle("hide", !!q && !r.dataset.text.includes(q));
@@ -230,6 +294,7 @@
     document.getElementById("about").innerHTML = `Ovner ${s.version}<small>${T(UI.engine)}: Microsoft Edge WebView2 ${s.engine}<br>${T(UI.blocker)}: adblock-rust (Brave), ${s.lists}<br>${T(UI.data)}: <span id="dd"></span><br>github.com/profrendi/ovner</small>`;
     document.getElementById("dd").textContent = s.data;
     const a = document.activeElement;
+    renderPresets();
     if (!langChanged && a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT") && a.id !== "q") return;
     build();
   };
