@@ -1539,6 +1539,15 @@ impl App {
         self.activate(a);
     }
 
+    /// Unduhan selesai/dibatalkan: kembalikan RAM yang terpakai selama mengunduh (buffer jaringan
+    /// dan disk) bila tidak ada unduhan lain yang masih berjalan.
+    fn trim_after_download(&mut self) {
+        let busy = self.downloads.iter().filter(|d| d.state == "progress" || d.state == "paused").count();
+        if busy <= 1 {
+            self.next_trim = Some(Instant::now() + Duration::from_secs(3));
+        }
+    }
+
     fn trim_now(&self) -> u32 {
         let n = win::trim_process_tree();
         log(&format!("RAM dirapikan ({n} proses)"));
@@ -1838,6 +1847,7 @@ impl App {
                 }
             }
             win::DlEvent::Done { id, ok, path, received } => {
+                self.trim_after_download();
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.state = if ok { "done".into() } else { "failed".into() };
                     d.received = received;
@@ -1979,6 +1989,7 @@ impl App {
                     d.name = format!("{} ({error})", d.name);
                 }
                 self.video_jobs.remove(&id);
+                self.trim_after_download();
                 self.save_downloads();
                 self.last_render_key.clear();
                 self.render();
@@ -2071,6 +2082,7 @@ impl App {
                 }
                 let (url, err) = (d.url.clone(), error.unwrap_or_default());
                 let job = self.dl_jobs.remove(&id);
+                self.trim_after_download();
                 if err == "dibatalkan" {
                     // Pegangan berkas dilepas bersama job; pastikan sisa .ovnerpart hilang.
                     drop(job);
@@ -2471,7 +2483,8 @@ impl App {
                 self.stats = self.sampler.sample(false);
             }
             let t = usage::total(&self.stats);
-            let kinds: Vec<String> = self.stats.iter().map(|p| p.kind.clone()).collect();
+            // Jenis proses beserta RAM-nya (mis. "ovner 40MB"), supaya terlihat siapa yang membengkak.
+            let kinds: Vec<String> = self.stats.iter().map(|p| format!("{} {}MB", p.kind, p.working / 1_048_576)).collect();
             log(&format!(
                 "RAM: {} MB, CPU {:.1}%, {} proses [{}], {} tab ({} hidup)",
                 t.working / 1_048_576,

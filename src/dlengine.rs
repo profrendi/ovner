@@ -213,6 +213,15 @@ pub fn unique_path(path: &Path) -> PathBuf {
 pub fn start(req: Request, path: &Path, total: u64, conns: usize, cb: impl Fn(Update) + Send + 'static) -> Result<Job, String> {
     let part = PathBuf::from(format!("{}.ovnerpart", path.display()));
     let file = OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&part).map_err(|e| e.to_string())?;
+    // Berkas jarang (sparse): menulis bagian di posisi jauh (mis. 5 GB) tidak membuat NTFS mengisi
+    // nol semua isi sebelumnya lebih dulu. Tanpa ini awal unduhan besar macet ±1 menit.
+    #[cfg(windows)]
+    unsafe {
+        use std::os::windows::io::AsRawHandle;
+        const FSCTL_SET_SPARSE: u32 = 590_020;
+        let h = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
+        let _ = windows::Win32::System::IO::DeviceIoControl(h, FSCTL_SET_SPARSE, None, 0, None, 0, None, None);
+    }
     file.set_len(total).map_err(|e| e.to_string())?;
     let conns = conns.clamp(1, 32);
     // Bagian awal: sama besar, paling kecil 1 MB.
@@ -363,18 +372,28 @@ fn worker(sh: &Shared, idx: usize) {
         }
         let mut write_err: Option<String> = None;
         let r = http_get(&sh.req, Some((pos, end - 1)), &mut |data| {
-            let mut segs = sh.segs.lock().unwrap();
-            let seg = &mut segs[idx];
-            let room = seg.end.saturating_sub(seg.pos) as usize;
-            let n = room.min(data.len());
+            // Kunci hanya untuk membaca/memperbarui posisi, tidak selama menulis ke disk: menulis
+            // bisa lama (disk lambat) dan kunci yang sama dipakai jendela untuk menggambar peta
+            // bagian, sehingga dulu Ovner ikut membeku. Hanya pekerja ini yang memajukan `pos`;
+            // pembelahan bagian hanya memperkecil `end`.
+            let (off, n) = {
+                let segs = sh.segs.lock().unwrap();
+                let seg = &segs[idx];
+                (seg.pos, (seg.end.saturating_sub(seg.pos) as usize).min(data.len()))
+            };
             if n > 0 {
-                if let Err(e) = write_at(&sh.file, &data[..n], seg.pos) {
+                if let Err(e) = write_at(&sh.file, &data[..n], off) {
                     write_err = Some(e.to_string());
                     return false;
                 }
-                seg.pos += n as u64;
-                sh.received.fetch_add(n as u64, Ordering::SeqCst);
             }
+            let mut segs = sh.segs.lock().unwrap();
+            let seg = &mut segs[idx];
+            // Bila bagian ini dibelah saat menulis, byte sesudah `end` milik bagian baru (isinya
+            // sama, jadi aman ditulis dua kali) dan tidak dihitung di sini.
+            let counted = (off + n as u64).min(seg.end).saturating_sub(off);
+            sh.received.fetch_add(counted, Ordering::SeqCst);
+            seg.pos = (off + n as u64).max(seg.pos);
             // Berhenti bila bagian ini sudah penuh (mungkin karena dibelah) atau dijeda.
             seg.pos < seg.end && sh.state.load(Ordering::SeqCst) == RUN
         });

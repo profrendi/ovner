@@ -63,6 +63,15 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.3
+
+- **Ovner tidak lagi membeku ±1 menit saat unduhan besar dimulai.** Berkas unduhan dibuat
+  sebagai berkas jarang (sparse), jadi NTFS tidak mengisi nol gigabyte sebelum bagian di posisi
+  jauh bisa ditulis, dan penulisan ke disk tidak lagi memegang kunci yang dipakai jendela untuk
+  menggambar kemajuan.
+- **RAM dirapikan otomatis setelah unduhan selesai atau dibatalkan**, dan log diagnostik kini
+  mencatat RAM tiap proses (mis. `ovner 40MB, renderer 120MB`).
+
 ## Perbaikan 0.8.2
 
 - **Menu klik kanan bookmark** di bilah dan menu folder: Buka di tab baru, Edit…, Ganti nama
