@@ -331,7 +331,6 @@
       };
       const outside = (ev) => {
         const r = box.getBoundingClientRect();
-        if (box.querySelectorAll(".tab").length < 2) return false;
         return axis === "x" ? ev.clientY > r.bottom + 48 || ev.clientY < r.top - 48 : ev.clientX > r.right + 64 || ev.clientX < r.left - 64;
       };
       const up = (ev) => {
@@ -800,6 +799,14 @@
     });
   }
   window.ovner = {
+    // Tab dari jendela lain dijatuhkan di titik (x) ini: pindahkan ke urutan yang sesuai.
+    dropAt(id, x, y) {
+      const p = x;
+      const els = [...$("tabs").querySelectorAll(".tab")].filter((el) => +el.dataset.id !== id);
+      let to = els.length;
+      for (let k = 0; k < els.length; k++) { const e = els[k].getBoundingClientRect(); if (p < e.left + e.width / 2) { to = k; break; } }
+      send({ cmd: "tab-move", id, to });
+    },
     icons(map) { iconsCache = map || {}; if (state && typeof state === "object") { state.icons = iconsCache; } },
     render(s) {
       s.icons = iconsCache;

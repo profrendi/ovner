@@ -71,6 +71,24 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.14
+
+- **Info RAM/CPU/GPU di judul muncul di semua jendela.** Dulu hanya jendela pertama yang punya
+  tampilan info di bilah judul; kini tiap jendela punya sendiri.
+- **Tab bisa diseret antar jendela.** Seret tab keluar lalu jatuhkan di baris tab (atau tab
+  vertikal) jendela Ovner lain: tab pindah ke sana di posisi jatuhnya, halamannya tidak dimuat
+  ulang. Jendela asal yang menjadi kosong ditutup. Dijatuhkan di tempat lain = jendela baru.
+- **Jendela yang diminimalkan lebih hemat:**
+  - Setelah 30 detik diminimalkan, tab-tabnya disembunyikan dan ditangguhkan (seperti di tray),
+    kecuali yang memutar media, memuat, atau mengunduh. Dibangunkan lagi saat jendela dibuka.
+  - Tab latar di jendela yang diminimalkan/di tray ditidurkan 3x lebih cepat (minimal 2 menit).
+- **Mode efisiensi per jendela:** proses halaman yang semua tabnya tersembunyi (tab latar atau
+  jendela diminimalkan) diberi mode efisiensi Windows (EcoQoS, prioritas dan memori rendah),
+  sementara jendela lain yang terlihat tetap cepat. Begitu tabnya dibuka, prosesnya langsung normal.
+- **Lebih sedikit pengecekan saat diam:** bila tidak ada gerakan mouse/keyboard selama 1 menit,
+  pengukuran RAM/CPU berjalan tiap 3 detik (bukan tiap detik); di halaman yang tersembunyi,
+  pemindai iklan kosmetik dan pengumpul kelas halaman bekerja tiap 2 detik (bukan 150–250 ms).
+
 ## Perbaikan 0.8.13
 
 - **Banyak jendela (side by side).** Ovner kini bisa dibuka di beberapa jendela sekaligus:

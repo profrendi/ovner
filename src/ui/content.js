@@ -319,7 +319,8 @@
       }
     }
     let pending = false;
-    const later = () => { if (pending) return; pending = true; setTimeout(() => { pending = false; apply(); }, 150); };
+    // Halaman tersembunyi (tab latar/jendela diminimalkan): kerjakan jauh lebih jarang.
+    const later = () => { if (pending) return; pending = true; setTimeout(() => { pending = false; apply(); }, document.hidden ? 2000 : 150); };
     window.__ovnerProc = (list) => {
       rules = (list || []).filter((r) => r && Array.isArray(r.selector));
       if (!rules.length) return;
@@ -549,7 +550,7 @@
       post({ t: "cos", c: qc.splice(0, 3000), i: qi.splice(0, 3000) });
     }
   }
-  function later() { if (!timer) timer = setTimeout(flush, 250); }
+  function later() { if (!timer) timer = setTimeout(flush, document.hidden ? 2000 : 250); }
   function start() {
     scan(document.documentElement);
     flush();

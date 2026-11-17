@@ -326,6 +326,25 @@ mod imp {
     /// Mode efisiensi Windows (EcoQoS), prioritas CPU di bawah normal, dan prioritas memori
     /// rendah untuk semua proses saat Ovner tersembunyi; dikembalikan saat tampil lagi.
     pub fn set_background_mode(background: bool) -> u32 {
+        set_pids_eco(&tree_pids(), background)
+    }
+
+    /// Mode efisiensi (EcoQoS, prioritas dan memori rendah) untuk proses tertentu saja, mis.
+    /// proses halaman yang semua tabnya berada di jendela yang diminimalkan.
+    /// Detik sejak masukan terakhir (mouse/keyboard) di Windows.
+    pub fn idle_secs() -> u64 {
+        use windows::Win32::System::SystemInformation::GetTickCount;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+        let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        unsafe {
+            if !GetLastInputInfo(&mut li).as_bool() {
+                return 0;
+            }
+            (GetTickCount().wrapping_sub(li.dwTime) / 1000) as u64
+        }
+    }
+
+    pub fn set_pids_eco(pids: &[u32], background: bool) -> u32 {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Threading::{
             OpenProcess, ProcessMemoryPriority, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
@@ -341,7 +360,7 @@ mod imp {
         let mem = MEMORY_PRIORITY_INFORMATION { MemoryPriority: if background { MEMORY_PRIORITY_LOW } else { MEMORY_PRIORITY_NORMAL } };
         let class = if background { BELOW_NORMAL_PRIORITY_CLASS } else { NORMAL_PRIORITY_CLASS };
         let mut n = 0;
-        for pid in tree_pids() {
+        for &pid in pids {
             unsafe {
                 let Ok(h) = OpenProcess(PROCESS_SET_INFORMATION, false, pid) else { continue };
                 let _ = SetPriorityClass(h, class);
@@ -993,8 +1012,10 @@ mod imp {
         use windows::Win32::Graphics::Gdi::*;
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::UI::WindowsAndMessaging::*;
+        // Satu jendela info per jendela Ovner (pemiliknya); dulu hanya satu untuk jendela pertama,
+        // sehingga jendela Ovner kedua tidak menampilkan RAM/CPU/GPU.
         thread_local! {
-            static CAP: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+            static CAP: std::cell::RefCell<std::collections::HashMap<isize, isize>> = std::cell::RefCell::new(std::collections::HashMap::new());
         }
         unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             if m == WM_NCHITTEST {
@@ -1004,7 +1025,12 @@ mod imp {
         }
         unsafe {
             let owner_h = HWND(owner as *mut _);
-            let mut cap = CAP.with(|c| c.get());
+            // Buang catatan jendela Ovner yang sudah ditutup (jendela info ikut hancur bersamanya).
+            CAP.with(|c| c.borrow_mut().retain(|o, _| IsWindow(Some(HWND(*o as *mut _))).as_bool()));
+            let mut cap = CAP.with(|c| c.borrow().get(&owner).copied().unwrap_or(0));
+            if cap != 0 && !IsWindow(Some(HWND(cap as *mut _))).as_bool() {
+                cap = 0;
+            }
             if parts.is_empty() || IsIconic(owner_h).as_bool() || !IsWindowVisible(owner_h).as_bool() {
                 if cap != 0 {
                     let _ = ShowWindow(HWND(cap as *mut _), SW_HIDE);
@@ -1013,6 +1039,7 @@ mod imp {
             }
             if cap == 0 {
                 let inst = GetModuleHandleW(PCWSTR::null()).map(|m| HINSTANCE(m.0)).ok();
+                // RegisterClassW gagal (sudah terdaftar) untuk jendela kedua dan seterusnya: tidak apa.
                 let wc = WNDCLASSW { lpfnWndProc: Some(proc_), hInstance: inst.unwrap_or_default(), lpszClassName: w!("OvnerCaptionInfo"), ..Default::default() };
                 RegisterClassW(&wc);
                 let Ok(h) = CreateWindowExW(
@@ -1032,7 +1059,7 @@ mod imp {
                     return;
                 };
                 cap = h.0 as isize;
-                CAP.with(|c| c.set(cap));
+                CAP.with(|c| c.borrow_mut().insert(owner, cap));
             }
             let hwnd = HWND(cap as *mut _);
             // Letak tombol judul (minimize/maximize/close) relatif ke jendela.
@@ -1822,6 +1849,12 @@ mod imp {
         0
     }
     pub fn set_background_mode(_background: bool) -> u32 {
+        0
+    }
+    pub fn set_pids_eco(_pids: &[u32], _background: bool) -> u32 {
+        0
+    }
+    pub fn idle_secs() -> u64 {
         0
     }
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}

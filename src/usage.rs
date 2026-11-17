@@ -154,6 +154,13 @@ pub fn set_monitor(mode: u8) {
     MONITOR_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Jarak sampel pemantau (ms): 1000 saat dipakai, lebih jarang saat pengguna diam.
+static MONITOR_EVERY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
+
+pub fn set_monitor_every(ms: u64) {
+    MONITOR_EVERY.store(ms.clamp(500, 10_000), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Jalankan pemantau pemakaian di thread sendiri: tiap detik mengambil sampel semua proses
 /// Ovner/WebView2 (seperti Task Manager) lalu memanggil `cb`. Pengukuran tidak lagi
 /// membebani thread antarmuka, jadi halaman dan unduhan tidak ikut tersendat.
@@ -183,7 +190,7 @@ pub fn start_monitor(cb: impl Fn(Vec<ProcStat>) + Send + 'static) {
                 cb(stats);
             }
             let spent = started.elapsed();
-            let wait = if first { std::time::Duration::from_millis(300) } else { std::time::Duration::from_millis(1000).saturating_sub(spent) };
+            let wait = if first { std::time::Duration::from_millis(300) } else { std::time::Duration::from_millis(MONITOR_EVERY.load(std::sync::atomic::Ordering::Relaxed)).saturating_sub(spent) };
             std::thread::sleep(wait.max(std::time::Duration::from_millis(200)));
         }
     });

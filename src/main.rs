@@ -726,6 +726,14 @@ struct App {
     menu_win: Cell<u32>,
     /// Jendela baru yang menunggu dibuat (butuh target event loop).
     want_windows: Vec<WinRequest>,
+    /// Sejak kapan jendela saat ini diminimalkan/di tray, dan apakah tabnya sudah ditangguhkan.
+    bg_since: Option<Instant>,
+    bg_suspended: bool,
+    /// Urutan fokus jendela (paling baru di depan), untuk memilih jendela tujuan tab yang diseret.
+    z_order: Vec<u32>,
+    /// Proses halaman yang sedang dalam mode efisiensi karena semua tabnya tersembunyi.
+    eco_pids: HashSet<u32>,
+    eco_at: Instant,
 }
 
 /// Bagian App yang berbeda untuk tiap jendela Ovner. Urutan field penting: tab, toolbar, dan
@@ -745,6 +753,8 @@ struct WinState {
     last_render_key: String,
     last_icons_key: String,
     background: bool,
+    bg_since: Option<Instant>,
+    bg_suspended: bool,
 }
 
 /// Permintaan membuka jendela baru.
@@ -1677,6 +1687,14 @@ impl App {
                 }
             }
         }
+        // Proses tab yang kini tampil keluar dari mode efisiensi saat itu juga (tidak menunggu tick).
+        let shown_pids: Vec<u32> = [Some(i), partner].into_iter().flatten().map(|j| self.tabs[j].proc_pid).filter(|p| *p != 0 && self.eco_pids.contains(p)).collect();
+        if !shown_pids.is_empty() {
+            win::set_pids_eco(&shown_pids, false);
+            for p in &shown_pids {
+                self.eco_pids.remove(p);
+            }
+        }
         let t = &mut self.tabs[i];
         t.last_active = now;
         if let Some(wv) = &t.webview {
@@ -1807,6 +1825,8 @@ impl App {
             return;
         }
         self.background = true;
+        self.bg_since = Some(Instant::now());
+        self.bg_suspended = false;
         let s = self.settings.borrow().clone();
         for t in &mut self.tabs {
             if let Some(wv) = &t.webview {
@@ -1838,11 +1858,94 @@ impl App {
         log(&format!("mode hemat: {}", if self.in_tray { "tray" } else { "diminimalkan" }));
     }
 
+    /// Jendela yang diminimalkan lebih dari 30 detik: tabnya disembunyikan dan ditangguhkan
+    /// (seperti di tray), kecuali yang memutar media atau mengunduh. Dibangunkan lagi saat jendela
+    /// dibuka (leave_background → activate).
+    fn suspend_minimized(&mut self) {
+        if !self.background || self.in_tray || self.bg_suspended || self.bg_since.is_none_or(|t| t.elapsed() < Duration::from_secs(30)) {
+            return;
+        }
+        self.bg_suspended = true;
+        let s = self.settings.borrow().clone();
+        if !s.suspend_hidden_tabs {
+            return;
+        }
+        let mut n = 0;
+        for t in &mut self.tabs {
+            let Some(wv) = &t.webview else { continue };
+            if t.suspended || t.downloads_live > 0 || t.loading {
+                continue;
+            }
+            if playing_audio(wv) && s.background_media != "pause" {
+                continue;
+            }
+            let _ = wv.set_visible(false);
+            win::try_suspend(wv);
+            t.suspended = true;
+            n += 1;
+        }
+        if n > 0 {
+            log(&format!("jendela {} diminimalkan: {n} tab ditangguhkan", self.win_no));
+        }
+    }
+
+    /// Mode efisiensi per jendela: proses halaman yang semua tabnya tersembunyi (jendela
+    /// diminimalkan, atau tab latar) diberi EcoQoS dan prioritas rendah; proses yang menampilkan
+    /// tab di jendela terlihat, memutar media, memuat, atau mengunduh tetap normal.
+    fn update_renderer_eco(&mut self) {
+        let on = self.settings.borrow().efficiency_mode && !self.eco_on && !self.downloading() && self.frames_ok;
+        if !on {
+            if !self.eco_pids.is_empty() && !self.eco_on {
+                let pids: Vec<u32> = self.eco_pids.drain().collect();
+                win::set_pids_eco(&pids, false);
+            }
+            self.eco_pids.clear();
+            return;
+        }
+        // Pemetaan proses → tab diperlukan; diminta paling sering tiap 10 detik.
+        self.request_renderer_frames(true);
+        let mut awake: HashSet<u32> = self.ui_pids.iter().copied().collect();
+        let mut idle: HashSet<u32> = HashSet::new();
+        let mut look = |tabs: &[Tab], active: usize, split: Option<u64>, background: bool| {
+            for (j, t) in tabs.iter().enumerate() {
+                let Some(wv) = &t.webview else { continue };
+                if t.proc_pid == 0 {
+                    continue;
+                }
+                let shown = (j == active || split == Some(t.id)) && !background;
+                if shown || t.loading || t.downloads_live > 0 || t.media_hidden_at.is_some() || playing_audio(wv) {
+                    awake.insert(t.proc_pid);
+                } else {
+                    idle.insert(t.proc_pid);
+                }
+            }
+        };
+        look(&self.tabs, self.active, self.split, self.background || self.in_tray);
+        for w in &self.others {
+            look(&w.tabs, w.active, w.split, w.background || self.in_tray);
+        }
+        let want: HashSet<u32> = idle.difference(&awake).copied().collect();
+        let start: Vec<u32> = want.difference(&self.eco_pids).copied().collect();
+        let stop: Vec<u32> = self.eco_pids.difference(&want).copied().collect();
+        if !start.is_empty() {
+            win::set_pids_eco(&start, true);
+        }
+        if !stop.is_empty() {
+            win::set_pids_eco(&stop, false);
+        }
+        if !start.is_empty() || !stop.is_empty() {
+            log(&format!("efisiensi per proses: {} proses hemat (+{} -{})", want.len(), start.len(), stop.len()));
+        }
+        self.eco_pids = want;
+    }
+
     fn leave_background(&mut self) {
         if !self.background {
             return;
         }
         self.background = false;
+        self.bg_since = None;
+        self.bg_suspended = false;
         self.next_trim = None;
         self.refresh_eco();
         // activate() membangunkan tab aktif (dan pasangan split) dan menampilkannya lagi.
@@ -1894,7 +1997,11 @@ impl App {
         if mins == 0 {
             return;
         }
-        let limit = Duration::from_secs(mins * 60);
+        let mut limit = Duration::from_secs(mins * 60);
+        // Jendela diminimalkan/di tray: tab latarnya ditidurkan 3x lebih cepat (minimal 2 menit).
+        if self.background {
+            limit = (limit / 3).max(Duration::from_secs(120));
+        }
         let mut changed = false;
         for j in 0..self.tabs.len() {
             let t = &self.tabs[j];
@@ -2764,6 +2871,9 @@ impl App {
         if want != self.eco_on {
             win::set_background_mode(want);
             self.eco_on = want;
+            // Semua proses baru saja diatur ulang: mode efisiensi per proses dihitung lagi.
+            self.eco_pids.clear();
+            self.eco_at = Instant::now() - Duration::from_secs(60);
         }
     }
 
@@ -3381,7 +3491,10 @@ impl App {
         if mode == 0 {
             return;
         }
-        if self.stats_at.elapsed() < Duration::from_millis(900) {
+        // Pengguna diam lebih dari 1 menit (tanpa mouse/keyboard): ukur tiap 3 detik saja.
+        let idle = win::idle_secs() >= 60 && !tasks;
+        usage::set_monitor_every(if idle { 3000 } else { 1000 });
+        if self.stats_at.elapsed() < Duration::from_millis(if idle { 2900 } else { 900 }) {
             return;
         }
         self.stats_at = Instant::now();
@@ -3544,9 +3657,14 @@ impl App {
             if sleep_due {
                 a.sleep_idle_tabs();
             }
+            a.suspend_minimized();
             a.check_background_media();
             a.render();
         });
+        if self.eco_at.elapsed() >= Duration::from_secs(10) {
+            self.eco_at = Instant::now();
+            self.update_renderer_eco();
+        }
     }
 
     /// Jarak tick: 1 detik saat dipakai; 5 detik saat semua jendela tersembunyi dan tidak ada
@@ -4933,10 +5051,14 @@ impl App {
                 }
             }
             "tab-detach" => {
-                // Tab ditarik keluar dari daftar tab: pindah ke jendela baru di titik itu.
+                // Tab ditarik keluar dari daftar tab: dijatuhkan di baris tab jendela Ovner lain
+                // → gabung ke sana; di tempat lain → jendela baru di titik itu.
                 if let Some(i) = self.tab_index(id) {
                     let pos = msg["x"].as_f64().zip(msg["y"].as_f64());
-                    self.detach_tab(i, pos);
+                    match pos.and_then(|(x, y)| self.window_at(x, y)) {
+                        Some(no) => self.move_tab_to_window(i, no, pos.unwrap_or_default()),
+                        None => self.detach_tab(i, pos),
+                    }
                 }
             }
             "tab-move" => {
@@ -5796,6 +5918,8 @@ impl App {
         swap(&mut self.last_render_key, &mut w.last_render_key);
         swap(&mut self.last_icons_key, &mut w.last_icons_key);
         swap(&mut self.background, &mut w.background);
+        swap(&mut self.bg_since, &mut w.bg_since);
+        swap(&mut self.bg_suspended, &mut w.bg_suspended);
     }
 
     /// Jadikan jendela nomor `no` sebagai jendela saat ini. False bila tidak ada.
@@ -5936,6 +6060,91 @@ impl App {
         self.want_windows.push(WinRequest { tabs: vec![t], active: 0, private: false, pos, maximized: false, from: self.win_no, focus: true });
     }
 
+    /// Jendela Ovner lain yang baris tabnya (atau tab vertikalnya) berada di titik layar (logis)
+    /// `x`,`y`. Jendela yang paling baru difokuskan didahulukan bila bertumpuk.
+    fn window_at(&self, x: f64, y: f64) -> Option<u32> {
+        let mut cands: Vec<&WinState> = self.others.iter().filter(|w| !w.window.is_minimized() && w.window.is_visible()).collect();
+        cands.sort_by_key(|w| self.z_order.iter().position(|&n| n == w.no).unwrap_or(usize::MAX));
+        cands.into_iter().find(|w| {
+            let scale = w.window.scale_factor();
+            let Ok(p) = w.window.inner_position() else { return false };
+            let p: tao::dpi::LogicalPosition<f64> = p.to_logical(scale);
+            let size: LogicalSize<f64> = w.window.inner_size().to_logical(scale);
+            let (lx, ly) = (x - p.x, y - p.y);
+            if lx < 0.0 || ly < -8.0 || lx > size.width || ly > size.height {
+                return false;
+            }
+            ly <= w.toolbar_h + 24.0 || (w.sidebar.is_some() && lx <= SIDEBAR_W + 24.0)
+        })
+        .map(|w| w.no)
+    }
+
+    /// Pindahkan tab `i` ke jendela `no` (diseret ke baris tabnya), di dekat titik jatuhnya.
+    /// Jendela asal yang menjadi kosong ditutup.
+    fn move_tab_to_window(&mut self, i: usize, no: u32, at: (f64, f64)) {
+        if i >= self.tabs.len() || no == self.win_no {
+            return;
+        }
+        let from = self.win_no;
+        #[allow(unused_mut)]
+        let mut t = self.tabs.remove(i);
+        if self.split == Some(t.id) {
+            self.split = None;
+        }
+        if let Some(wv) = &t.webview {
+            let _ = wv.set_visible(false);
+        }
+        #[cfg(not(windows))]
+        {
+            t.webview = None;
+        }
+        let empty = self.tabs.is_empty();
+        if !empty {
+            if i < self.active || self.active >= self.tabs.len() {
+                self.active = self.active.saturating_sub(1).min(self.tabs.len() - 1);
+            }
+            let a = self.active;
+            self.activate(a);
+        }
+        let id = t.id;
+        log(&format!("tab dipindah ke jendela {no}: {}", display_url(&t.url)));
+        if !self.switch_to(no) {
+            // Jendela tujuan hilang: kembalikan tab.
+            self.tabs.insert(i.min(self.tabs.len()), t);
+            return;
+        }
+        if let Some(wv) = &t.webview {
+            self.attach_webview(wv);
+        }
+        self.tabs.push(t);
+        let k = self.tabs.len() - 1;
+        self.layout();
+        self.activate(k);
+        // Urutan di baris tab mengikuti titik jatuhnya (dihitung halaman toolbar/tab vertikal).
+        let scale = self.window.scale_factor();
+        if let Ok(p) = self.window.inner_position() {
+            let p: tao::dpi::LogicalPosition<f64> = p.to_logical(scale);
+            let (x, y) = (at.0 - p.x, at.1 - p.y);
+            let js = format!("window.ovner && ovner.dropAt && ovner.dropAt({id},{x},{})", y - self.toolbar_h);
+            match &self.sidebar {
+                Some(sb) if x <= SIDEBAR_W + 24.0 && y > self.toolbar_h => {
+                    let _ = sb.evaluate_script(&js);
+                }
+                _ => {
+                    let _ = self.toolbar.evaluate_script(&format!("window.ovner && ovner.dropAt && ovner.dropAt({id},{x},{y})"));
+                }
+            }
+        }
+        self.focused_win = no;
+        self.window.set_focus();
+        if empty && self.switch_to(from) {
+            // Jendela asal kosong: tutup (close_current_window memilih jendela tujuan sebagai pengganti).
+            self.close_current_window();
+            self.switch_to(no);
+        }
+        self.save_session();
+    }
+
     /// Gabungkan semua jendela lain ke jendela saat ini.
     fn merge_windows(&mut self) {
         let mut moved: Vec<Tab> = Vec::new();
@@ -6068,6 +6277,8 @@ impl App {
             last_render_key: String::new(),
             last_icons_key: String::new(),
             background: self.in_tray,
+            bg_since: self.in_tray.then(Instant::now),
+            bg_suspended: false,
         });
         self.switch_to(no);
         self.ensure_sidebar();
@@ -6583,6 +6794,11 @@ fn main() {
         focused_win: 0,
         menu_win: Cell::new(0),
         want_windows: Vec::new(),
+        bg_since: None,
+        bg_suspended: false,
+        z_order: vec![0],
+        eco_pids: HashSet::new(),
+        eco_at: Instant::now(),
         lang,
         session_key: shields::session_key(),
         script_gen: 0,
@@ -6742,6 +6958,9 @@ fn main() {
                 }
                 WindowEvent::Focused(true) => {
                     app.focused_win = app.win_no;
+                    let no = app.win_no;
+                    app.z_order.retain(|&w| w != no);
+                    app.z_order.insert(0, no);
                     if !app.in_tray {
                         app.leave_background();
                     }
