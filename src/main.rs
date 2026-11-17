@@ -18,6 +18,7 @@ mod antiblock;
 mod anubis;
 mod catalog;
 mod dlengine;
+mod video;
 mod usage;
 mod settings;
 mod vault;
@@ -64,6 +65,7 @@ const SETUP_HTML: &str = include_str!("ui/setup.html");
 const HTTPS_HTML: &str = include_str!("ui/https.html");
 const DIAGNOSTICS_HTML: &str = include_str!("ui/diagnostics.html");
 const SESSIONS_HTML: &str = include_str!("ui/sessions.html");
+const DLBOX_HTML: &str = include_str!("ui/dlbox.html");
 const PASSWORDS_HTML: &str = include_str!("ui/passwords.html");
 const DOWNLOADS_HTML: &str = include_str!("ui/downloads.html");
 
@@ -87,6 +89,20 @@ struct Download {
     speed: u64,
     #[serde(skip)]
     conns: usize,
+    /// Video yang diunduh lewat yt-dlp.
+    #[serde(default)]
+    video: bool,
+}
+
+/// Info tambahan unduhan untuk kotak unduhan (seperti IDM/Mister Download Manager).
+#[derive(Default)]
+struct DlMeta {
+    started: Option<Instant>,
+    /// (waktu, byte) sampel terakhir untuk menghitung kecepatan unduhan WebView2.
+    last: Option<(Instant, i64)>,
+    /// Server: host, IP, dan lokasi (negara/kota/penyedia).
+    server: String,
+    eta: u64,
 }
 const PAGE_CSS: &str = include_str!("ui/page.css");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
@@ -239,6 +255,8 @@ enum UserEvent {
     RendererFrames(Vec<(u32, Vec<u32>)>),
     /// Jawaban tantangan Anubis (anti-bot Startpage dan situs lain) dari pemecah native.
     Anubis(u64, String),
+    /// Kejadian DevTools dari tab yang sedang direkam: (tab, nama, JSON).
+    Problem(u64, String, String),
     /// Daftar cookie situs (Network.getCookies) yang harus dihapus: (domain dasar, JSON).
     DeleteCookies(String, String),
     /// Pop-up window.open sudah dibuat sebagai WebView: jadikan tab.
@@ -266,6 +284,13 @@ enum UserEvent {
     DlProbe(u64, u64, dlengine::Request, String, Result<u64, String>),
     /// Kabar dari mesin unduh Ovner.
     DlUpdate(u64, dlengine::Update),
+    /// Info server unduhan (host, IP, lokasi).
+    DlServer(u64, String),
+    /// Kabar unduhan video (yt-dlp).
+    Video(u64, video::Event),
+    VideoJob(u64, video::Job),
+    /// Pesan dari kotak unduhan.
+    DlBox(u64, String),
     TrayClick,
     Remote(Remote),
 }
@@ -318,6 +343,8 @@ struct Tab {
     recent_urls: Vec<String>,
     /// Dibuka situs lewat window.open (boleh ditutup lewat window.close).
     popup: bool,
+    /// Perekam masalah halaman menyala untuk tab ini.
+    recording: bool,
 }
 
 /// Statistik penghemat tab (seperti Lifetime Stats TabWars), disimpan di tab-stats.json.
@@ -371,6 +398,8 @@ struct App {
     /// Pemetaan proses per tab boleh dipakai (mati otomatis bila pernah membuat Ovner tertutup).
     frames_ok: bool,
     tab_stats: TabStats,
+    /// Catatan masalah halaman yang direkam (ringkas, paling banyak 400 baris).
+    problems: Vec<String>,
     sessions: Vec<SavedSession>,
     stats: Vec<usage::ProcStat>,
     stats_at: Instant,
@@ -408,6 +437,14 @@ struct App {
     /// Alamat yang harus diunduh WebView2 (mesin Ovner gagal sebelumnya).
     dl_skip: Rc<RefCell<HashSet<String>>>,
     dl_render_at: Instant,
+    dl_meta: HashMap<u64, DlMeta>,
+    /// Kotak unduhan yang terbuka: id → (jendela, WebView).
+    dl_boxes: HashMap<u64, (Window, WebView)>,
+    /// Kotak unduhan yang perlu dibuka (dibuat di event loop yang punya target jendela).
+    box_requests: Vec<u64>,
+    /// Kotak unduhan yang perlu diperbarui sekali lagi (unduhan WebView2 selesai).
+    box_dirty: Vec<u64>,
+    video_jobs: HashMap<u64, video::Job>,
     /// Tinggi tambahan toolbar saat dropdown/gelembung terbuka (menutupi halaman).
     toolbar_over: f64,
     /// Tawaran simpan/perbarui sandi yang sedang ditampilkan: (alamat, pengguna, sandi, perbarui?).
@@ -745,6 +782,7 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "passwords" => page_response(PASSWORDS_HTML),
         "diagnostics" => page_response(DIAGNOSTICS_HTML),
         "sessions" => page_response(SESSIONS_HTML),
+        "dlbox" => page_response(DLBOX_HTML),
         "downloads" => page_response(DOWNLOADS_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
@@ -996,6 +1034,7 @@ impl App {
             form_dirty: false,
             recent_urls: Vec::new(),
             popup: false,
+            recording: false,
         }
     }
 
@@ -1526,6 +1565,9 @@ impl App {
             "pwOffer": self.pw_offer.as_ref().map(|(u, user, _, update)| json!({"site": vault::site_of(u), "user": user, "update": update})),
             "toolbarCss": s.toolbar_css,
             "dark": dark,
+            "video": tab.is_some_and(|t| video::is_video_page(&t.url)),
+            "pageTitle": tab.map(|t| t.title.clone()).unwrap_or_default(),
+            "videoTools": [video::ytdlp(data_dir()).exists(), video::ffmpeg(data_dir()).exists()],
         });
         drop(s);
         let text = state.to_string();
@@ -1541,6 +1583,22 @@ impl App {
             self.window.set_title(&title);
         }
         self.last_render_key = text;
+    }
+
+    /// Potong toolbar ke baris toolbar + kotak overlay yang terbuka (logis → fisik).
+    fn clip_toolbar(&self, rects: &[(f64, f64, f64, f64)]) {
+        if rects.is_empty() || self.toolbar_over <= 0.0 {
+            win::clip_webview(&self.toolbar, &[]);
+            return;
+        }
+        let sf = self.window.scale_factor();
+        let w = self.toolbar_rect().size.to_logical::<f64>(sf).width;
+        let px = |v: f64| (v * sf).round() as i32;
+        let mut out = vec![(0, 0, px(w), px(self.toolbar_h))];
+        for &(x, y, rw, rh) in rects {
+            out.push((px(x) - 2, px(y) - 2, px(rw) + 4, px(rh) + 4));
+        }
+        win::clip_webview(&self.toolbar, &out);
     }
 
     fn set_toolbar_height(&mut self, h: f64, over: f64) {
@@ -1613,16 +1671,33 @@ impl App {
                     engine: false,
                     speed: 0,
                     conns: 0,
+                    video: false,
                 });
                 self.dl_bubble = true;
+                self.download_started(id);
             }
             win::DlEvent::Progress { id, received, total } => {
+                let meta = self.dl_meta.entry(id).or_default();
+                let now = Instant::now();
+                let mut speed = None;
+                if let Some((t0, b0)) = meta.last {
+                    let dt = now.duration_since(t0).as_secs_f64();
+                    if dt > 0.2 {
+                        speed = Some(((received - b0).max(0) as f64 / dt) as u64);
+                    }
+                }
+                meta.last = Some((now, received));
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.received = received;
                     d.total = total;
+                    if let Some(sp) = speed {
+                        d.speed = if d.speed == 0 { sp } else { (d.speed * 2 + sp) / 3 };
+                    }
                 }
+                self.push_box(id);
             }
             win::DlEvent::Done { id, ok, path, received } => {
+                self.box_dirty.push(id);
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.state = if ok { "done".into() } else { "failed".into() };
                     d.received = received;
@@ -1637,6 +1712,237 @@ impl App {
         self.refresh_pages("downloads");
         self.last_render_key.clear();
         self.render();
+    }
+
+    /// Unduhan baru dimulai: catat waktu, cari lokasi server, dan buka kotak unduhan.
+    fn download_started(&mut self, id: u64) {
+        let meta = self.dl_meta.entry(id).or_default();
+        meta.started = Some(Instant::now());
+        let (show_box, lookup) = {
+            let s = self.settings.borrow();
+            (s.dl_box, s.dl_server_info)
+        };
+        if show_box {
+            self.box_requests.push(id);
+        }
+        let Some(d) = self.downloads.iter().rev().find(|d| d.id == id) else { return };
+        let Some(host) = host_of(&d.url) else { return };
+        let p = self.proxy.clone();
+        std::thread::spawn(move || {
+            use std::net::ToSocketAddrs;
+            let ip = (host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| a.next()).map(|a| a.ip().to_string()).unwrap_or_default();
+            send(&p, UserEvent::DlServer(id, format!("{host} · {ip}")));
+            if !lookup || ip.is_empty() {
+                return;
+            }
+            // Lokasi server (negara/kota/penyedia) dari ipwho.is.
+            if let Some(v) = dlengine::get_text(&format!("https://ipwho.is/{ip}")).and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                let mut parts: Vec<String> = Vec::new();
+                for k in ["city", "country"] {
+                    if let Some(x) = v[k].as_str().filter(|x| !x.is_empty()) {
+                        parts.push(x.to_string());
+                    }
+                }
+                let org = v["connection"]["org"].as_str().or(v["connection"]["isp"].as_str()).unwrap_or("");
+                let mut text = format!("{host} · {ip}");
+                if !parts.is_empty() {
+                    text.push_str(&format!(" · {}", parts.join(", ")));
+                }
+                if !org.is_empty() {
+                    text.push_str(&format!(" · {org}"));
+                }
+                send(&p, UserEvent::DlServer(id, text));
+            }
+        });
+    }
+
+    /// Keadaan satu unduhan untuk kotak unduhan.
+    fn box_state(&self, id: u64) -> Option<Value> {
+        let d = self.downloads.iter().rev().find(|d| d.id == id)?;
+        let meta = self.dl_meta.get(&id);
+        let left = (d.total - d.received).max(0) as u64;
+        let eta = if d.speed > 0 && d.total > 0 { left / d.speed.max(1) } else { meta.map(|m| m.eta).unwrap_or(0) };
+        let elapsed = meta.and_then(|m| m.started).map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let segs: Vec<Value> = self
+            .dl_jobs
+            .get(&id)
+            .map(|(j, _)| j.segments().into_iter().map(|(a, p, e, busy)| json!([a, p, e, busy])).collect())
+            .unwrap_or_default();
+        Some(json!({
+            "id": id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received,
+            "state": d.state, "speed": d.speed, "conns": d.conns, "engine": d.engine, "video": d.video,
+            "eta": eta, "elapsed": elapsed, "server": meta.map(|m| m.server.clone()).unwrap_or_default(),
+            "segs": segs, "exists": d.state == "done" && Path::new(&d.path).exists(),
+            "lang": self.lang.code(), "theme": self.settings.borrow().theme,
+        }))
+    }
+
+    /// Perbarui kotak unduhan yang terbuka.
+    fn push_box(&self, id: u64) {
+        if let (Some((_, view)), Some(st)) = (self.dl_boxes.get(&id), self.box_state(id)) {
+            let _ = view.evaluate_script(&format!("window.ovnerBox && ovnerBox({st})"));
+        }
+    }
+
+    /// Buka kotak unduhan yang diminta (jendela kecil sendiri, seperti IDM).
+    fn open_boxes(&mut self, target: &tao::event_loop::EventLoopWindowTarget<UserEvent>) {
+        for id in std::mem::take(&mut self.box_requests) {
+            if self.dl_boxes.contains_key(&id) || self.downloads.iter().all(|d| d.id != id) {
+                continue;
+            }
+            let name = self.downloads.iter().rev().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_default();
+            #[cfg_attr(not(windows), allow(unused_mut))]
+            let mut wb = WindowBuilder::new()
+                .with_title(format!("{name} – Ovner"))
+                .with_inner_size(LogicalSize::new(600.0, 430.0))
+                .with_min_inner_size(LogicalSize::new(480.0, 360.0))
+                .with_window_icon(Icon::from_rgba(icon::rgba(32), 32, 32).ok());
+            #[cfg(windows)]
+            {
+                use tao::platform::windows::{WindowBuilderExtWindows, WindowExtWindows};
+                wb = wb.with_owner_window(self.window.hwnd() as _);
+            }
+            let Ok(window) = wb.build(target) else { continue };
+            let p = self.proxy.clone();
+            let b = WebViewBuilder::new()
+                .with_url(internal_url("dlbox"))
+                .with_custom_protocol("ovner".into(), |_, req| serve_internal(req))
+                .with_ipc_handler(move |req| send(&p, UserEvent::DlBox(id, req.body().clone())));
+            #[cfg(windows)]
+            let b = {
+                use wry::WebViewBuilderExtWindows;
+                let mut b = b.with_additional_browser_args(self.browser_args.clone()).with_theme(wry_theme(&self.settings.borrow().theme));
+                if let Some(env) = &self.env {
+                    b = b.with_environment(env.clone());
+                }
+                b
+            };
+            match b.build(&window) {
+                Ok(view) => {
+                    self.dl_boxes.insert(id, (window, view));
+                }
+                Err(e) => log(&format!("kotak unduhan gagal: {e}")),
+            }
+        }
+        for id in std::mem::take(&mut self.box_dirty) {
+            self.push_box(id);
+        }
+    }
+
+    /// Jendela kotak unduhan ditutup lewat tombol X.
+    fn close_box_window(&mut self, wid: tao::window::WindowId) {
+        self.dl_boxes.retain(|_, (w, _)| w.id() != wid);
+    }
+
+    fn on_dl_box(&mut self, id: u64, body: &str) {
+        let Ok(msg) = serde_json::from_str::<Value>(body) else { return };
+        match msg["t"].as_str().unwrap_or("") {
+            "ready" => self.push_box(id),
+            "close" => {
+                self.dl_boxes.remove(&id);
+            }
+            "never" => {
+                self.settings.borrow_mut().dl_box = false;
+                self.settings.borrow().save(data_dir());
+                self.dl_boxes.remove(&id);
+            }
+            a @ ("dl-pause" | "dl-resume" | "dl-cancel" | "dl-open" | "dl-show") => {
+                self.download_action(a, id);
+                if a == "dl-open" || a == "dl-show" {
+                    self.dl_boxes.remove(&id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Unduh video halaman aktif dengan yt-dlp (kualitas: "best", "720", "audio").
+    fn start_video(&mut self, choice: &str) {
+        let Some(url) = self.tabs.get(self.active).map(|t| t.url.clone()).filter(|u| video::is_video_page(u)) else { return };
+        let id = win::next_download_id();
+        let title = self.tabs[self.active].title.clone();
+        self.downloads.push(Download {
+            id,
+            url: url.clone(),
+            path: String::new(),
+            name: if title.is_empty() { url.clone() } else { title },
+            total: 0,
+            received: 0,
+            state: "progress".into(),
+            time: store::now(),
+            engine: false,
+            speed: 0,
+            conns: 0,
+            video: true,
+        });
+        self.dl_bubble = true;
+        self.download_started(id);
+        let out = {
+            let d = self.settings.borrow().download_dir.trim().to_string();
+            if d.is_empty() {
+                std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
+            } else {
+                PathBuf::from(d)
+            }
+        };
+        let (p, data, choice) = (self.proxy.clone(), data_dir().to_path_buf(), choice.to_string());
+        let lang = self.lang;
+        log(&format!("unduh video ({choice}): {url}"));
+        std::thread::spawn(move || {
+            let need_ff = choice != "audio";
+            let note = |what: &str| send(&p, UserEvent::Video(id, video::Event::Title(tf(lang, "d.video_tools", &[("t", what)]))));
+            if let Err(e) = video::ensure_tools(&data, need_ff, &note) {
+                send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e }));
+                return;
+            }
+            let p2 = p.clone();
+            match video::start(&data, &url, &choice, &out, move |ev| send(&p2, UserEvent::Video(id, ev))) {
+                Ok(job) => send(&p, UserEvent::VideoJob(id, job)),
+                Err(e) => send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e })),
+            }
+        });
+        self.refresh_pages("downloads");
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    fn on_video(&mut self, id: u64, ev: video::Event) {
+        let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) else { return };
+        match ev {
+            video::Event::Title(t) => d.name = t,
+            video::Event::Progress { received, total, speed, eta } => {
+                d.received = received as i64;
+                d.total = total as i64;
+                d.speed = speed;
+                self.dl_meta.entry(id).or_default().eta = eta;
+            }
+            video::Event::Done { ok, path, error } => {
+                d.state = if ok { "done".into() } else { "failed".into() };
+                d.speed = 0;
+                if ok {
+                    if let Ok(m) = std::fs::metadata(&path) {
+                        d.received = m.len() as i64;
+                        d.total = m.len() as i64;
+                    }
+                    d.name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone());
+                    d.path = path;
+                } else {
+                    log(&format!("unduh video gagal: {error}"));
+                    d.name = format!("{} ({error})", d.name);
+                }
+                self.video_jobs.remove(&id);
+                self.save_downloads();
+                self.last_render_key.clear();
+                self.render();
+            }
+        }
+        self.refresh_pages("downloads");
+        self.push_box(id);
+        if self.dl_render_at.elapsed() >= Duration::from_millis(900) {
+            self.dl_render_at = Instant::now();
+            self.last_render_key.clear();
+            self.render();
+        }
     }
 
     /// Jawaban uji server: ambil alih dengan mesin unduh Ovner, atau biarkan WebView2.
@@ -1669,8 +1975,10 @@ impl App {
                     engine: true,
                     speed: 0,
                     conns: 0,
+                    video: false,
                 });
                 self.dl_jobs.insert(id, (job, tab));
+                self.download_started(id);
                 self.dl_bubble = true;
                 self.refresh_pages("downloads");
                 self.last_render_key.clear();
@@ -1719,6 +2027,7 @@ impl App {
             }
         }
         self.refresh_pages("downloads");
+        self.push_box(id);
         // Gelembung toolbar diperbarui paling sering tiap detik.
         if self.dl_render_at.elapsed() >= Duration::from_millis(900) {
             self.dl_render_at = Instant::now();
@@ -1733,9 +2042,10 @@ impl App {
         match kind {
             "dl-open" if Path::new(&path).exists() => win::open_path(&path, false),
             "dl-show" if Path::new(&path).exists() => win::open_path(&path, true),
-            "dl-cancel" => match self.dl_jobs.get(&id) {
-                Some((job, _)) => job.cancel(),
-                None => win::cancel_download(id),
+            "dl-cancel" => match (self.dl_jobs.get(&id), self.video_jobs.get(&id)) {
+                (Some((job, _)), _) => job.cancel(),
+                (_, Some(v)) => v.cancel(),
+                _ => win::cancel_download(id),
             },
             "dl-pause" => {
                 if let Some((job, _)) = self.dl_jobs.get(&id) {
@@ -2537,6 +2847,60 @@ impl App {
         }
     }
 
+    /// Simpan satu kejadian DevTools yang menarik untuk laporan masalah halaman.
+    fn on_problem(&mut self, id: u64, name: &str, j: &str) {
+        let Some(i) = self.tab_index(id) else { return };
+        if !self.tabs[i].recording || self.problems.len() >= 400 {
+            return;
+        }
+        let v: Value = serde_json::from_str(j).unwrap_or_default();
+        let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+        let line = match name {
+            "Runtime.exceptionThrown" => {
+                let d = &v["exceptionDetails"];
+                let msg = d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("");
+                format!("JS-ERROR {} @ {}:{}", cut(msg, 400), d["url"].as_str().unwrap_or(""), d["lineNumber"])
+            }
+            "Runtime.consoleAPICalled" => {
+                let kind = v["type"].as_str().unwrap_or("");
+                if kind != "error" && kind != "warning" {
+                    return;
+                }
+                let args: Vec<String> = v["args"].as_array().into_iter().flatten().map(|a| a["value"].as_str().map(str::to_string).unwrap_or_else(|| a["description"].as_str().unwrap_or("").to_string())).collect();
+                format!("CONSOLE-{} {}", kind.to_uppercase(), cut(&args.join(" "), 400))
+            }
+            "Log.entryAdded" => {
+                let e = &v["entry"];
+                if e["level"] == "verbose" || e["level"] == "info" {
+                    return;
+                }
+                format!("LOG-{} [{}] {} {}", e["level"].as_str().unwrap_or(""), e["source"].as_str().unwrap_or(""), cut(e["text"].as_str().unwrap_or(""), 400), e["url"].as_str().unwrap_or(""))
+            }
+            "Network.loadingFailed" => format!(
+                "NET-FAIL {} {} blocked={} cors={} canceled={}",
+                v["type"].as_str().unwrap_or(""),
+                v["errorText"].as_str().unwrap_or(""),
+                v["blockedReason"],
+                v["corsErrorStatus"]["corsError"],
+                v["canceled"]
+            ),
+            "Network.responseReceived" => {
+                let r = &v["response"];
+                let status = r["status"].as_i64().unwrap_or(0);
+                if status < 400 {
+                    return;
+                }
+                format!("HTTP-{status} {} {}", v["type"].as_str().unwrap_or(""), cut(r["url"].as_str().unwrap_or(""), 300))
+            }
+            "Audits.issueAdded" => format!("ISSUE {}", cut(&v["issue"].to_string(), 600)),
+            _ => return,
+        };
+        // Permintaan gagal tidak membawa alamat: cari dari requestId di baris lain tidak perlu,
+        // cukup sertakan requestId untuk dicocokkan.
+        let line = if name == "Network.loadingFailed" { format!("{line} req={}", v["requestId"].as_str().unwrap_or("")) } else { line };
+        self.problems.push(line);
+    }
+
     /// Tutup tab yang alamatnya sama (seperti Duplicate Cleaner TabWars): yang aktif tetap.
     fn close_duplicates(&mut self) {
         let mut seen: HashSet<String> = HashSet::new();
@@ -3083,6 +3447,16 @@ impl App {
             "height" => {
                 if let Some(h) = msg["h"].as_f64() {
                     self.set_toolbar_height(h, msg["over"].as_f64().unwrap_or(0.0));
+                    let rects: Vec<(f64, f64, f64, f64)> = msg["rects"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| {
+                            let a = r.as_array()?;
+                            Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?, a.get(3)?.as_f64()?))
+                        })
+                        .collect();
+                    self.clip_toolbar(&rects);
                 }
             }
             "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-pause" | "dl-resume" => self.download_action(&cmd, id),
@@ -3118,6 +3492,10 @@ impl App {
             }
             "shield-scripts" => self.toggle_site("scripts"),
             "shield-fp" => self.toggle_site("fp"),
+            "video-dl" => {
+                let choice = msg["fmt"].as_str().unwrap_or("best").to_string();
+                self.start_video(&choice);
+            }
             "dark-site" => {
                 if let Some(h) = self.active_site() {
                     let v = msg["v"].as_str().unwrap_or("default").to_string();
@@ -3325,7 +3703,9 @@ impl App {
             let _ = m.append(&allow_js);
         }
         let clear = MenuItem::with_id("shield-clear-site", t(lang, "sh.clear_site"), true, None);
-        let _ = m.append_items(&[&PredefinedMenuItem::separator(), &dark, &copy, &nosleep, &clear]);
+        let recording = self.tabs.get(self.active).is_some_and(|t| t.recording);
+        let rec = MenuItem::with_id("shield-record", t(lang, if recording { "sh.record_copy" } else { "sh.record" }), true, None);
+        let _ = m.append_items(&[&PredefinedMenuItem::separator(), &dark, &copy, &nosleep, &clear, &rec]);
         let _ = m.append_items(&[&PredefinedMenuItem::separator(), &pick, &more]);
         #[cfg(windows)]
         {
@@ -3721,6 +4101,32 @@ impl App {
                     send(&self.proxy, UserEvent::UpdateReady(v));
                 } else {
                     self.check_update_now();
+                }
+            }
+            "shield-record" => {
+                let a = self.active;
+                if self.tabs.get(a).is_some_and(|t| t.recording) {
+                    let report = json!({
+                        "ovner": update::display_version(),
+                        "engine": wry::webview_version().unwrap_or_default(),
+                        "url": self.tabs[a].url,
+                        "settings": {
+                            "blocking": self.settings.borrow().blocking_mode, "dark": self.settings.borrow().dark_mode,
+                            "farbling": self.settings.borrow().farbling, "hideWebView2": self.settings.borrow().hide_webview2,
+                        },
+                        "blocked": self.tabs[a].blocked.get(),
+                        "events": self.problems,
+                    });
+                    win::set_clipboard(&serde_json::to_string_pretty(&report).unwrap_or_default());
+                    win::info(&tf(self.lang, "d.record_copied", &[("n", &self.problems.len().to_string())]));
+                } else if self.tabs.get(a).is_some_and(|t| t.webview.is_some()) {
+                    self.problems.clear();
+                    self.tabs[a].recording = true;
+                    let (p, id) = (self.proxy.clone(), self.tabs[a].id);
+                    let wv = self.tabs[a].webview.as_ref().unwrap();
+                    win::record_problems(wv, move |name, j| send(&p, UserEvent::Problem(id, name.to_string(), j)));
+                    let _ = wv.reload();
+                    win::info(t(self.lang, "d.record_started"));
                 }
             }
             "shield-clear-site" => {
@@ -4207,6 +4613,11 @@ fn main() {
         dl_jobs: HashMap::new(),
         dl_skip: Rc::new(RefCell::new(HashSet::new())),
         dl_render_at: Instant::now(),
+        dl_meta: HashMap::new(),
+        dl_boxes: HashMap::new(),
+        box_requests: Vec::new(),
+        box_dirty: Vec::new(),
+        video_jobs: HashMap::new(),
         toolbar_over: 0.0,
         web_context,
         #[cfg(windows)]
@@ -4239,6 +4650,7 @@ fn main() {
         frames_pending: false,
         frames_at: Instant::now(),
         frames_ok,
+        problems: Vec::new(),
         tab_stats: std::fs::read_to_string(data_dir().join("tab-stats.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         sessions: std::fs::read_to_string(data_dir().join("sessions.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         antiblock_port,
@@ -4299,7 +4711,7 @@ fn main() {
     // Tenggat tick tetap: dulu tiap kejadian (gerak mouse, ketikan) menunda tick 2 detik lagi,
     // sehingga indikator pemakaian dan task manager tidak pernah diperbarui saat dipakai.
     let mut next_tick = Instant::now() + TICK;
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         let mut quit = false;
         let mut restart = false;
         let tick_due = Instant::now() >= next_tick;
@@ -4324,6 +4736,11 @@ fn main() {
                     app.on_tick();
                 }
             }
+            // Jendela lain (kotak unduhan).
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } if window_id != app.window.id() => {
+                app.close_box_window(window_id);
+            }
+            Event::WindowEvent { window_id, .. } if window_id != app.window.id() => {}
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     if app.settings.borrow().close_to_tray && app._tray.is_some() {
@@ -4421,6 +4838,15 @@ fn main() {
                 UserEvent::Download(tab, ev) => app.on_download(tab, ev),
                 UserEvent::DlProbe(id, tab, req, path, res) => app.on_dl_probe(id, tab, req, path, res),
                 UserEvent::DlUpdate(id, u) => app.on_dl_update(id, u),
+                UserEvent::DlServer(id, info) => {
+                    app.dl_meta.entry(id).or_default().server = info;
+                    app.push_box(id);
+                }
+                UserEvent::Video(id, ev) => app.on_video(id, ev),
+                UserEvent::VideoJob(id, job) => {
+                    app.video_jobs.insert(id, job);
+                }
+                UserEvent::DlBox(id, body) => app.on_dl_box(id, &body),
                 UserEvent::Favicon(id, png) => {
                     if let Some(i) = app.tab_index(id) {
                         let url = app.tabs[i].webview.as_ref().and_then(|w| w.url().ok()).unwrap_or_default();
@@ -4497,6 +4923,7 @@ fn main() {
                     app.assign_tab_procs();
                 }
                 UserEvent::PopupReady => app.adopt_popups(),
+                UserEvent::Problem(id, name, json_text) => app.on_problem(id, &name, &json_text),
                 UserEvent::DeleteCookies(base, json_text) => {
                     let v: Value = serde_json::from_str(&json_text).unwrap_or_default();
                     if let Some(wv) = app.tabs.iter().find_map(|t| t.webview.as_ref()) {
@@ -4645,6 +5072,9 @@ fn main() {
                 let _ = std::process::Command::new(exe).arg("--restarted").spawn();
             }
             quit = true;
+        }
+        if !app.box_requests.is_empty() || !app.box_dirty.is_empty() {
+            app.open_boxes(target);
         }
         if quit {
             app.save_session();

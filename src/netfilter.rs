@@ -108,8 +108,16 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                     return Ok(());
                 }
-                // Aset tantangan anti-bot Anubis (Startpage, dsb.) tidak pernah diblokir.
+                // Aset tantangan anti-bot Anubis tidak pernah diblokir, kecuali skrip pemecahnya
+                // di Startpage: di sana Ovner memecahkan tantangannya sendiri (Rust, milidetik).
+                // Skrip halaman (puluhan detik dengan kesulitan 6) dimatikan supaya tidak ada
+                // dua jawaban untuk satu tantangan.
                 if uri.contains("/.within.website/") {
+                    let sp = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(|h| h.ends_with("startpage.com"))).unwrap_or(false);
+                    if sp && uri.contains("/.within.website/x/cmd/anubis/static/js/") {
+                        let resp = env.CreateWebResourceResponse(None, 403, &HSTRING::from("Ovner"), &HSTRING::new())?;
+                        args.SetResponse(&resp)?;
+                    }
                     return Ok(());
                 }
                 let page = ctx.page.borrow().clone();

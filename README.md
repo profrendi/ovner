@@ -63,6 +63,25 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.6
+
+- **Kotak unduhan** seperti Mister Download Manager/IDM: begitu unduhan dimulai, muncul jendela
+  kecil berisi persentase, ukuran, kecepatan, **sisa waktu**, lama berjalan, **server (host, IP,
+  kota/negara, penyedia)**, jumlah koneksi, peta bagian yang diunduh bersamaan, dan tombol
+  jeda/lanjut, batal, buka, buka folder. Bisa dimatikan di Setelan → Unduhan.
+- **Unduh video** (YouTube, Vimeo, TikTok, Facebook, Instagram, X, Dailymotion, Twitch, dll.):
+  tombol video muncul di toolbar pada halaman video; pilih kualitas terbaik ≤1080p, 720p, atau
+  audio saja. Memakai yt-dlp (dan ffmpeg untuk 1080p) yang diunduh sekali ke folder `tools`.
+- **Startpage instan**: tantangan Anubis di Startpage langsung diselesaikan mesin Ovner
+  (multi-thread) tanpa menunggu skrip halaman; skrip Anubis halaman tidak dimuat lagi.
+- **Menu bookmark, panel, dan gelembung** tidak lagi menggelapkan seluruh halaman: hanya kotak
+  menunya yang menutupi halaman, seperti Brave.
+- **Pengelola sandi**: edit menampilkan sandi tersimpan (dengan tombol 👁), daftar isi otomatis
+  bisa digulir dan pindah ke atas kolom bila ruang bawah sempit, kolom pengguna dikenali lebih
+  baik (NIK/NPP/ID karyawan), dan isi otomatis diulang sampai halaman siap.
+- **Rekam masalah halaman** (tameng): mencatat galat JavaScript, permintaan gagal/CORS/terblokir,
+  dan masalah cookie, lalu salin laporan ke papan klip untuk diagnosis situs seperti Infor.
+
 ## Perbaikan 0.7.5
 
 - **SIPP BPJS dan Infor berputar terus**: dua penyebab yang dibuang.

@@ -126,6 +126,14 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         ),
         "d.about_check" => ("\n\nPeriksa update sekarang?", "\n\nCheck for updates now?"),
         "d.checking" => ("Memeriksa update…", "Checking for updates…"),
+        "d.video_tools" => ("Menyiapkan komponen {t} (sekali saja)…", "Preparing component {t} (one time)…"),
+        "sh.record" => ("Rekam masalah halaman ini (untuk laporan)", "Record problems on this page (for a report)"),
+        "sh.record_copy" => ("Salin laporan masalah halaman", "Copy page problem report"),
+        "d.record_started" => (
+            "Perekaman dimulai dan halaman dimuat ulang. Tunggu sampai halaman macet/berputar (±20 detik), lalu buka menu tameng → Salin laporan masalah halaman, dan tempel hasilnya ke chat.",
+            "Recording started and the page reloaded. Wait until the page hangs (about 20 seconds), then open the shield menu → Copy page problem report and paste it."
+        ),
+        "d.record_copied" => ("Laporan masalah halaman ({n} catatan) disalin ke clipboard.", "Page problem report ({n} entries) copied to the clipboard."),
         "sh.clear_site" => ("Hapus cookie dan data situs ini (keluar dari situs)", "Clear cookies and data for this site (signs you out)"),
         "d.clear_site" => (
             "Hapus cookie, sesi login, dan data tersimpan {h}? Anda perlu masuk lagi ke situs ini.",

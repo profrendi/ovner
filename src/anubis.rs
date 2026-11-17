@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Kesulitan terbesar yang mau dikerjakan (16^6 ≈ 16 juta hash rata-rata).
-pub const MAX_DIFFICULTY: u32 = 6;
+pub const MAX_DIFFICULTY: u32 = 7;
 
 /// Apakah hash (biner) diawali `difficulty` angka 0 heksadesimal?
 fn leading_hex_zeros(hash: &[u8], difficulty: u32) -> bool {
@@ -37,7 +37,7 @@ pub fn solve(random: &str, difficulty: u32) -> Option<(String, u64)> {
         return None;
     }
     let limit: u64 = 16u64.pow(difficulty) * 8;
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 8) as u64;
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16) as u64;
     let found = Arc::new(AtomicBool::new(false));
     let best = Arc::new(AtomicU64::new(u64::MAX));
     let mut handles = Vec::new();

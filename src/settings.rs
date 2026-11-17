@@ -183,6 +183,10 @@ pub struct Settings {
     pub dl_connections: u32,
     /// Hanya berkas sebesar ini (MB) ke atas yang diambil alih mesin unduh Ovner.
     pub dl_min_mb: u32,
+    /// Tampilkan kotak unduhan (jendela kecil seperti IDM) saat unduhan dimulai.
+    pub dl_box: bool,
+    /// Cari lokasi server unduhan (negara/kota/penyedia) lewat ipwho.is.
+    pub dl_server_info: bool,
 
     // ---------- saat mulai ----------
     pub restore_tabs: bool,
@@ -294,6 +298,8 @@ impl Default for Settings {
             dl_engine: true,
             dl_connections: 8,
             dl_min_mb: 2,
+            dl_box: true,
+            dl_server_info: true,
             sleep_never_sites: Vec::new(),
             sleep_skip_forms: true,
             user_css: String::new(),

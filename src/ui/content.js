@@ -198,7 +198,7 @@
     const random = typeof ch === "string" ? ch : ch && ch.randomData;
     const algo = rules.algorithm || (ch && ch.method) || "fast";
     const diff = Number(rules.difficulty);
-    if (!random || !/^(fast|slow)$/.test(algo) || !(diff >= 1 && diff <= 6)) return;
+    if (!random || !/^(fast|slow)$/.test(algo) || !(diff >= 1 && diff <= 7)) return;
     let prefix = "";
     try { const bp = document.getElementById("anubis_base_prefix"); if (bp) prefix = JSON.parse(bp.textContent) || ""; } catch (e) {}
     const t0 = Date.now();
@@ -213,9 +213,11 @@
         location.replace(prefix + "/.within.website/x/cmd/anubis/api/pass-challenge?" + q.toString());
       },
     });
+    // Startpage: skrip Anubis halaman dimatikan Ovner, jadi langsung dipecahkan native.
+    const instant = /(^|\.)startpage\.com$/.test(location.hostname);
     setTimeout(() => {
       if (location.href === here && document.getElementById("anubis_challenge")) post({ t: "anubis", data: random, difficulty: diff });
-    }, 10000);
+    }, instant ? 0 : 10000);
   });
 
   // Alamat berubah lewat history API (YouTube, Gmail, dsb.).
@@ -331,15 +333,26 @@
   // ---- Pengelola sandi: isi otomatis dan tawaran simpan (seperti Brave) ----
   (function () {
     let offers = [], asked = false, box = null, lastSent = "";
-    const visible = (e) => e && e.offsetParent !== null && !e.disabled && !e.readOnly;
+    // Terlihat = punya kotak di layar (offsetParent null untuk kolom di dalam dialog
+    // position:fixed, jadi tidak dipakai), tidak tersembunyi, dan bisa diisi.
+    const visible = (e) => {
+      if (!e || e.disabled || e.readOnly || e.type === "hidden") return false;
+      if (!e.getClientRects().length) return false;
+      const cs = getComputedStyle(e);
+      return cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.05;
+    };
     const pwFields = () => [...document.querySelectorAll('input[type="password"]')].filter(visible);
     // Kolom nama pengguna: input teks/email terakhir sebelum kolom sandi.
     function userFieldFor(pw) {
       const scope = pw.form || document;
-      const cands = [...scope.querySelectorAll('input:not([type]),input[type="text"],input[type="email"],input[type="tel"]')].filter(visible);
+      const cands = [...scope.querySelectorAll('input:not([type]),input[type="text"],input[type="email"],input[type="tel"],input[type="number"]')].filter(visible);
+      // 1. Ditandai situs sebagai nama pengguna.
+      const marked = cands.find((c) => /username|email/i.test(c.autocomplete || ""));
+      if (marked) return marked;
+      // 2. Kolom terakhir sebelum kolom sandi (urutan formulir login biasa).
       let best = null;
       for (const c of cands) if (c.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING) best = c;
-      return best || cands.find((c) => /user|email|login|akun|nama/i.test(c.name + c.id + c.autocomplete)) || null;
+      return best || cands.find((c) => /user|email|login|akun|nama|nik|npp|nip|id/i.test(c.name + c.id + c.placeholder)) || null;
     }
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
     function hide() { if (box) { box.remove(); box = null; } }
@@ -352,13 +365,20 @@
       const host = document.createElement("ovner-pw");
       const root = host.attachShadow({ mode: "closed" });
       const r = anchor.getBoundingClientRect();
-      const pos = { position: "fixed", "z-index": "2147483647", left: r.left + "px", top: (r.bottom + 2) + "px",
+      // Daftar bisa digulir; bila ruang di bawah kolom sempit, tampil di atasnya.
+      const below = innerHeight - r.bottom - 8, above = r.top - 8;
+      const up = below < 180 && above > below;
+      const maxH = Math.max(120, Math.min(320, up ? above : below));
+      const rowH = 46, want = Math.min(maxH, offers.length * rowH + 10);
+      const top = up ? Math.max(4, r.top - 2 - want) : r.bottom + 2;
+      const pos = { position: "fixed", "z-index": "2147483647", left: r.left + "px", top: top + "px",
         "min-width": Math.max(220, r.width) + "px", display: "block", margin: "0", padding: "0", border: "0",
         background: "transparent", transform: "none", width: "auto", height: "auto" };
       for (const k in pos) host.style.setProperty(k, pos[k], "important");
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
       const css = `.b{font:13px "Segoe UI",system-ui,sans-serif;background:${dark ? "#2b2f35" : "#fff"};color:${dark ? "#e8eaed" : "#1d2228"};
-          border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;text-align:left;line-height:1.35}
+          border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;text-align:left;line-height:1.35;
+          max-height:${maxH}px;overflow-y:auto;overscroll-behavior:contain}
         .i{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer}
         .i:hover{background:${dark ? "#3a4048" : "#eef1f4"}}
         .k{width:16px;height:16px;flex:none;opacity:.7}

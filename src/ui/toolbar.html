@@ -133,6 +133,17 @@
   #darkpanel { position: absolute; right: 48px; top: 4px; width: 330px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
     box-shadow: 0 10px 28px #0005; padding: 12px 14px; font-size: 13px; }
   #darkpanel.show { display: block; }
+  #vidpanel { position: absolute; right: 90px; top: 4px; width: 300px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.28); padding: 12px 14px; color: var(--text); font-size: 13px; }
+  #vidpanel.show { display: block; }
+  #vidpanel h3 { margin: 0 0 4px; font-size: 14px; }
+  #vidpanel .t { color: var(--muted); font-size: 12px; margin-bottom: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #vidpanel button.f { display: flex; width: 100%; justify-content: space-between; align-items: center; margin: 5px 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+  #vidpanel button.f:hover { border-color: var(--accent); }
+  #vidpanel button.f small { color: var(--muted); }
+  #vidpanel .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
+  #vidbtn[hidden] { display: none; }
   #darkpanel h3 { margin: 0 0 2px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
   #darkpanel .site { color: var(--muted); font-size: 12px; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #darkpanel .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
@@ -179,6 +190,7 @@
     <button class="b" id="unsplit"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M15 9l-3 3 3 3"/></svg></button>
   </span>
   <button id="upd"></button>
+  <button class="b" id="vidbtn" hidden><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-2.5v9L17 14M10 9v6M7.5 12.5 10 15l2.5-2.5"/></svg></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
   <button class="b" id="darkbtn"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
@@ -193,7 +205,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -203,6 +215,8 @@
       addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
       find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
       swap: "Pindah ke sisi lain", tab: "Tab", usageApp: "Total Ovner + semua proses WebView2 (RAM = kolom Memory di Task Manager Windows)", usageTab: "Tab yang sedang dibuka: RAM dan CPU proses halamannya (seperti baris WebView2 di Task Manager Windows). * = berbagi proses dengan tab lain dari situs yang sama", other: "Bookmark lain",
+      vidTitle: "Unduh video halaman ini", vid: "Unduh video", vidBest: "Kualitas terbaik (≤1080p)", vid720: "720p (lebih kecil)", vidAudio: "Audio saja (M4A)",
+      vidMp4: "MP4", vidNote1: "Memakai yt-dlp. Pertama kali, Ovner mengunduh komponen yt-dlp (~18 MB)", vidNote2: " dan ffmpeg (~90 MB) untuk 1080p", vidNoteFf: "Untuk 1080p, Ovner mengunduh ffmpeg (~90 MB) sekali", vidNote3: ". Gunakan hanya untuk video yang boleh Anda simpan.",
       darkTitle: "Mode gelap (seperti Dark Reader)", dark: "Mode gelap", darkSite: "Situs:", darkNoSite: "Buka sebuah situs untuk mengatur per situs.", darkDefault: "Ikut umum", darkOn: "Nyala", darkOff: "Mati",
       darkAll: "Semua situs", darkAllOff: "Mati", darkAllOn: "Nyala", darkAllSys: "Ikut tema Windows", darkEngine: "Cara", engDyn: "Dinamis (Dark Reader)", engFilter: "Filter (cepat)", engChromium: "Chromium (paling ringan)",
       bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
@@ -212,6 +226,8 @@
       addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
       find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
       swap: "Switch side", tab: "Tab", usageApp: "Ovner + all WebView2 processes (RAM = Memory column in Windows Task Manager)", usageTab: "Current tab: RAM and CPU of its page process (like the WebView2 rows in Windows Task Manager). * = shares its process with other tabs of the same site", other: "Other bookmarks",
+      vidTitle: "Download this page's video", vid: "Download video", vidBest: "Best quality (≤1080p)", vid720: "720p (smaller)", vidAudio: "Audio only (M4A)",
+      vidMp4: "MP4", vidNote1: "Uses yt-dlp. The first time, Ovner downloads the yt-dlp component (~18 MB)", vidNote2: " and ffmpeg (~90 MB) for 1080p", vidNoteFf: "For 1080p, Ovner downloads ffmpeg (~90 MB) once", vidNote3: ". Only use it for videos you are allowed to save.",
       darkTitle: "Dark mode (like Dark Reader)", dark: "Dark mode", darkSite: "Site:", darkNoSite: "Open a site to set it per site.", darkDefault: "Use default", darkOn: "On", darkOff: "Off",
       darkAll: "All sites", darkAllOff: "Off", darkAllOn: "On", darkAllSys: "Follow Windows theme", darkEngine: "Method", engDyn: "Dynamic (Dark Reader)", engFilter: "Filter (fast)", engChromium: "Chromium (lightest)",
       bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
@@ -451,6 +467,13 @@
   document.addEventListener("mousedown", (e) => {
     if (bmOpenBtn && !e.target.closest(".bmm") && !e.target.closest("#bmbar")) closeBm();
   }, true);
+  // Klik di halaman (di luar menu): toolbar kehilangan fokus → tutup menu dan panel.
+  window.addEventListener("blur", () => {
+    if (bmOpenBtn) closeBm();
+    if (darkOpen) closeDark();
+    if (vidOpen) closeVid();
+    if (state.dlBubble && !state.pwOffer) send({ cmd: "bubble-close" });
+  });
   window.addEventListener("resize", () => fitBookmarks());
 
   window.ovner = {
@@ -501,6 +524,7 @@
       $("find").classList.toggle("show", !!s.find);
       renderBubble();
       renderDark();
+      renderVid();
       const dl = $("dlbtn");
       dl.classList.toggle("show", (s.downloads || []).length > 0);
       dl.classList.toggle("busy", (s.downloads || []).some((d) => d.state === "progress" || d.state === "paused"));
@@ -704,13 +728,22 @@
     $("ov").style.top = base + "px";
     const om = $("omni").classList.contains("show") ? $("omni").offsetHeight : 0;
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
-    const dp = $("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0;
+    const dp = Math.max($("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0,
+      $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0);
     let bm = 0;
     for (const p of document.querySelectorAll("#bmmenus .bmm")) bm = Math.max(bm, p.offsetTop + p.offsetHeight + 12);
-    send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm) });
+    // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
+    // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
+    const rects = [];
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+      if (!el || !el.offsetParent || !el.offsetWidth) continue;
+      const r = el.getBoundingClientRect();
+      rects.push([r.left, r.top, r.width, r.height + 10]);
+    }
+    send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm), rects });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeBm(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeVid(); closeBm(); send({ cmd: "bubble-close" }); } });
   // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
   let darkOpen = false, darkKey = "";
   function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }
@@ -776,6 +809,37 @@
     renderDark();
   };
   $("dlbtn").onclick = () => send({ cmd: "dl-toggle" });
+  // ---- Unduh video (yt-dlp), seperti tombol video di IDM/Mister Download Manager ----
+  let vidOpen = false;
+  function closeVid() { if (!vidOpen) return; vidOpen = false; $("vidpanel").classList.remove("show"); sendHeight(); }
+  function renderVid() {
+    const b = $("vidbtn");
+    b.hidden = !state.video;
+    b.title = W.vidTitle;
+    if (!state.video && vidOpen) closeVid();
+  }
+  $("vidbtn").onclick = () => {
+    if (vidOpen) { closeVid(); return; }
+    hideOmni(); closeDark(); send({ cmd: "bubble-close" });
+    const p = $("vidpanel"); p.textContent = "";
+    const h = document.createElement("h3"); h.textContent = W.vid;
+    const t = document.createElement("div"); t.className = "t"; t.textContent = state.pageTitle || state.url || "";
+    p.append(h, t);
+    for (const [fmt, label, small] of [["best", W.vidBest, W.vidMp4], ["720", W.vid720, W.vidMp4], ["audio", W.vidAudio, "M4A"]]) {
+      const x = document.createElement("button"); x.className = "f";
+      x.innerHTML = "<span></span><small></small>";
+      x.firstChild.textContent = label; x.lastChild.textContent = small;
+      x.onclick = () => { send({ cmd: "video-dl", fmt }); closeVid(); };
+      p.append(x);
+    }
+    const tools = state.videoTools || [];
+    if (!tools[0] || !tools[1]) {
+      const n = document.createElement("div"); n.className = "note";
+      n.textContent = (tools[0] ? W.vidNoteFf : W.vidNote1 + W.vidNote2) + W.vidNote3;
+      p.append(n);
+    }
+    vidOpen = true; p.classList.add("show"); sendHeight();
+  };
   findq.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); send({ cmd: "find", text: findq.value, back: e.shiftKey }); }
     else if (e.key === "Escape") send({ cmd: "find-close" });

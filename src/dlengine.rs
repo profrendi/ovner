@@ -92,6 +92,8 @@ pub fn probe(req: &Request) -> Result<Probe, String> {
 }
 
 struct Seg {
+    /// Awal bagian (untuk peta bagian di kotak unduhan).
+    start: u64,
     /// Batas akhir (tidak termasuk). Bisa mengecil saat bagian ini dibelah.
     end: u64,
     /// Posisi berikutnya yang akan ditulis.
@@ -135,6 +137,24 @@ impl Job {
     pub fn paused(&self) -> bool {
         self.shared.state.load(Ordering::SeqCst) == PAUSED
     }
+    /// Peta bagian: (awal, posisi, akhir, sedang diunduh) — seperti kotak unduhan IDM.
+    pub fn segments(&self) -> Vec<(u64, u64, u64, bool)> {
+        let mut v: Vec<(u64, u64, u64, bool)> = self.shared.segs.lock().unwrap().iter().map(|s| (s.start, s.pos, s.end, s.busy)).collect();
+        v.sort_by_key(|x| x.0);
+        v
+    }
+}
+
+/// Ambil isi teks sebuah alamat (mis. info lokasi server). Memblokir: panggil dari thread latar.
+pub fn get_text(url: &str) -> Option<String> {
+    let req = Request { url: url.to_string(), user_agent: "Ovner".into(), headers: vec![("Accept".into(), "application/json".into())] };
+    let mut body = Vec::new();
+    let head = http_get(&req, None, &mut |d| {
+        body.extend_from_slice(d);
+        body.len() < 256 * 1024
+    })
+    .ok()?;
+    (head.status == 200).then(|| String::from_utf8_lossy(&body).to_string())
 }
 
 /// Nama berkas yang belum dipakai: "laporan.pdf" → "laporan (1).pdf".
@@ -166,7 +186,7 @@ pub fn start(req: Request, path: &Path, total: u64, conns: usize, cb: impl Fn(Up
         .map(|k| {
             let start = step * k as u64;
             let end = if k + 1 == n { total } else { step * (k as u64 + 1) };
-            Seg { end, pos: start, busy: false, fails: 0 }
+            Seg { start, end, pos: start, busy: false, fails: 0 }
         })
         .collect();
     let shared = Arc::new(Shared {
@@ -268,7 +288,7 @@ fn claim(sh: &Shared) -> Option<usize> {
     let mid = segs[i].pos + rest / 2;
     let end = segs[i].end;
     segs[i].end = mid;
-    segs.push(Seg { end, pos: mid, busy: true, fails: 0 });
+    segs.push(Seg { start: mid, end, pos: mid, busy: true, fails: 0 });
     Some(segs.len() - 1)
 }
 

@@ -489,6 +489,32 @@ mod imp {
         }
     }
 
+    /// Batasi bagian WebView yang terlihat/menerima klik ke kotak-kotak ini (piksel fisik,
+    /// relatif ke WebView). Dipakai toolbar: saat menu/gelembung terbuka, hanya menu itu yang
+    /// menutupi halaman, bukan selebar layar berwarna gelap. Kosong = tanpa batas.
+    pub fn clip_webview(webview: &wry::WebView, rects: &[(i32, i32, i32, i32)]) {
+        use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, RGN_OR};
+        use wry::WebViewExtWindows;
+        unsafe {
+            let hwnd = webview.hwnd();
+            if rects.is_empty() {
+                SetWindowRgn(hwnd, None, true);
+                return;
+            }
+            let (x, y, w, h) = rects[0];
+            let rgn = CreateRectRgn(x, y, x + w, y + h);
+            for &(x, y, w, h) in &rects[1..] {
+                let r = CreateRectRgn(x, y, x + w, y + h);
+                let _ = CombineRgn(Some(rgn), Some(rgn), Some(r), RGN_OR);
+                let _ = DeleteObject(HGDIOBJ(r.0));
+            }
+            // Setelah berhasil, region dimiliki Windows (jangan dihapus).
+            if SetWindowRgn(hwnd, Some(rgn), true) == 0 {
+                let _ = DeleteObject(HGDIOBJ(rgn.0));
+            }
+        }
+    }
+
     /// Panggil `cb(png)` setiap ikon situs di tab ini berubah (FaviconChanged + GetFavicon).
     pub fn on_favicon(webview: &wry::WebView, cb: impl Fn(Vec<u8>) + 'static) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_15, COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG};
@@ -740,6 +766,38 @@ mod imp {
             Ok(())
         }));
         unsafe { env13.GetProcessExtendedInfos(&handler).is_ok() }
+    }
+
+    /// Rekam masalah halaman lewat DevTools (galat JavaScript, pesan konsol, permintaan gagal
+    /// beserta alasan CORS/blokir, masalah cookie dari Audits, jawaban HTTP ≥ 400) untuk
+    /// laporan "Rekam masalah halaman". `cb(nama_kejadian, json)`.
+    pub fn record_problems(webview: &wry::WebView, cb: impl Fn(&str, String) + 'static) {
+        use webview2_com::DevToolsProtocolEventReceivedEventHandler;
+        use wry::WebViewExtWindows;
+        let core = webview.webview();
+        let cb = std::rc::Rc::new(cb);
+        for ev in ["Runtime.exceptionThrown", "Log.entryAdded", "Network.loadingFailed", "Audits.issueAdded", "Network.responseReceived", "Runtime.consoleAPICalled"] {
+            let cb = cb.clone();
+            let name = ev.to_string();
+            let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
+                if let Some(a) = args {
+                    let mut p = windows::core::PWSTR::null();
+                    if unsafe { a.ParameterObjectAsJson(&mut p) }.is_ok() {
+                        cb(&name, webview2_com::take_pwstr(p));
+                    }
+                }
+                Ok(())
+            }));
+            unsafe {
+                if let Ok(r) = core.GetDevToolsProtocolEventReceiver(&HSTRING::from(ev)) {
+                    let mut token = 0i64;
+                    let _ = r.add_DevToolsProtocolEventReceived(&handler, &mut token);
+                }
+            }
+        }
+        for m in ["Runtime.enable", "Log.enable", "Network.enable", "Audits.enable"] {
+            cdp(webview, m, "{}");
+        }
     }
 
     /// Halaman meminta jendelanya ditutup (window.close dari pop-up).
@@ -1094,6 +1152,8 @@ mod imp {
         false
     }
     pub fn on_window_close(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
+    pub fn clip_webview(_webview: &wry::WebView, _rects: &[(i32, i32, i32, i32)]) {}
+    pub fn record_problems(_webview: &wry::WebView, _cb: impl Fn(&str, String) + 'static) {}
     pub fn read_clipboard() -> Option<String> {
         None
     }
