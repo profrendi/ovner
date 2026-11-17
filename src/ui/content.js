@@ -320,58 +320,80 @@
       return best || cands.find((c) => /user|email|login|akun|nama/i.test(c.name + c.id + c.autocomplete)) || null;
     }
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    function setVal(el, v) {
-      if (!el) return;
-      el.focus();
-      setter.call(el, v);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
     function hide() { if (box) { box.remove(); box = null; } }
+    // Kotak saran dibuat dengan elemen sendiri + shadow DOM + stylesheet buatan (adoptedStyleSheets):
+    // tidak terpengaruh CSS situs dan tetap tampil di situs dengan CSP ketat (mis. login Infor),
+    // yang memblokir <style> biasa sehingga dulu ikon kunci tampil raksasa di bawah halaman.
     function show(anchor) {
       hide();
       if (!offers.length || !anchor) return;
-      const host = document.createElement("div");
+      const host = document.createElement("ovner-pw");
       const root = host.attachShadow({ mode: "closed" });
       const r = anchor.getBoundingClientRect();
-      host.style.cssText = `position:fixed;z-index:2147483647;left:${r.left}px;top:${r.bottom + 2}px;min-width:${Math.max(220, r.width)}px`;
+      const pos = { position: "fixed", "z-index": "2147483647", left: r.left + "px", top: (r.bottom + 2) + "px",
+        "min-width": Math.max(220, r.width) + "px", display: "block", margin: "0", padding: "0", border: "0",
+        background: "transparent", transform: "none", width: "auto", height: "auto" };
+      for (const k in pos) host.style.setProperty(k, pos[k], "important");
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-      root.innerHTML = `<style>
-        .b{font:13px "Segoe UI",system-ui,sans-serif;background:${dark ? "#2b2f35" : "#fff"};color:${dark ? "#e8eaed" : "#1d2228"};
-          border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;}
+      const css = `.b{font:13px "Segoe UI",system-ui,sans-serif;background:${dark ? "#2b2f35" : "#fff"};color:${dark ? "#e8eaed" : "#1d2228"};
+          border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;text-align:left;line-height:1.35}
         .i{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer}
         .i:hover{background:${dark ? "#3a4048" : "#eef1f4"}}
         .k{width:16px;height:16px;flex:none;opacity:.7}
-        .s{font-size:11px;opacity:.65}</style><div class="b"></div>`;
-      const b = root.querySelector(".b");
+        .u{font-weight:600}.s{font-size:11px;opacity:.65}`;
+      try {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(css);
+        root.adoptedStyleSheets = [sheet];
+      } catch (e) {
+        const st = document.createElement("style"); st.textContent = css; root.append(st);
+      }
+      const b = document.createElement("div"); b.className = "b";
+      root.append(b);
       for (const o of offers) {
         const it = document.createElement("div"); it.className = "i";
-        it.innerHTML = '<svg class="k" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><div><div class="u"></div><div class="s">••••••••</div></div>';
+        it.innerHTML = '<svg class="k" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><div><div class="u"></div><div class="s">••••••••</div></div>';
         it.querySelector(".u").textContent = o.user || "(tanpa nama)";
-        it.addEventListener("mousedown", (e) => { e.preventDefault(); hide(); post({ t: "pw-fill", id: o.id }); });
+        it.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); hide(); post({ t: "pw-fill", id: o.id, url: location.href }); });
         b.append(it);
       }
       document.documentElement.append(host);
       box = host;
     }
+    // Isi seperti mengetik: banyak situs (Angular/React) baru menerima nilai setelah event ini.
+    function type(el, v) {
+      if (!el) return;
+      el.focus();
+      setter.call(el, v);
+      for (const t of ["input", "change"]) el.dispatchEvent(new Event(t, { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
+    }
     window.__ovnerPw = {
       offer(list, auto) {
         offers = list || [];
-        if (auto && offers.length === 1) post({ t: "pw-fill", id: offers[0].id });
+        if (auto && offers.length === 1) post({ t: "pw-fill", id: offers[0].id, url: location.href });
         const a = document.activeElement;
         if (a && a.tagName === "INPUT" && (a.type === "password" || pwFields().some((p) => userFieldFor(p) === a))) show(a);
       },
       fill(user, pass) {
-        const pw = pwFields()[0];
-        if (!pw) return;
-        setVal(userFieldFor(pw), user);
-        setVal(pw, pass);
-        hide();
+        // Kolom nama pengguna kadang baru muncul/dirender sesaat setelah kolom sandi: coba lagi
+        // sampai 3 detik supaya email/ID tidak perlu diketik sendiri.
+        let tries = 0;
+        const go = () => {
+          const pw = pwFields()[0];
+          const u = pw ? userFieldFor(pw) : null;
+          if ((!pw || (user && !u)) && ++tries < 15) { setTimeout(go, 200); return; }
+          if (u && user && u.value !== user) type(u, user);
+          if (pw) type(pw, pass);
+          if (u) u.blur();
+          hide();
+        };
+        go();
       },
     };
     // Tanya Ovner sekali bila halaman punya kolom sandi.
     function check() {
-      if (!asked && pwFields().length) { asked = true; post({ t: "pw-query" }); }
+      if (!asked && pwFields().length) { asked = true; post({ t: "pw-query", url: location.href }); }
     }
     document.addEventListener("focusin", (e) => {
       const el = e.target;
@@ -388,7 +410,7 @@
       const key = (u ? u.value : "") + "\u0000" + pw.value;
       if (key === lastSent) return;
       lastSent = key;
-      post({ t: "pw-capture", user: u ? u.value : "", pass: pw.value });
+      post({ t: "pw-capture", user: u ? u.value : "", pass: pw.value, url: location.href });
     }
     document.addEventListener("submit", capture, true);
     document.addEventListener("click", (e) => {

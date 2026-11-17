@@ -16,6 +16,7 @@ mod install;
 mod netfilter;
 mod antiblock;
 mod anubis;
+mod catalog;
 mod dlengine;
 mod usage;
 mod settings;
@@ -238,6 +239,10 @@ enum UserEvent {
     RendererFrames(Vec<(u32, Vec<u32>)>),
     /// Jawaban tantangan Anubis (anti-bot Startpage dan situs lain) dari pemecah native.
     Anubis(u64, String),
+    /// Pop-up window.open sudah dibuat sebagai WebView: jadikan tab.
+    PopupReady,
+    /// Halaman meminta jendelanya ditutup (window.close).
+    ScriptClose(u64),
     /// Hasil uji diagnostik di latar.
     DiagResult(String, bool, String),
     /// Ikon situs hasil unduhan untuk bookmark (host, isi berkas).
@@ -307,6 +312,10 @@ struct Tab {
     proc_shared: usize,
     /// Formulir di halaman ini sedang diisi (jangan ditidurkan).
     form_dirty: bool,
+    /// Beberapa alamat terakhir tab ini (untuk mencocokkan login yang dikirim sebelum pindah halaman).
+    recent_urls: Vec<String>,
+    /// Dibuka situs lewat window.open (boleh ditutup lewat window.close).
+    popup: bool,
 }
 
 /// Statistik penghemat tab (seperti Lifetime Stats TabWars), disimpan di tab-stats.json.
@@ -349,7 +358,7 @@ struct Menus {
 }
 
 struct App {
-    window: Window,
+    window: Rc<Window>,
     toolbar: WebView,
     /// Pengukur cadangan untuk log diagnostik (pemantau utama berjalan di thread sendiri).
     sampler: usage::Sampler,
@@ -380,7 +389,9 @@ struct App {
     toolbar_h: f64,
     tabs: Vec<Tab>,
     active: usize,
-    next_id: u64,
+    next_id: Rc<Cell<u64>>,
+    /// Pop-up (window.open) yang sudah dibuat dan menunggu dijadikan tab.
+    popups: Rc<RefCell<Vec<PopupTab>>>,
     closed: Vec<String>,
     settings: Rc<RefCell<Settings>>,
     blocker: Rc<RefCell<Blocker>>,
@@ -429,6 +440,257 @@ struct App {
     background: bool,
     next_trim: Option<Instant>,
     find_open: bool,
+}
+
+/// Bahan bersama pembuat WebView tab.
+#[derive(Clone)]
+struct TabEnv {
+    window: Rc<Window>,
+    settings: Rc<RefCell<Settings>>,
+    blocker: Rc<RefCell<Blocker>>,
+    proxy: EventLoopProxy<UserEvent>,
+    session_key: u64,
+    browser_args: String,
+    #[cfg(windows)]
+    env: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment>,
+    cname: Arc<Mutex<HashMap<String, Option<String>>>>,
+    dl_skip: Rc<RefCell<HashSet<String>>>,
+    next_id: Rc<Cell<u64>>,
+    popups: Rc<RefCell<Vec<PopupTab>>>,
+}
+
+/// Sel bersama milik satu tab (dipakai handler WebView-nya).
+struct TabCells {
+    id: u64,
+    private: bool,
+    blocked: Rc<Cell<u32>>,
+    page: Rc<RefCell<String>>,
+    allow_http: Rc<RefCell<Option<String>>>,
+    scripts_on: Rc<Cell<bool>>,
+}
+
+impl TabCells {
+    fn new(id: u64, private: bool) -> TabCells {
+        TabCells {
+            id,
+            private,
+            blocked: Rc::new(Cell::new(0)),
+            page: Rc::new(RefCell::new(String::new())),
+            allow_http: Rc::new(RefCell::new(None)),
+            scripts_on: Rc::new(Cell::new(true)),
+        }
+    }
+}
+
+/// Pop-up yang dibuka situs lewat window.open dan sudah dibuat sebagai WebView (opener
+/// tetap tersambung), menunggu dijadikan tab.
+struct PopupTab {
+    opener: u64,
+    url: String,
+    cells: TabCells,
+    webview: WebView,
+}
+
+/// Buat WebView sebuah tab beserta semua handler-nya. `url` = None untuk pop-up yang akan
+/// dinavigasi oleh WebView2 sendiri (window.open).
+#[allow(unused_variables, unused_mut)]
+fn build_tab_view(
+    tenv: &TabEnv,
+    cells: &TabCells,
+    url: Option<&str>,
+    rect: Rect,
+    visible: bool,
+    focused: bool,
+    web_context: Option<&mut WebContext>,
+) -> wry::Result<WebView> {
+    let s = tenv.settings.borrow().clone();
+    let (id, private) = (cells.id, cells.private);
+    let (blocked, page) = (cells.blocked.clone(), cells.page.clone());
+    if let Some(u) = url {
+        *page.borrow_mut() = u.to_string();
+    }
+    let allow_http = cells.allow_http.clone();
+    let scripts_on = cells.scripts_on.clone();
+    scripts_on.set(true);
+    let init = shields::page_scripts(&s, tenv.session_key, private);
+    let p_ipc = tenv.proxy.clone();
+    let p_title = tenv.proxy.clone();
+    let p_load = tenv.proxy.clone();
+    let p_nav = tenv.proxy.clone();
+    let p_new = tenv.proxy.clone();
+    let (nav_blocked, nav_page) = (blocked.clone(), page.clone());
+    let nav_settings = tenv.settings.clone();
+    let nav_blocker = tenv.blocker.clone();
+    let (deny_perm, autoplay, popups_to_tabs) = (s.deny_sensitive_permissions, s.autoplay, s.popups_to_tabs);
+    let popup_env = tenv.clone();
+
+    let mut builder = match (private, web_context) {
+        (false, Some(ctx)) => WebViewBuilder::new_with_web_context(ctx),
+        (true, _) => WebViewBuilder::new().with_incognito(true),
+        _ => WebViewBuilder::new(),
+    };
+    if let Some(u) = url {
+        builder = builder.with_url(u);
+    }
+    builder = builder
+        .with_bounds(rect)
+        .with_visible(visible)
+        .with_focused(focused)
+        .with_hotkeys_zoom(true)
+        .with_autoplay(autoplay)
+        .with_devtools(s.devtools)
+        .with_initialization_script(&init)
+        .with_custom_protocol("ovner".into(), |_, req| serve_internal(req))
+        .with_ipc_handler(move |req| send(&p_ipc, UserEvent::Content(id, req.body().clone())))
+        .with_document_title_changed_handler(move |t| send(&p_title, UserEvent::Title(id, t)))
+        .with_on_page_load_handler(move |ev, url| send(&p_load, UserEvent::PageLoad(id, ev, url)))
+        .with_navigation_handler(move |url| {
+            let s = nav_settings.borrow();
+            // 1. Debounce dan de-AMP, 2. buang parameter pelacak, 3. naikkan ke HTTPS.
+            let mut target = shields::rewrite_navigation(&url, &s);
+            if s.strip_tracking_params {
+                if let Some(t) = blocker::strip_tracking_params(target.as_deref().unwrap_or(&url)) {
+                    target = Some(t);
+                }
+                // Aturan $removeparam dari daftar filter (AdGuard URL Tracking, uBO).
+                if s.block_ads {
+                    let cur = target.clone().unwrap_or_else(|| url.clone());
+                    if let Some(t) = nav_blocker.borrow().check(&cur, &cur, "document").rewritten {
+                        target = Some(t);
+                    }
+                }
+            }
+            if s.https_only && allow_http.borrow().as_deref() != Some(url.as_str()) {
+                if let Some(up) = upgrade_https(target.as_deref().unwrap_or(&url)) {
+                    send(&p_nav, UserEvent::Upgraded(id, target.clone().unwrap_or_else(|| url.clone())));
+                    target = Some(up);
+                }
+            }
+            if let Some(t) = target {
+                send(&p_nav, UserEvent::Navigate(id, t));
+                return false;
+            }
+            // 4. Blokir JavaScript per situs: setelan berlaku untuk navigasi berikutnya,
+            //    jadi navigasi ini dibatalkan lalu diulang dengan setelan yang benar.
+            let want = internal_page(&url).is_some() || s.scripts_allowed(&url);
+            if want != scripts_on.get() {
+                send(&p_nav, UserEvent::ScriptNav(id, url, want));
+                return false;
+            }
+            *nav_page.borrow_mut() = url;
+            nav_blocked.set(0);
+            true
+        })
+        .with_new_window_req_handler(move |url, features| {
+            // Jendela kecil berukuran tertentu (login Google/Microsoft, pembayaran) dibiarkan
+            // sebagai jendela sendiri, kecuali "pop-up jadi tab" dinyalakan.
+            if features.size.is_some() && !popups_to_tabs {
+                return NewWindowResponse::Allow;
+            }
+            // Pop-up dibuka sebagai tab Ovner yang tetap tersambung ke pembukanya
+            // (window.opener / nilai kembali window.open), seperti Brave. Situs seperti Infor
+            // Ming.le, OAuth, dan pembayaran bergantung pada sambungan ini; dulu tab baru dibuat
+            // terpisah sehingga situs menunggu selamanya.
+            #[cfg(windows)]
+            if let Some(core) = make_popup(&popup_env, id, private, &url) {
+                return NewWindowResponse::Create { webview: core };
+            }
+            send(&p_new, UserEvent::NewTab(id, url));
+            NewWindowResponse::Deny
+        })
+        .with_permission_handler(move |kind| {
+            if deny_perm && matches!(kind, PermissionKind::Camera | PermissionKind::Microphone | PermissionKind::Geolocation) {
+                PermissionResponse::Deny
+            } else {
+                PermissionResponse::Default
+            }
+        });
+
+    #[cfg(windows)]
+    let builder = {
+        use wry::WebViewBuilderExtWindows;
+        let mut b = builder
+            .with_additional_browser_args(tenv.browser_args.clone())
+            .with_browser_accelerator_keys(true)
+            .with_default_context_menus(true)
+            .with_theme(wry_theme(&s.theme));
+        if let Some(env) = &tenv.env {
+            b = b.with_environment(env.clone());
+        }
+        b
+    };
+
+    let wv = builder.build_as_child(&*tenv.window)?;
+    win::tune_webview(&wv, &s);
+    for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
+        win::cdp(&wv, method, &params);
+    }
+    #[cfg(windows)]
+    {
+        let ctx = netfilter::FilterCtx {
+            blocker: tenv.blocker.clone(),
+            settings: tenv.settings.clone(),
+            blocked: blocked.clone(),
+            page: page.clone(),
+            cname: tenv.cname.clone(),
+        };
+        netfilter::attach_scriptlets(&wv, ctx.clone());
+        if let Err(e) = netfilter::attach(&wv, ctx) {
+            log(&format!("pemblokir tidak terpasang: {e}"));
+        }
+        let p_done = tenv.proxy.clone();
+        netfilter::on_navigation_completed(&wv, move |ok, status| send(&p_done, UserEvent::NavDone(id, ok, status)));
+    }
+    let p_fail = tenv.proxy.clone();
+    win::on_process_failed(&wv, move |k| send(&p_fail, UserEvent::ProcFailed(id, k)));
+    let p_close = tenv.proxy.clone();
+    win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
+    let p_dl = tenv.proxy.clone();
+    let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
+    win::on_download(
+        &wv,
+        move |ev| send(&p_dl, UserEvent::Download(id, ev)),
+        move |url, total| {
+            // Mesin unduh Ovner hanya untuk berkas besar dari http(s) biasa.
+            let s = dl_settings.borrow();
+            s.dl_engine
+                && total >= s.dl_min_mb as i64 * 1_048_576
+                && total > 0
+                && (url.starts_with("https://") || url.starts_with("http://"))
+                && !dl_skip.borrow().contains(url)
+        },
+    );
+    if !private {
+        let p_icon = tenv.proxy.clone();
+        win::on_favicon(&wv, move |png| send(&p_icon, UserEvent::Favicon(id, png)));
+    }
+    Ok(wv)
+}
+
+/// Buat WebView pop-up (tanpa alamat: WebView2 menavigasikannya sendiri) untuk window.open.
+#[cfg(windows)]
+fn make_popup(tenv: &TabEnv, opener: u64, private: bool, url: &str) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {
+    use wry::WebViewExtWindows;
+    // Harus memakai environment yang sama dengan pembukanya.
+    tenv.env.as_ref()?;
+    let id = tenv.next_id.get() + 1;
+    tenv.next_id.set(id);
+    let cells = TabCells::new(id, private);
+    *cells.page.borrow_mut() = url.to_string();
+    let size: LogicalSize<f64> = tenv.window.inner_size().to_logical(tenv.window.scale_factor());
+    let rect = Rect { position: WLogicalPosition::new(0.0, 0.0).into(), size: WLogicalSize::new(size.width.max(1.0), size.height.max(1.0)).into() };
+    match build_tab_view(tenv, &cells, None, rect, false, false, None) {
+        Ok(wv) => {
+            let core = wv.webview();
+            tenv.popups.borrow_mut().push(PopupTab { opener, url: url.to_string(), cells, webview: wv });
+            send(&tenv.proxy, UserEvent::PopupReady);
+            Some(core)
+        }
+        Err(e) => {
+            log(&format!("pop-up gagal dibuat sebagai tab: {e}"));
+            None
+        }
+    }
 }
 
 fn send(proxy: &EventLoopProxy<UserEvent>, e: UserEvent) {
@@ -647,7 +909,7 @@ impl App {
         };
         #[cfg(not(windows))]
         let _ = theme;
-        match b.build_as_child(&self.window) {
+        match b.build_as_child(&*self.window) {
             Ok(w) => self.sidebar = Some(w),
             Err(e) => log(&format!("tab vertikal gagal dibuat: {e}")),
         }
@@ -675,9 +937,10 @@ impl App {
     }
 
     fn new_tab_struct(&mut self, url: &str, title: &str, private: bool) -> Tab {
-        self.next_id += 1;
+        let id = self.next_id.get() + 1;
+        self.next_id.set(id);
         Tab {
-            id: self.next_id,
+            id,
             webview: None,
             url: url.to_string(),
             title: title.to_string(),
@@ -706,6 +969,8 @@ impl App {
             proc_cpu: 0.0,
             proc_shared: 0,
             form_dirty: false,
+            recent_urls: Vec::new(),
+            popup: false,
         }
     }
 
@@ -750,161 +1015,46 @@ impl App {
     }
 
     /// Buat WebView untuk tab `i` (tab baru atau tab yang dibangunkan).
+    /// Bahan bersama untuk membuat WebView tab (juga dipakai pembuat jendela pop-up).
+    fn tab_env(&self) -> TabEnv {
+        TabEnv {
+            window: self.window.clone(),
+            settings: self.settings.clone(),
+            blocker: self.blocker.clone(),
+            proxy: self.proxy.clone(),
+            session_key: self.session_key,
+            browser_args: self.browser_args.clone(),
+            #[cfg(windows)]
+            env: self.env.clone(),
+            cname: self.cname.clone(),
+            dl_skip: self.dl_skip.clone(),
+            next_id: self.next_id.clone(),
+            popups: self.popups.clone(),
+        }
+    }
+
     fn wake(&mut self, i: usize) {
         if self.tabs[i].webview.is_some() {
             return;
         }
         let rect = self.rect_for(i);
         let s = self.settings.borrow().clone();
-        let tab = &self.tabs[i];
-        let (id, private) = (tab.id, tab.private);
-        let url = if tab.url.is_empty() { self.newtab_url() } else { tab.url.clone() };
-        let (blocked, page) = (tab.blocked.clone(), tab.page.clone());
-        *page.borrow_mut() = url.clone();
+        let url = if self.tabs[i].url.is_empty() { self.newtab_url() } else { self.tabs[i].url.clone() };
         let visible = self.is_shown(i) && !self.in_tray;
-        let zoom = tab.zoom;
-        let allow_http = tab.allow_http.clone();
-        let scripts_on = tab.scripts_on.clone();
-        scripts_on.set(true);
-        let init = shields::page_scripts(&s, self.session_key, private);
-
-        let p_ipc = self.proxy.clone();
-        let p_title = self.proxy.clone();
-        let p_load = self.proxy.clone();
-        let p_nav = self.proxy.clone();
-        let p_new = self.proxy.clone();
-        let (nav_blocked, nav_page) = (blocked.clone(), page.clone());
-        let nav_settings = self.settings.clone();
-        let nav_blocker = self.blocker.clone();
-        let (deny_perm, autoplay, popups_to_tabs) = (s.deny_sensitive_permissions, s.autoplay, s.popups_to_tabs);
-
-        let mut builder = if private { WebViewBuilder::new().with_incognito(true) } else { WebViewBuilder::new_with_web_context(&mut self.web_context) };
-        builder = builder
-            .with_url(url)
-            .with_bounds(rect)
-            .with_visible(visible)
-            .with_focused(visible && i == self.active)
-            .with_hotkeys_zoom(true)
-            .with_autoplay(autoplay)
-            .with_devtools(s.devtools)
-            .with_initialization_script(&init)
-            .with_custom_protocol("ovner".into(), |_, req| serve_internal(req))
-            .with_ipc_handler(move |req| send(&p_ipc, UserEvent::Content(id, req.body().clone())))
-            .with_document_title_changed_handler(move |t| send(&p_title, UserEvent::Title(id, t)))
-            .with_on_page_load_handler(move |ev, url| send(&p_load, UserEvent::PageLoad(id, ev, url)))
-            .with_navigation_handler(move |url| {
-                let s = nav_settings.borrow();
-                // 1. Debounce dan de-AMP, 2. buang parameter pelacak, 3. naikkan ke HTTPS.
-                let mut target = shields::rewrite_navigation(&url, &s);
-                if s.strip_tracking_params {
-                    if let Some(t) = blocker::strip_tracking_params(target.as_deref().unwrap_or(&url)) {
-                        target = Some(t);
-                    }
-                    // Aturan $removeparam dari daftar filter (AdGuard URL Tracking, uBO).
-                    if s.block_ads {
-                        let cur = target.clone().unwrap_or_else(|| url.clone());
-                        if let Some(t) = nav_blocker.borrow().check(&cur, &cur, "document").rewritten {
-                            target = Some(t);
-                        }
-                    }
-                }
-                if s.https_only && allow_http.borrow().as_deref() != Some(url.as_str()) {
-                    if let Some(up) = upgrade_https(target.as_deref().unwrap_or(&url)) {
-                        send(&p_nav, UserEvent::Upgraded(id, target.clone().unwrap_or_else(|| url.clone())));
-                        target = Some(up);
-                    }
-                }
-                if let Some(t) = target {
-                    send(&p_nav, UserEvent::Navigate(id, t));
-                    return false;
-                }
-                // 4. Blokir JavaScript per situs: setelan berlaku untuk navigasi berikutnya,
-                //    jadi navigasi ini dibatalkan lalu diulang dengan setelan yang benar.
-                let want = internal_page(&url).is_some() || s.scripts_allowed(&url);
-                if want != scripts_on.get() {
-                    send(&p_nav, UserEvent::ScriptNav(id, url, want));
-                    return false;
-                }
-                *nav_page.borrow_mut() = url;
-                nav_blocked.set(0);
-                true
-            })
-            .with_new_window_req_handler(move |url, features| {
-                // Jendela kecil berukuran tertentu (login Google/Microsoft, pembayaran) dibiarkan
-                // sebagai jendela sendiri, kecuali "pop-up jadi tab" dinyalakan.
-                if features.size.is_some() && !popups_to_tabs {
-                    NewWindowResponse::Allow
-                } else {
-                    send(&p_new, UserEvent::NewTab(id, url));
-                    NewWindowResponse::Deny
-                }
-            })
-            .with_permission_handler(move |kind| {
-                if deny_perm && matches!(kind, PermissionKind::Camera | PermissionKind::Microphone | PermissionKind::Geolocation) {
-                    PermissionResponse::Deny
-                } else {
-                    PermissionResponse::Default
-                }
-            });
-
-        #[cfg(windows)]
-        let builder = {
-            use wry::WebViewBuilderExtWindows;
-            let mut b = builder
-                .with_additional_browser_args(self.browser_args.clone())
-                .with_browser_accelerator_keys(true)
-                .with_default_context_menus(true)
-                .with_theme(wry_theme(&s.theme));
-            if let Some(env) = &self.env {
-                b = b.with_environment(env.clone());
-            }
-            b
+        let tab = &self.tabs[i];
+        let cells = TabCells {
+            id: tab.id,
+            private: tab.private,
+            blocked: tab.blocked.clone(),
+            page: tab.page.clone(),
+            allow_http: tab.allow_http.clone(),
+            scripts_on: tab.scripts_on.clone(),
         };
-
-        match builder.build_as_child(&self.window) {
+        let zoom = tab.zoom;
+        let tenv = self.tab_env();
+        match build_tab_view(&tenv, &cells, Some(&url), rect, visible, visible && i == self.active, Some(&mut self.web_context)) {
             Ok(wv) => {
-                win::tune_webview(&wv, &s);
-                for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
-                    win::cdp(&wv, method, &params);
-                }
-                #[cfg(windows)]
-                {
-                    let ctx = netfilter::FilterCtx {
-                        blocker: self.blocker.clone(),
-                        settings: self.settings.clone(),
-                        blocked: blocked.clone(),
-                        page: page.clone(),
-                        cname: self.cname.clone(),
-                    };
-                    netfilter::attach_scriptlets(&wv, ctx.clone());
-                    if let Err(e) = netfilter::attach(&wv, ctx) {
-                        log(&format!("pemblokir tidak terpasang: {e}"));
-                    }
-                    let p_done = self.proxy.clone();
-                    netfilter::on_navigation_completed(&wv, move |ok, status| send(&p_done, UserEvent::NavDone(id, ok, status)));
-                }
-                let p_fail = self.proxy.clone();
-                win::on_process_failed(&wv, move |k| send(&p_fail, UserEvent::ProcFailed(id, k)));
-                let p_dl = self.proxy.clone();
-                let (dl_settings, dl_skip) = (self.settings.clone(), self.dl_skip.clone());
-                win::on_download(
-                    &wv,
-                    move |ev| send(&p_dl, UserEvent::Download(id, ev)),
-                    move |url, total| {
-                        // Mesin unduh Ovner hanya untuk berkas besar dari http(s) biasa.
-                        let s = dl_settings.borrow();
-                        s.dl_engine
-                            && total >= s.dl_min_mb as i64 * 1_048_576
-                            && total > 0
-                            && (url.starts_with("https://") || url.starts_with("http://"))
-                            && !dl_skip.borrow().contains(url)
-                    },
-                );
-                if !private {
-                    let p_icon = self.proxy.clone();
-                    win::on_favicon(&wv, move |png| send(&p_icon, UserEvent::Favicon(id, png)));
-                }
-                if s.extensions_enabled && !self.extensions_loaded && !private {
+                if s.extensions_enabled && !self.extensions_loaded && !cells.private {
                     self.extensions_loaded = true;
                     win::load_extensions(&wv, &s.extension_dirs, log);
                 }
@@ -916,6 +1066,30 @@ impl App {
                 self.tabs[i].script_gen = self.script_gen;
             }
             Err(e) => log(&format!("gagal membuat tab: {e}")),
+        }
+    }
+
+    /// Jadikan pop-up yang sudah dibuat (window.open dengan opener) sebagai tab baru di
+    /// sebelah tab pembukanya, lalu tampilkan.
+    fn adopt_popups(&mut self) {
+        let list: Vec<PopupTab> = self.popups.borrow_mut().drain(..).collect();
+        for p in list {
+            let mut t = self.new_tab_struct(&p.url, "", p.cells.private);
+            t.id = p.cells.id;
+            t.blocked = p.cells.blocked;
+            t.page = p.cells.page;
+            t.allow_http = p.cells.allow_http;
+            t.scripts_on = p.cells.scripts_on;
+            t.webview = Some(p.webview);
+            t.script_gen = self.script_gen;
+            t.popup = true;
+            let at = self.tab_index(p.opener).map(|k| k + 1).unwrap_or(self.tabs.len()).min(self.tabs.len());
+            self.tabs.insert(at, t);
+            if at <= self.active && self.active + 1 < self.tabs.len() {
+                self.active += 1;
+            }
+            log(&format!("pop-up dibuka sebagai tab (opener tetap tersambung): {}", display_url(&p.url)));
+            self.activate(at);
         }
     }
 
@@ -1634,6 +1808,20 @@ impl App {
                 } else {
                     Vec::new()
                 };
+                let catalog_view: Vec<Value> = {
+                    let st = self.settings.borrow();
+                    let sv = serde_json::to_value(&*st).unwrap_or_default();
+                    catalog::CATALOG
+                        .iter()
+                        .map(|c| {
+                            let on = match c.setting {
+                                Some(k) => sv[k].as_bool().unwrap_or(false),
+                                None => st.filter_lists.iter().any(|x| x.eq_ignore_ascii_case(c.id)),
+                            };
+                            json!({"id": c.id, "title": [c.title.0, c.title.1], "desc": c.desc, "on": on, "setting": c.setting, "regional": c.regional})
+                        })
+                        .collect()
+                };
                 json!({
                     "settings": &*self.settings.borrow(),
                     "lang": lang,
@@ -1642,6 +1830,7 @@ impl App {
                     "lists": i18n::t(self.lang, if self.blocker.borrow().full { "d.lists_full" } else { "d.lists_builtin" }),
                     "data": data_dir().display().to_string(),
                     "browsers": browsers,
+                    "catalog": catalog_view,
                 })
             }
             "newtab" => json!({ "theme": theme, "lang": lang }),
@@ -2002,6 +2191,10 @@ impl App {
                 win::open_path(&p.display().to_string(), false);
             }
             "diagnostics" => self.open_internal("diagnostics"),
+            "update-filters" => {
+                start_filter_update_forced(self.proxy.clone(), self.settings.borrow().clone());
+                win::info(t(self.lang, "d.filters"));
+            }
             "run-tests" => {
                 self.run_diag_tests();
                 self.push_page_state(i);
@@ -2161,7 +2354,7 @@ impl App {
                     start_filter_update(self.proxy.clone(), s.clone());
                 }
             }
-            "block_cookie_notices" | "custom_lists" => start_filter_update(self.proxy.clone(), s.clone()),
+            "block_cookie_notices" | "custom_lists" | "filter_lists" => start_filter_update(self.proxy.clone(), s.clone()),
             // Skrip halaman dibuat saat tab dibangun: tandai semua tab untuk dibangun ulang.
             "autofill" | "password_manager" | "password_autosignin" => {
                 for t in &self.tabs {
@@ -2462,6 +2655,18 @@ impl App {
                 }
             }
             "pw-capture" => {
+                // Login dikirim lalu halaman langsung pindah (mis. SSO Infor → portal): alamat saat
+                // pesan tiba sudah alamat baru. Pakai alamat halaman login yang dikirim content.js,
+                // asalkan memang salah satu halaman yang baru saja dibuka tab ini.
+                let claimed = msg["url"].as_str().unwrap_or("");
+                let site = vault::site_of(claimed);
+                let current_url = if !site.is_empty()
+                    && (site == vault::site_of(&current_url) || self.tabs[i].recent_urls.iter().any(|u| vault::site_of(u) == site))
+                {
+                    claimed.to_string()
+                } else {
+                    current_url.clone()
+                };
                 if !self.settings.borrow().password_manager || self.tabs[i].private || !current_url.starts_with("http") {
                     return false;
                 }
@@ -3766,7 +3971,8 @@ fn main() {
         });
     }
 
-    let window = WindowBuilder::new()
+    let window = Rc::new(
+        WindowBuilder::new()
         .with_title("Ovner")
         .with_inner_size(LogicalSize::new(1280.0, 800.0))
         .with_min_inner_size(LogicalSize::new(480.0, 320.0))
@@ -3779,7 +3985,8 @@ fn main() {
         })
         .with_window_icon(Icon::from_rgba(icon::rgba(64), 64, 64).ok())
         .build(&event_loop)
-        .expect("jendela Ovner");
+        .expect("jendela Ovner"),
+    );
 
     let menus = build_menus(lang);
     let tray = TrayIconBuilder::new()
@@ -3849,7 +4056,7 @@ fn main() {
             }
             b
         };
-        match b.build_as_child(&window) {
+        match b.build_as_child(&*window) {
             Ok(w) => w,
             Err(e) => {
                 win::info(&tf(lang, "d.need_webview2", &[("e", &e.to_string())]));
@@ -3883,7 +4090,8 @@ fn main() {
         toolbar_h: 77.0,
         tabs: Vec::new(),
         active: 0,
-        next_id: 0,
+        next_id: Rc::new(Cell::new(0)),
+        popups: Rc::new(RefCell::new(Vec::new())),
         closed: Vec::new(),
         settings: Rc::new(RefCell::new(settings)),
         blocker,
@@ -4080,6 +4288,12 @@ fn main() {
                         if started {
                             t.form_dirty = false;
                         }
+                        if url.starts_with("http") && t.recent_urls.last() != Some(&url) {
+                            t.recent_urls.push(url.clone());
+                            if t.recent_urls.len() > 6 {
+                                t.recent_urls.remove(0);
+                            }
+                        }
                         if !url.is_empty() {
                             t.url = url.clone();
                         }
@@ -4186,6 +4400,12 @@ fn main() {
                     app.frames_pending = false;
                     app.renderer_frames = frames;
                     app.assign_tab_procs();
+                }
+                UserEvent::PopupReady => app.adopt_popups(),
+                UserEvent::ScriptClose(id) => {
+                    if let Some(i) = app.tab_index(id).filter(|&i| app.tabs[i].popup) {
+                        app.close_tab(i);
+                    }
                 }
                 UserEvent::Anubis(id, js) => {
                     if let Some(i) = app.tab_index(id) {

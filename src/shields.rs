@@ -269,7 +269,7 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
 /// Situs yang menolak browser dengan identitas atau sidik jari yang diubah (menganggapnya bot
 /// atau "user-agent switcher"). Di sini Ovner memakai identitas asli WebView2 tanpa farbling;
 /// iklan dan pelacak tetap diblokir.
-pub const COMPAT_HOSTS: &[&str] = &["startpage.com", "startpage.nl"];
+pub const COMPAT_HOSTS: &[&str] = &["startpage.com", "startpage.nl", "inforcloudsuite.com", "infor.com"];
 
 /// Situs ini perlu identitas asli (kompatibilitas bawaan, atau dikecualikan pengguna)?
 pub fn needs_real_identity(s: &Settings, host: &str) -> bool {

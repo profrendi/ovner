@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 5;
+pub const SCHEMA: u32 = 6;
 
 fn zero() -> u32 {
     0
@@ -99,6 +99,8 @@ pub struct Settings {
     pub filter_update_hours: u32,
     /// Daftar gangguan: notifikasi, widget sosial, popup newsletter, "pasang aplikasi kami".
     pub block_annoyances: bool,
+    /// Daftar filter opsional dari katalog (id seperti Brave, mis. "2F3DCE16" = promo aplikasi).
+    pub filter_lists: Vec<String>,
     /// Alamat daftar filter tambahan (format EasyList/uBlock).
     pub custom_lists: Vec<String>,
     /// Aturan filter sendiri (format EasyList/uBlock), satu per baris.
@@ -311,6 +313,7 @@ impl Default for Settings {
             cname_uncloak: false,
             auto_update_filters: true,
             custom_lists: Vec::new(),
+            filter_lists: crate::catalog::default_ids(),
             custom_rules: String::new(),
             exceptions: Vec::new(),
             script_blocked: Vec::new(),
@@ -482,6 +485,14 @@ impl Settings {
             // YouTube Restricted Mode (error 151) atau memblokir DNS aman.
             self.secure_dns = "off".into();
         }
+        if self.schema < 6 {
+            // 0.7.1: daftar opsional seperti Brave; yang bawaan Brave ikut dinyalakan.
+            for id in crate::catalog::default_ids() {
+                if !self.filter_lists.contains(&id) {
+                    self.filter_lists.push(id);
+                }
+            }
+        }
         if self.schema < 5 && self.force_dark {
             // 0.7: "Paksa mode gelap" menjadi mode gelap per situs (mesin Chromium, sama persis
             // seperti sebelumnya, tetapi sekarang bisa diatur per situs tanpa buka ulang).
@@ -553,6 +564,9 @@ impl Settings {
             *v = v.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         };
         clean(&mut self.custom_lists);
+        self.filter_lists.retain(|id| crate::catalog::find(id).is_some());
+        self.filter_lists.sort();
+        self.filter_lists.dedup();
         clean(&mut self.custom_bangs);
         clean(&mut self.extension_dirs);
     }

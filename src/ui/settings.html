@@ -271,10 +271,8 @@
         row.append(control(key, kind, opts));
         card.append(row);
       }
-      if (id === "look") {
-        // Impor bookmark ada di bagian pertama supaya mudah ditemukan.
-      }
       form.append(card);
+      if (id === "shields") buildLists();
     }
     // Impor bookmark
     form.append(h("h2", { id: "s-import", textContent: L === "id" ? "Impor bookmark" : "Import bookmarks" }));
@@ -289,6 +287,42 @@
     }
     form.append(ic);
     filter();
+  }
+
+  // Daftar filter opsional, seperti brave://settings/shields/filters.
+  let catalog = [];
+  function buildLists() {
+    const title = L === "id" ? "Daftar filter" : "Filter lists";
+    form.append(h("h2", { id: "s-lists", textContent: title }));
+    document.getElementById("nav").append(h("a", { href: "#s-lists", textContent: title }));
+    const card = h("div", { className: "card" });
+    const row = (c) => {
+      const r = h("div", { className: "row" });
+      r.dataset.text = (c.title.join(" ") + " " + c.desc).toLowerCase();
+      r.append(h("div", { className: "lbl", html: `${L === "id" ? c.title[0] : c.title[1]}<small></small>` }));
+      r.querySelector("small").textContent = c.desc;
+      const inp = h("input", { type: "checkbox", checked: !!c.on });
+      inp.onchange = () => {
+        if (c.setting) { post({ t: "set", key: c.setting, value: inp.checked }); return; }
+        const cur = new Set(state.filter_lists || []);
+        if (inp.checked) cur.add(c.id); else cur.delete(c.id);
+        post({ t: "set", key: "filter_lists", value: [...cur] });
+      };
+      r.append(h("label", { className: "switch" }, inp, h("span", {})));
+      return r;
+    };
+    for (const c of catalog.filter((c) => !c.regional)) card.append(row(c));
+    const reg = h("details", {});
+    const on = catalog.filter((c) => c.regional && c.on).length;
+    reg.append(h("summary", { className: "row", textContent: (L === "id" ? "Daftar iklan situs berbahasa lain" : "Regional ad blocking lists") + (on ? ` (${on})` : "") }));
+    for (const c of catalog.filter((c) => c.regional)) reg.append(row(c));
+    card.append(reg);
+    const upd = h("button", { textContent: L === "id" ? "Perbarui daftar sekarang" : "Update lists now" });
+    upd.onclick = () => post({ t: "action", name: "update-filters" });
+    card.append(h("div", { className: "row" }, h("div", { className: "lbl", html: (L === "id"
+      ? "Selalu aktif: EasyList, EasyPrivacy, ABPindo, uBlock (filters, 2020–2026, privacy, badware, quick fixes, unbreak, resource abuse, link shorteners), URLhaus malware, Brave (unbreak, specific, social, first-party, sugarcoat)."
+      : "Always on: EasyList, EasyPrivacy, ABPindo, uBlock (filters, 2020–2026, privacy, badware, quick fixes, unbreak, resource abuse, link shorteners), URLhaus malware, Brave (unbreak, specific, social, first-party, sugarcoat).") + "<small></small>" }), upd));
+    form.append(card);
   }
 
   let showAll = false;
@@ -320,7 +354,7 @@
 
   window.ovnerPage = (s) => {
     const langChanged = L !== s.lang;
-    L = s.lang; state = s.settings; browsers = s.browsers || [];
+    L = s.lang; state = s.settings; browsers = s.browsers || []; catalog = s.catalog || [];
     document.documentElement.lang = L;
     document.documentElement.dataset.theme = state.theme === "system" ? "" : state.theme;
     document.getElementById("h1").textContent = T(UI.h1);

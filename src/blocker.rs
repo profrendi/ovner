@@ -31,6 +31,22 @@ pub const EXTRA_LISTS: &[(&str, &str)] = &[
     ("ublock-badware.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt"),
     ("brave-unbreak.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-unbreak.txt"),
     ("brave-specific.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-specific.txt"),
+    // 0.7.1: sisa "Brave Default Adblock Filters" yang belum dipakai Ovner.
+    ("ublock-filters-general.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-general.txt"),
+    ("ublock-filters-2020.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2020.txt"),
+    ("ublock-filters-2021.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2021.txt"),
+    ("ublock-filters-2022.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2022.txt"),
+    ("ublock-filters-2023.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2023.txt"),
+    ("ublock-filters-2024.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2024.txt"),
+    ("ublock-filters-2025.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2025.txt"),
+    ("ublock-filters-2026.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-2026.txt"),
+    ("ublock-resource-abuse.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt"),
+    ("ublock-link-shorteners.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/ubo-link-shorteners.txt"),
+    ("urlhaus-malware.txt", "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-agh-online.txt"),
+    ("brave-social.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-social.txt"),
+    ("brave-sugarcoat.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-sugarcoat.txt"),
+    ("brave-firstparty.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-firstparty.txt"),
+    ("brave-firstparty-regional.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-firstparty-regional.txt"),
 ];
 
 /// Parameter pelacak di alamat ($removeparam), seperti yang ditambahkan Mullvad Browser ke uBO.
@@ -60,6 +76,7 @@ fn is_trusted(name: &str) -> bool {
 pub const COOKIE_LISTS: &[(&str, &str)] = &[
     ("ublock-cookies.txt", "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances-cookies.txt"),
     ("easylist-cookie.txt", "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt"),
+    ("brave-cookie-specific.txt", "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-cookie-specific.txt"),
 ];
 
 /// Berkas aturan sendiri pengguna (dari Pengaturan dan pemilih elemen).
@@ -77,6 +94,14 @@ pub fn wanted_lists(s: &crate::settings::Settings) -> Vec<(String, String)> {
     }
     if s.block_annoyances {
         v.extend(ANNOYANCE_LISTS.iter().map(pair));
+    }
+    // Daftar opsional dari katalog (seperti brave://settings/shields → Filter lists).
+    for id in &s.filter_lists {
+        if let Some(c) = crate::catalog::find(id).filter(|c| c.setting.is_none()) {
+            for (k, u) in c.urls.iter().enumerate() {
+                v.push((crate::catalog::file_name(c.id, k), u.to_string()));
+            }
+        }
     }
     v.push(pair(&RESOURCES));
     for u in &s.custom_lists {
@@ -528,8 +553,9 @@ mod tests {
         let d = tmp("refresh");
         let s = crate::settings::Settings::default();
         let wanted = wanted_lists(&s);
-        // Utama + tambahan + cookie + parameter pelacak + resources.json.
-        assert_eq!(wanted.len(), FILTER_LISTS.len() + EXTRA_LISTS.len() + COOKIE_LISTS.len() + 2);
+        // Utama + tambahan + cookie + parameter pelacak + resources.json + promo aplikasi (bawaan Brave).
+        assert_eq!(wanted.len(), FILTER_LISTS.len() + EXTRA_LISTS.len() + COOKIE_LISTS.len() + 3);
+        assert!(wanted.iter().any(|(n, u)| n == "opt-2f3dce16-0.txt" && u.contains("fanboy-mobile")));
         assert_eq!(stale_lists(&d, &wanted, 6).len(), wanted.len());
         for (name, _) in &wanted {
             std::fs::write(filters_dir(&d).join(name), "! daftar\n").unwrap();

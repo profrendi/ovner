@@ -742,6 +742,20 @@ mod imp {
         unsafe { env13.GetProcessExtendedInfos(&handler).is_ok() }
     }
 
+    /// Halaman meminta jendelanya ditutup (window.close dari pop-up).
+    pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
+        use webview2_com::WindowCloseRequestedEventHandler;
+        use wry::WebViewExtWindows;
+        let handler = WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+            cb();
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.webview().add_WindowCloseRequested(&handler, &mut token);
+        }
+    }
+
     /// Panggil metode DevTools langsung pada ICoreWebView2 (dari handler navigasi).
     pub fn cdp_core(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, method: &str, params: &str) {
         use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
@@ -1079,6 +1093,7 @@ mod imp {
     pub fn system_dark() -> bool {
         false
     }
+    pub fn on_window_close(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn read_clipboard() -> Option<String> {
         None
     }

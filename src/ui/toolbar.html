@@ -53,6 +53,11 @@
   #addr:focus { background: var(--field-focus); border-color: var(--accent); }
   #star { position: absolute; right: 4px; width: 26px; height: 26px; color: var(--muted); }
   /* Ikon asli situs di kiri kolom alamat (tanpa kotak warna). */
+  #ghost { position: absolute; top: 0; height: 30px; line-height: 30px; pointer-events: none; white-space: pre; overflow: hidden; display: none;
+    font: inherit; font-size: 14px; color: var(--muted); }
+  #ghost.show { display: block; }
+  #ghost b { font-weight: inherit; background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--text); border-radius: 2px; }
+  #measure { position: absolute; visibility: hidden; white-space: pre; font: inherit; font-size: 14px; left: -9999px; top: 0; }
   #siteicon { position: absolute; left: 11px; width: 16px; height: 16px; background: center / 16px 16px no-repeat; pointer-events: none; color: var(--muted); }
   #siteicon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
   /* Indikator pemakaian RAM/CPU/GPU (ujung kanan baris tab, dekat tombol minimize). */
@@ -154,7 +159,7 @@
   <button class="b hidden" id="home" title="Beranda"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></svg></button>
   <div id="addrwrap">
     <span id="siteicon"></span>
-    <input id="addr" spellcheck="false" autocomplete="off">
+    <input id="addr" spellcheck="false" autocomplete="off"><span id="ghost"></span><span id="measure"></span>
     <button class="b" id="star" title="Bookmark halaman ini (Ctrl+D)"><svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg></button>
   </div>
   <span id="splitbox">
@@ -441,8 +446,35 @@
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
     globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 3 2.5 13 0 16M12 4c-2.5 3-2.5 13 0 16"/></svg>',
   };
+  let ghost = "";
+  function clearGhost() { ghost = ""; $("ghost").classList.remove("show"); }
+  function showGhost(rest) {
+    const g = $("ghost"), m = $("measure");
+    m.textContent = addr.value;
+    const cs = getComputedStyle(addr);
+    const left = addr.offsetLeft + parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth) + m.offsetWidth - addr.scrollLeft;
+    const max = addr.offsetLeft + addr.clientWidth - parseFloat(cs.paddingRight);
+    if (left >= max - 8) return; // teks sudah memenuhi kolom: tanpa bayangan
+    ghost = rest;
+    g.innerHTML = "<b></b>";
+    g.firstChild.textContent = rest;
+    g.style.left = left + "px";
+    g.style.maxWidth = (max - left) + "px";
+    g.style.top = (addr.offsetTop + parseFloat(cs.borderTopWidth)) + "px";
+    g.style.height = g.style.lineHeight = addr.clientHeight + "px";
+    g.classList.add("show");
+  }
+  function acceptGhost() {
+    if (!ghost) return false;
+    addr.value = addr.value + ghost;
+    clearGhost();
+    addr.setSelectionRange(addr.value.length, addr.value.length);
+    typed = addr.value.trim(); typing = true;
+    return true;
+  }
   function hideOmni() { $("omni").classList.remove("show"); omniItems = []; omniSel = -1; sendHeight(); }
   function pickOmni(i) {
+    clearGhost();
     omniSel = i;
     [...$("omni").children].forEach((e, k) => e.classList.toggle("sel", k === i));
     if (i >= 0 && omniItems[i]) addr.value = omniItems[i].go;
@@ -454,15 +486,18 @@
     if (!state.noSearch && !looksUrl) omniItems.push({ go: typed, title: typed, sub: r.bang ? "!bang" : W.searchWith, icon: "search" });
     for (const it of r.items || []) omniItems.push({ go: it.url, title: it.title || strip(it.url), sub: strip(it.url), icon: it.bm ? "star" : "clock", url: it.url });
     if (looksUrl && !omniItems.length) omniItems.push({ go: typed, title: typed, sub: "", icon: "globe" });
-    // Isi otomatis alamat: saran pertama yang alamatnya diawali teks yang diketik.
-    if (autoOk && typed && !/\s/.test(typed) && addr.selectionStart === addr.value.length) {
-      const hit = (r.items || []).find((it) => strip(it.url).toLowerCase().startsWith(typed.toLowerCase()));
+    // Isi otomatis alamat (dari bookmark/riwayat): sisa alamat tampil sebagai teks bayangan di
+    // belakang kursor. Isi kolom tetap persis yang diketik, jadi selalu bisa diedit bebas;
+    // Tab/→/End menerima sisanya, Enter membuka alamat lengkap.
+    clearGhost();
+    const raw = addr.value;
+    if (autoOk && raw && raw === raw.trimStart() && !/\s/.test(raw) && addr.selectionStart === raw.length && addr.selectionEnd === raw.length) {
+      const hit = (r.items || []).find((it) => strip(it.url).toLowerCase().startsWith(raw.toLowerCase()));
       if (hit) {
         const full = strip(hit.url);
         const host = full.split("/")[0];
-        const done = host.toLowerCase().startsWith(typed.toLowerCase()) && host.length > typed.length ? host : full;
-        addr.value = typed + done.slice(typed.length);
-        addr.setSelectionRange(typed.length, addr.value.length);
+        const done = host.toLowerCase().startsWith(raw.toLowerCase()) && host.length > raw.length ? host : full;
+        if (done.length > raw.length) showGhost(done.slice(raw.length));
       }
     }
     const rect = $("addrwrap").getBoundingClientRect();
@@ -489,6 +524,7 @@
   }
   addr.addEventListener("input", (e) => {
     typing = true;
+    clearGhost();
     // Isi otomatis hanya saat mengetik di akhir, tidak saat menghapus.
     autoOk = e.inputType === "insertText" || e.inputType === "insertFromPaste";
     typed = addr.value.trim();
@@ -496,26 +532,31 @@
     if (!typed) { hideOmni(); return; }
     sugTimer = setTimeout(() => send({ cmd: "suggest", text: typed }), 60);
   });
-  addr.addEventListener("blur", () => { hideOmni(); if (!addr.value.trim()) typing = false; });
+  addr.addEventListener("blur", () => { hideOmni(); clearGhost(); if (!addr.value.trim()) typing = false; });
+  addr.addEventListener("scroll", clearGhost);
+  addr.addEventListener("mousedown", () => clearGhost());
   addr.addEventListener("focus", () => setTimeout(() => addr.select(), 0));
   addr.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
-      go(addr.value, e.altKey);
+      go(ghost && omniSel < 0 ? addr.value + ghost : addr.value, e.altKey);
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       if (!omniItems.length) return;
       e.preventDefault();
       const n = omniItems.length;
       pickOmni(e.key === "ArrowDown" ? (omniSel + 1) % n : (omniSel - 1 + n) % n);
     } else if (e.key === "Escape") {
+      if (ghost) { clearGhost(); return; }
       if ($("omni").classList.contains("show")) { addr.value = typed; hideOmni(); return; }
       typing = false; addr.value = state.url; addr.blur(); send({ cmd: "focus-page" });
     } else if (e.key === "Delete" || e.key === "Backspace") {
       autoOk = false;
-    } else if ((e.key === "Tab" || e.key === "ArrowRight" || e.key === "End") && addr.selectionStart < addr.selectionEnd && addr.selectionEnd === addr.value.length && !e.shiftKey) {
-      // Terima isi otomatis: kursor ke akhir, teks tetap bisa diedit.
+      clearGhost();
+    } else if ((e.key === "Tab" || e.key === "ArrowRight" || e.key === "End") && ghost && !e.shiftKey && addr.selectionStart === addr.value.length) {
+      // Terima isi otomatis: sisa alamat masuk ke kolom, kursor di akhir, tetap bisa diedit.
       e.preventDefault();
-      addr.setSelectionRange(addr.value.length, addr.value.length);
-      typed = addr.value; typing = true;
+      acceptGhost();
+    } else if (e.key === "ArrowLeft" || e.key === "Home") {
+      clearGhost();
     }
   });
 

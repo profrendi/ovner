@@ -63,6 +63,25 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.1
+
+- **Pop-up dengan opener** (Infor Ming.le, OAuth, pembayaran): `window.open` kini dibuka
+  sebagai tab Ovner yang tetap tersambung ke halaman pembukanya, seperti Brave. Sebelumnya
+  tab baru dibuat terpisah sehingga `window.open` mengembalikan `null` dan aplikasi seperti
+  Infor LN berputar selamanya. `window.close()` dari pop-up menutup tabnya.
+- **Kolom alamat**: isi otomatis dari bookmark tampil sebagai teks bayangan; isi kolom tetap
+  persis yang diketik sehingga selalu bisa diedit. Tab/→/End menerima, Enter membuka alamat
+  lengkap.
+- **Pengelola sandi**: kotak saran tetap rapi di situs dengan CSP ketat (login Infor);
+  login disimpan untuk alamat halaman login, bukan halaman tujuan setelah masuk; nama
+  pengguna/email diisi ulang bila kolomnya muncul sedikit terlambat.
+- **Daftar filter seperti Brave** (Pengaturan → Daftar filter): 50+ daftar opsional dari
+  katalog Brave (AI suggestions, newsletter, promo aplikasi, media sosial, YouTube Shorts dan
+  lainnya, aplikasi chat, paywall, pornografi, regional, eksperimental) bisa dinyalakan satu
+  per satu. Daftar bawaan Brave yang dulu belum dipakai kini selalu aktif: uBlock filters
+  2020–2026, filters-general, resource abuse, link shorteners, URLhaus malware, Brave social,
+  first-party, sugarcoat, dan cookie-specific.
+
 ## Fitur baru di 0.7
 
 - **RAM per tab seperti Task Manager Windows**: tiap tab dipasangkan dengan proses halamannya
