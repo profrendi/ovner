@@ -141,7 +141,10 @@
   #bubble.v2 .dg div { min-width: 0; }
   #bubble.v2 .dg span { display: block; color: var(--muted); font-size: 10.5px; }
   #bubble.v2 .dg b { font-weight: 600; font-size: 12px; display: block; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  #bubble.v2 .sv { font-size: 11.5px; color: var(--muted); margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #bubble.v2 .sv { font-size: 11.5px; color: var(--muted); margin-top: 5px; line-height: 1.45; overflow-wrap: anywhere; }
+  #bubble.v2 .sv b { display: inline; font-size: inherit; cursor: auto; color: var(--text); font-weight: 600; white-space: normal; }
+  #bubble.v2 .ping.near { color: #2ea043; } #bubble.v2 .ping.mid { color: #d29922; } #bubble.v2 .ping.far { color: #e5534b; }
+  #bubble.v2 .sv b.yes { color: #2ea043; } #bubble.v2 .sv b.no { color: #e5534b; }
   #bubble.v2 .tg { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--field); color: var(--muted); margin-left: 6px; font-weight: 500; vertical-align: 1px; }
   #bubble.v2 .pc { float: right; font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
   #dlbtn { display: none; position: relative; }
@@ -1027,14 +1030,25 @@
       cell(W.dlElapsed, dur(d.elapsed || 0));
       cell(W.dlConns, d.video ? W.dlVideo : d.engine ? String(d.conns || (d.segs || []).length || 1) : W.dlWv);
       pb.after(g);
+      // Baris tambahan seperti IDM/MDM (bahasa Inggris): Resume capability dan Server + ping.
       const sv = d.server || {};
+      const info = document.createElement("div"); info.className = "sv";
+      const rc = d.resumable === true ? '<b class="yes">Yes</b>' : d.resumable === false ? '<b class="no">No</b>' : "<b>–</b>";
+      let html = `Resume capability: ${rc}`;
       if (sv.host) {
-        const line = document.createElement("div"); line.className = "sv";
         const where = [sv.city, sv.country].filter(Boolean).join(", ");
-        line.textContent = `${W.dlServer}: ${flag(sv.code)}${where || sv.host}${sv.km != null ? " · " + Math.round(sv.km).toLocaleString() + " km" : ""}${sv.org ? " · " + sv.org : ""}${sv.ip ? " · " + sv.ip : ""}`;
-        line.title = `${sv.host} ${sv.ip || ""}`;
-        g.after(line);
+        const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+        let ping = "";
+        if (sv.ping != null) {
+          const cls = sv.ping < 60 ? "near" : sv.ping < 150 ? "mid" : "far";
+          const word = cls === "near" ? "near" : cls === "mid" ? "medium" : "far";
+          ping = ` · <span class="ping ${cls}">about ${sv.ping} ms (${word})</span>`;
+        }
+        html += `<br>Server: ${flag(sv.code)}<b>${esc(where || sv.host)}</b>${sv.km != null ? " · " + Math.round(sv.km).toLocaleString() + " km" : ""}${ping}`;
+        html += `<br>${esc(sv.host)}${sv.ip ? " · " + esc(sv.ip) : ""}${sv.org ? " · " + esc(sv.org) : ""}`;
       }
+      info.innerHTML = html;
+      g.after(info);
     }
   }
   function sendHeight() {

@@ -91,6 +91,8 @@ struct Download {
     /// Video yang diunduh lewat yt-dlp.
     #[serde(default)]
     video: bool,
+    #[serde(skip)]
+    tab: u64,
 }
 
 /// Info tambahan unduhan untuk kotak unduhan (seperti IDM/Mister Download Manager).
@@ -104,6 +106,10 @@ struct DlMeta {
     eta: u64,
     /// Sedang menguji server sebelum mulai (ditampilkan langsung supaya terasa instan).
     connecting: bool,
+    /// Bisa dilanjutkan (server mendukung Range): Some(true/false) bila sudah diketahui.
+    resumable: Option<bool>,
+    /// Alamat untuk mencari lokasi server (mirror hasil pengalihan), kosong = alamat unduhan.
+    lookup_url: String,
 }
 const PAGE_CSS: &str = include_str!("ui/page.css");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
@@ -409,6 +415,9 @@ struct Tab {
     /// Perekam masalah halaman menyala untuk tab ini.
     recording: bool,
     rec_hooked: bool,
+    /// Unduhan WebView2 yang sedang berjalan dari tab ini: tab tidak boleh ditidurkan atau
+    /// ditangguhkan (WebView2 membatalkan unduhannya, lalu mulai ulang).
+    downloads_live: u32,
 }
 
 /// Statistik penghemat tab (seperti Lifetime Stats TabWars), disimpan di tab-stats.json.
@@ -1139,6 +1148,7 @@ impl App {
             popup: false,
             recording: false,
             rec_hooked: false,
+            downloads_live: 0,
         }
     }
 
@@ -1352,7 +1362,7 @@ impl App {
                         if media_policy == "timer" && t.media_hidden_at.is_none() {
                             t.media_hidden_at = Some(now);
                         }
-                    } else if suspend && !t.loading {
+                    } else if suspend && !t.loading && t.downloads_live == 0 {
                         if playing {
                             pause_media(wv);
                         }
@@ -1507,6 +1517,9 @@ impl App {
                         }
                         continue;
                     }
+                    if t.downloads_live > 0 {
+                        continue;
+                    }
                     win::try_suspend(wv);
                     t.suspended = true;
                 }
@@ -1578,7 +1591,7 @@ impl App {
         let mut changed = false;
         for j in 0..self.tabs.len() {
             let t = &self.tabs[j];
-            if self.is_shown(j) || t.webview.is_none() || t.last_active.elapsed() < limit {
+            if self.is_shown(j) || t.webview.is_none() || t.last_active.elapsed() < limit || t.downloads_live > 0 {
                 continue;
             }
             if t.webview.as_ref().is_some_and(playing_audio) && self.settings.borrow().background_media != "pause" {
@@ -1758,6 +1771,7 @@ impl App {
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
             "engine": d.engine, "speed": d.speed, "conns": d.conns, "video": d.video,
             "connecting": meta.is_some_and(|m| m.connecting),
+            "resumable": meta.and_then(|m| m.resumable),
             "eta": eta, "elapsed": meta.and_then(|m| m.started).map(|t| t.elapsed().as_secs()).unwrap_or(0),
             "server": meta.map(|m| m.server.clone()).unwrap_or(Value::Null), "segs": segs,
             "folder": Path::new(&d.path).parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
@@ -1805,6 +1819,7 @@ impl App {
                     speed: 0,
                     conns: 0,
                     video: false,
+                    tab: 0,
                 });
                 self.dl_meta.entry(id).or_default().connecting = true;
                 self.dl_bubble = true;
@@ -1814,12 +1829,26 @@ impl App {
                 let req = dlengine::Request { url, user_agent: ua, headers };
                 let p = self.proxy.clone();
                 std::thread::spawn(move || {
-                    let r = dlengine::probe(&req).map(|pr| pr.total);
+                    let mut req = req;
+                    let r = dlengine::probe(&req).map(|pr| {
+                        // Semua koneksi ke mirror yang sama (yang menjawab uji ini). Server seperti
+                        // mirror Parrot/SourceForge mengalihkan tiap permintaan ke mirror berbeda.
+                        if let Some(u) = pr.url {
+                            req.url = u;
+                        }
+                        pr.total
+                    });
                     send(&p, UserEvent::DlProbe(id, tab, req, path, r));
                 });
                 return;
             }
             win::DlEvent::Started { id, url, path, total } => {
+                if let Some(i) = self.tab_index(tab) {
+                    self.tabs[i].downloads_live += 1;
+                }
+                if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
+                    d.tab = tab;
+                }
                 let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| url.clone());
                 self.dl_meta.entry(id).or_default().connecting = false;
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
@@ -1846,6 +1875,7 @@ impl App {
                     speed: 0,
                     conns: 0,
                     video: false,
+                    tab: 0,
                 });
                 self.dl_bubble = true;
                 self.download_started(id);
@@ -1871,6 +1901,9 @@ impl App {
             }
             win::DlEvent::Done { id, ok, path, received } => {
                 self.trim_after_download();
+                if let Some(i) = self.tab_index(tab) {
+                    self.tabs[i].downloads_live = self.tabs[i].downloads_live.saturating_sub(1);
+                }
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.state = if ok { "done".into() } else { "failed".into() };
                     d.received = received;
@@ -1897,21 +1930,28 @@ impl App {
             return;
         }
         meta.server = json!({});
+        let lookup_url = meta.lookup_url.clone();
         let lookup = self.settings.borrow().dl_server_info;
         let Some(d) = self.downloads.iter().rev().find(|d| d.id == id) else { return };
-        let Some(host) = host_of(&d.url) else { return };
+        let Some(host) = host_of(if lookup_url.is_empty() { &d.url } else { &lookup_url }) else { return };
         let p = self.proxy.clone();
         std::thread::spawn(move || {
             use std::net::ToSocketAddrs;
-            let ip = (host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| a.next()).map(|a| a.ip().to_string()).unwrap_or_default();
-            send(&p, UserEvent::DlServer(id, json!({"host": host, "ip": ip})));
+            let addr = (host.as_str(), 443).to_socket_addrs().ok().and_then(|mut a| a.next());
+            let ip = addr.map(|a| a.ip().to_string()).unwrap_or_default();
+            // Ping = waktu membuka koneksi TCP ke server (seperti kolom "Server" di IDM/MDM).
+            let ping = addr.and_then(|a| {
+                let t = Instant::now();
+                std::net::TcpStream::connect_timeout(&a, Duration::from_secs(3)).ok().map(|_| t.elapsed().as_millis() as u64)
+            });
+            send(&p, UserEvent::DlServer(id, json!({"host": host, "ip": ip, "ping": ping})));
             if !lookup || ip.is_empty() {
                 return;
             }
             // Lokasi server dan jarak dari lokasi kita (keduanya dari ipwho.is, hanya alamat IP).
             let Some(v) = dlengine::get_text(&format!("https://ipwho.is/{ip}")).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
             let mut info = json!({
-                "host": host, "ip": ip,
+                "host": host, "ip": ip, "ping": ping,
                 "country": v["country"], "code": v["country_code"], "city": v["city"],
                 "org": v["connection"]["org"].as_str().or(v["connection"]["isp"].as_str()).unwrap_or(""),
             });
@@ -1940,6 +1980,7 @@ impl App {
             speed: 0,
             conns: 0,
             video: true,
+            tab: 0,
         });
         self.dl_bubble = true;
         self.download_started(id);
@@ -2032,8 +2073,20 @@ impl App {
             return;
         }
         let total = match res {
-            Ok(t) => t,
+            Ok(t) => {
+                let m = self.dl_meta.entry(id).or_default();
+                m.resumable = Some(true);
+                // Mirror berbeda dari alamat asal: cari lokasi server mirror itu.
+                if host_of(&req.url) != self.downloads.iter().rev().find(|d| d.id == id).and_then(|d| host_of(&d.url)) {
+                    m.lookup_url = req.url.clone();
+                    m.server = Value::Null;
+                }
+                t
+            }
             Err(e) => {
+                if e.contains("tidak mendukung") {
+                    self.dl_meta.entry(id).or_default().resumable = Some(false);
+                }
                 log(&format!("unduhan biasa (WebView2): {e}"));
                 win::resolve_download(id, false);
                 return;
@@ -2068,6 +2121,7 @@ impl App {
                         speed: 0,
                         conns: 0,
                         video: false,
+                        tab: 0,
                     }),
                 }
                 self.dl_jobs.insert(id, (job, tab));
@@ -2117,8 +2171,11 @@ impl App {
                     self.refresh_pages("downloads");
                     return;
                 }
-                if !ok && err != "dibatalkan" {
-                    // Gagal di tengah jalan (mis. tautan sekali pakai): ulangi lewat WebView2.
+                if !ok && err != "dibatalkan" && received > 1_048_576 {
+                    // Sudah berjalan jauh: jangan mulai ulang dari nol lewat WebView2.
+                    log(&format!("mesin unduh Ovner gagal setelah {} MB: {err}", received / 1_048_576));
+                } else if !ok && err != "dibatalkan" {
+                    // Gagal sejak awal (mis. tautan sekali pakai): ulangi lewat WebView2.
                     log(&format!("mesin unduh Ovner gagal: {err}; diulang dengan WebView2"));
                     self.dl_skip.borrow_mut().insert(url.clone());
                     let tab = job.map(|j| j.1).and_then(|t| self.tab_index(t)).filter(|&i| self.tabs[i].webview.is_some()).unwrap_or(self.active);
@@ -2566,7 +2623,7 @@ impl App {
             t.media_hidden_at = None;
             if let Some(wv) = &t.webview {
                 pause_media(wv);
-                if suspend {
+                if suspend && t.downloads_live == 0 {
                     win::try_suspend(wv);
                     t.suspended = true;
                 }

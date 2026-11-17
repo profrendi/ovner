@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 
 /// Bagian terkecil yang masih dibelah untuk koneksi lain.
 const MIN_SPLIT: u64 = 512 * 1024;
-const MAX_FAILS: u32 = 6;
+/// Percobaan gagal berturut-turut per bagian sebelum menyerah (direset setiap kali ada data).
+const MAX_FAILS: u32 = 20;
 
 /// Permintaan HTTP: alamat dan tajuk tambahan (Cookie, Referer). User agent terpisah.
 #[derive(Clone, Debug, Default)]
@@ -38,6 +39,8 @@ pub struct Probe {
     pub status: u16,
     /// Ukuran lengkap berkas (dari Content-Range).
     pub total: u64,
+    /// Alamat akhir setelah pengalihan: semua bagian memakai mirror yang sama.
+    pub url: Option<String>,
 }
 
 /// Kabar dari unduhan ke Ovner.
@@ -51,10 +54,20 @@ pub enum Update {
 #[derive(Debug, Default)]
 struct Head {
     status: u16,
+    /// Alamat akhir setelah pengalihan (mirror yang benar-benar melayani).
+    final_url: Option<String>,
     /// Ukuran lengkap dari `Content-Range: bytes a-b/TOTAL`.
     range_total: Option<u64>,
     /// Awal rentang yang benar-benar dikirim server.
     range_start: Option<u64>,
+}
+
+/// Isi respons boleh ditulis: tanpa Range cukup 200/206; dengan Range harus 206 dari posisi yang diminta.
+fn body_ok(h: &Head, range: Option<(u64, u64)>) -> bool {
+    match range {
+        Some((a, _)) => h.status == 206 && h.range_start == Some(a),
+        None => h.status == 200 || h.status == 206,
+    }
 }
 
 /// Baca tajuk mentah (CRLF) menjadi [`Head`].
@@ -86,7 +99,7 @@ pub fn probe(req: &Request) -> Result<Probe, String> {
         got < 4096
     })?;
     match (head.status, head.range_total, head.range_start) {
-        (206, Some(total), Some(0)) if total > 0 => Ok(Probe { status: 206, total }),
+        (206, Some(total), Some(0)) if total > 0 => Ok(Probe { status: 206, total, url: head.final_url.clone().filter(|u| u.starts_with("http") && *u != req.url) }),
         (s, _, _) => Err(format!("server tidak mendukung unduhan bersegmen (HTTP {s})")),
     }
 }
@@ -408,6 +421,10 @@ fn worker(sh: &Shared, idx: usize) {
         if seg.pos >= seg.end || sh.state.load(Ordering::SeqCst) != RUN {
             break;
         }
+        // Ada kemajuan pada percobaan ini: gangguan sebelumnya sudah lewat.
+        if seg.pos > pos {
+            seg.fails = 0;
+        }
         match bad {
             Some(e) => {
                 seg.fails += 1;
@@ -415,7 +432,8 @@ fn worker(sh: &Shared, idx: usize) {
                 if seg.fails >= MAX_FAILS {
                     break;
                 }
-                let wait = 400 * seg.fails as u64;
+                // Jeda makin lama (0,5 s … 10 s) supaya gangguan jaringan/mirror sempat pulih.
+                let wait = (500 * seg.fails as u64).min(10_000);
                 drop(segs);
                 std::thread::sleep(Duration::from_millis(wait));
             }
@@ -506,7 +524,20 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
                 String::new()
             };
             let head = parse_head(&raw);
-            if head.status == 200 || head.status == 206 {
+            // Baca isi hanya bila server benar-benar mengirim rentang yang diminta. Server/mirror
+            // yang mengabaikan Range mengirim berkas dari awal (HTTP 200); dulu isinya tetap
+            // ditulis di posisi bagian sehingga berkas rusak.
+            let mut head = head;
+            let mut ulen = 0u32;
+            let _ = WinHttpQueryOption(hreq, WINHTTP_OPTION_URL, None, &mut ulen);
+            if ulen > 0 {
+                let mut ub = vec![0u16; ulen as usize / 2 + 1];
+                let mut ul = (ub.len() * 2) as u32;
+                if WinHttpQueryOption(hreq, WINHTTP_OPTION_URL, Some(ub.as_mut_ptr() as *mut _), &mut ul).is_ok() {
+                    head.final_url = Some(String::from_utf16_lossy(&ub[..(ul as usize / 2).min(ub.len())]).trim_end_matches('\0').to_string());
+                }
+            }
+            if body_ok(&head, range) {
                 let mut chunk = vec![0u8; 64 * 1024];
                 loop {
                     let mut n = 0u32;
@@ -563,7 +594,7 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
         }
     };
     let parsed = parse_head(&String::from_utf8_lossy(&buf[..body_start]));
-    if parsed.status == 200 || parsed.status == 206 {
+    if body_ok(&parsed, range) {
         if body_start < buf.len() && !on_data(&buf[body_start..]) {
             return Ok(parsed);
         }

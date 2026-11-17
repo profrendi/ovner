@@ -63,6 +63,20 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.5
+
+- **Unduhan bersegmen tidak lagi gagal di tengah jalan lalu mulai dari nol.** Semua koneksi kini
+  memakai mirror yang sama (hasil pengalihan pertama; server seperti Parrot mengirim tiap
+  permintaan ke mirror berbeda), tiap bagian boleh gagal 20 kali dengan jeda makin lama, hitungan
+  gagal direset setiap ada data, dan unduhan yang sudah berjalan tidak lagi diulang dari nol
+  lewat WebView2.
+- **Berkas tidak bisa rusak oleh mirror yang mengabaikan Range**: respons yang bukan rentang
+  yang diminta tidak ditulis.
+- **Pindah tab tidak lagi membatalkan unduhan WebView2**: tab yang sedang mengunduh tidak
+  ditidurkan/ditangguhkan.
+- Download box v2: baris **Resume capability** (Yes/No), **ping server** (hijau near, kuning
+  medium, merah far), dan IP/host/penyedia tampil lengkap tanpa terpotong.
+
 ## Perbaikan 0.8.4
 
 - **RAM tidak lagi membengkak saat/sesudah mengunduh.** Penyebabnya proses toolbar Ovner (di
