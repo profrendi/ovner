@@ -98,6 +98,9 @@ struct Download {
     /// Video yang ditunda ("Nanti" di dialog unduh video): dimulai saat dilanjutkan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vspec: Option<video::Spec>,
+    /// Alasan gagal (ditampilkan di daftar unduhan; dulu ditempel ke nama berkas).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    error: String,
 }
 
 /// Kabar jalur koneksi Ovner untuk PDF (nomor jalur, isi).
@@ -159,6 +162,8 @@ impl PdfRace {
 /// Info tambahan unduhan untuk kotak unduhan (seperti IDM/Mister Download Manager).
 #[derive(Default)]
 struct DlMeta {
+    /// Kabar persiapan unduhan video (mengunduh yt-dlp/ffmpeg/Deno), tampil di baris status.
+    note: String,
     started: Option<Instant>,
     /// (waktu, byte) sampel terakhir untuk menghitung kecepatan unduhan WebView2.
     last: Option<(Instant, i64)>,
@@ -2191,7 +2196,8 @@ impl App {
             Vec::new()
         };
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
-            "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(),
+            "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(), "error": d.error,
+            "note": self.dl_meta.get(&d.id).map(|m| m.note.clone()).unwrap_or_default(),
             "conns": if meta.is_some_and(|m| m.pdf) {
                 // PDF: respons halaman + koneksi kedua Ovner yang masih berjalan.
                 let lanes = self.pdf_race.get(&d.id).map_or(0, |r| r.lanes_running());
@@ -2328,6 +2334,7 @@ impl App {
                     conns: 0,
                     video: false,
                     vspec: None,
+                    error: String::new(),
                     tab: 0,
                 });
                 self.dl_meta.entry(id).or_default().connecting = true;
@@ -2401,6 +2408,7 @@ impl App {
                     conns: 0,
                     video: false,
                     vspec: None,
+                    error: String::new(),
                     tab: 0,
                 });
                 self.dl_bubble = true;
@@ -2824,6 +2832,7 @@ impl App {
                 conns: 0,
                 video: false,
                 vspec: None,
+                error: String::new(),
                 tab: 0,
             });
             let started = self.dl_waiting.get(&id).map(|w| w.2);
@@ -2996,7 +3005,8 @@ impl App {
         log(&format!("telusuri video: {url}"));
         std::thread::spawn(move || {
             let note = |what: &str| send(&p, UserEvent::VideoInfo(req, Ok(json!({"note": tf(lang, "d.video_tools", &[("t", what)])}))));
-            let r = video::ensure_tools(&data, false, &note).and_then(|_| video::probe(&data, &url));
+            let needs = video::Needs { ffmpeg: false, deno: video::is_youtube(&url) };
+            let r = video::ensure_tools(&data, needs, &note).and_then(|_| video::probe(&data, &url));
             send(&p, UserEvent::VideoInfo(req, r));
         });
     }
@@ -3042,6 +3052,7 @@ impl App {
             video: true,
             tab: 0,
             vspec: later.then(|| spec.clone()),
+            error: String::new(),
         });
         self.dl_bubble = true;
         if later {
@@ -3063,8 +3074,8 @@ impl App {
         let lang = self.lang;
         log(&format!("unduh video ({}): {}", spec.key, spec.page));
         std::thread::spawn(move || {
-            let note = |what: &str| send(&p, UserEvent::Video(id, video::Event::Title(tf(lang, "d.video_tools", &[("t", what)]))));
-            if let Err(e) = video::ensure_tools(&data, spec.needs_ffmpeg(), &note) {
+            let note = |what: &str| send(&p, UserEvent::Video(id, video::Event::Note(tf(lang, "d.video_tools", &[("t", what)]))));
+            if let Err(e) = video::ensure_tools(&data, spec.needs(), &note) {
                 send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e }));
                 return;
             }
@@ -3079,9 +3090,19 @@ impl App {
     fn on_video(&mut self, id: u64, ev: video::Event) {
         let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) else { return };
         match ev {
-            video::Event::Title(t) => d.name = t,
+            // Nama berkas sudah ditentukan di dialog (judul + ekstensi pilihan).
+            video::Event::Title(t) => {
+                if d.name.is_empty() {
+                    d.name = t;
+                }
+            }
+            video::Event::Note(n) => {
+                self.dl_meta.entry(id).or_default().note = n;
+                self.last_render_key.clear();
+            }
             video::Event::Path(p) => d.path = p,
             video::Event::Progress { received, total, speed, eta } => {
+                self.dl_meta.entry(id).or_default().note.clear();
                 d.received = received as i64;
                 d.total = total as i64;
                 d.speed = speed;
@@ -3103,7 +3124,8 @@ impl App {
                         delete_download_files(&d.path);
                     }
                     log(&format!("unduh video gagal: {error}"));
-                    d.name = format!("{} ({error})", d.name);
+                    d.error = error;
+                    self.dl_meta.entry(id).or_default().note.clear();
                 }
                 self.video_jobs.remove(&id);
                 self.trim_after_download();
@@ -3176,6 +3198,7 @@ impl App {
                         conns: 0,
                         video: false,
                         vspec: None,
+                        error: String::new(),
                         tab: 0,
                     }),
                 }
@@ -6878,6 +6901,13 @@ fn main() {
                 std::fs::read_to_string(data_dir().join("downloads.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             // Unduhan yang belum selesai saat Ovner ditutup tidak bisa dilanjutkan lagi.
             for d in &mut v {
+                // 0.8.15: kabar "Menyiapkan komponen …" dan galatnya tertempel di nama unduhan video.
+                if d.video && (d.name.starts_with("Preparing component") || d.name.starts_with("Menyiapkan komponen")) {
+                    if let Some(k) = d.name.find("… (") {
+                        d.error = d.name[k + "… (".len()..].trim_end_matches(')').to_string();
+                    }
+                    d.name = d.url.clone();
+                }
                 // Video yang ditunda tetap menunggu dilanjutkan.
                 if d.state == "paused" && d.vspec.is_some() {
                     continue;

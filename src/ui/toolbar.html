@@ -1086,8 +1086,9 @@
         it.innerHTML = `<div class="dn"><b></b><div class="ds"></div>${live ? `<div class="pb"><i style="width:${pct}%"></i></div>` : ""}</div><button class="db pz"></button><button class="db"></button>`;
         it.querySelector("b").textContent = d.name;
         if (state.dlV2) v2item(it, d, live, pct);
-        else it.querySelector(".ds").textContent = live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
-          : d.state === "failed" ? W.dlFailed : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+        else it.querySelector(".ds").textContent = live && d.note ? d.note : live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
+          : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+        if (d.error) it.querySelector(".ds").title = d.error;
         const pz = it.querySelector(".pz");
         if ((d.engine || d.later) && live) {
           pz.innerHTML = d.state === "paused"
@@ -1122,8 +1123,10 @@
     ds.innerHTML = `<span class="pc"></span><span class="st"></span>`;
     ds.querySelector(".pc").textContent = live ? pcTxt : "";
     ds.querySelector(".st").textContent = d.connecting ? W.dlConnecting
+      : live && d.note ? d.note
       : live ? `${sizeOf(d.received) || "0 KB"}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : ""}`
-      : d.state === "failed" ? W.dlFailed : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+      : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+    if (d.error) ds.title = d.error;
     const old = dn.querySelector(".pb"); if (old) old.remove();
     if (live) {
       const pb = document.createElement("div"); pb.className = "pb" + (d.connecting || !(d.total > 0) ? " ind" : "");

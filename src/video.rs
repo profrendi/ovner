@@ -12,7 +12,17 @@ use std::sync::{Arc, Mutex};
 pub const YTDLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 #[cfg(not(windows))]
 pub const YTDLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
-pub const FFMPEG_URL: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip";
+/// ffmpeg + ffprobe (build "shared": ±87 MB, setengah dari build statis). Varian LGPL yang dulu
+/// dipakai sudah tidak diterbitkan yt-dlp/FFmpeg-Builds (unduhan 404 → galat 0x800C0006 di
+/// 0.8.15), jadi ada beberapa sumber cadangan.
+pub const FFMPEG_URLS: &[&str] = &[
+    "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip",
+    "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip",
+    "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+];
+/// Deno: runtime JavaScript yang sejak yt-dlp 2025.11.12 dibutuhkan untuk YouTube (memecahkan
+/// tantangan JavaScript YouTube; tanpa ini format bisa kurang atau unduhan ditolak 403).
+pub const DENO_URL: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 
 /// Situs video yang didukung yt-dlp dan sering dipakai.
 const VIDEO_HOSTS: &[&str] = &[
@@ -42,49 +52,196 @@ pub fn ytdlp(data: &Path) -> PathBuf {
     tools_dir(data).join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" })
 }
 
-pub fn ffmpeg(data: &Path) -> PathBuf {
-    tools_dir(data).join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
+/// Folder ffmpeg (ffmpeg, ffprobe, dan DLL-nya); diberikan ke yt-dlp lewat --ffmpeg-location.
+pub fn ffmpeg_dir(data: &Path) -> PathBuf {
+    tools_dir(data).join("ffmpeg")
 }
 
-/// Pastikan yt-dlp (dan ffmpeg bila `need_ffmpeg`) ada. Memblokir: panggil dari thread latar.
-pub fn ensure_tools(data: &Path, need_ffmpeg: bool, note: &dyn Fn(&str)) -> Result<(), String> {
+pub fn ffmpeg(data: &Path) -> PathBuf {
+    ffmpeg_dir(data).join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
+}
+
+pub fn deno(data: &Path) -> PathBuf {
+    tools_dir(data).join(if cfg!(windows) { "deno.exe" } else { "deno" })
+}
+
+/// Halaman YouTube (butuh Deno untuk yt-dlp).
+pub fn is_youtube(url: &str) -> bool {
+    let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
+    host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com") || host.ends_with(".youtube-nocookie.com")
+}
+
+/// Komponen yang dibutuhkan sebuah pekerjaan.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Needs {
+    pub ffmpeg: bool,
+    pub deno: bool,
+}
+
+/// Satu pemasangan komponen pada satu waktu: dua penelusuran/unduhan bersamaan dulu menulis ke
+/// berkas sementara yang sama sehingga salah satunya gagal "Operation aborted (0x80004004)".
+static TOOLS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Unduh `url` ke `dest` sambil melaporkan MB yang diterima. Windows: mesin WinHTTP Ovner
+/// (mengikuti pengalihan GitHub, tanpa cache IE); Linux: curl.
+fn fetch(url: &str, dest: &Path, what: &str, note: &dyn Fn(&str)) -> Result<(), String> {
+    let _ = std::fs::remove_file(dest);
+    #[cfg(windows)]
+    {
+        let req = crate::dlengine::Request {
+            url: url.to_string(),
+            user_agent: format!("Ovner/{}", env!("CARGO_PKG_VERSION")),
+            headers: Vec::new(),
+            if_range: None,
+            wait_secs: 60,
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let r = crate::dlengine::fetch_whole(&req, dest, false, &cancel, |got| note(&format!("{what} ({} MB)", got / 1_048_576)));
+        if let Err(e) = r {
+            let _ = std::fs::remove_file(dest);
+            return Err(e);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        note(what);
+        crate::win::download(url, dest).inspect_err(|_| {
+            let _ = std::fs::remove_file(dest);
+        })
+    }
+}
+
+/// Coba sumber satu per satu; galat terakhir dilaporkan bila semuanya gagal.
+fn fetch_any(urls: &[&str], dest: &Path, what: &str, note: &dyn Fn(&str)) -> Result<(), String> {
+    let mut last = String::from("tidak ada sumber");
+    for u in urls {
+        match fetch(u, dest, what, note) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                crate::log(&format!("unduh {what} dari {u} gagal: {e}"));
+                last = e;
+            }
+        }
+    }
+    Err(format!("{what} tidak bisa diunduh: {last}"))
+}
+
+/// Buka zip `zip` ke folder sementara (tar bawaan Windows 10/11 bisa membuka zip).
+fn unzip(zip: &Path, out: &Path) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(out);
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("tar");
+    cmd.arg("-xf").arg(zip).arg("-C").arg(out);
+    hide_window(&mut cmd);
+    let st = cmd.status().map_err(|e| format!("tar: {e}"))?;
+    if !st.success() {
+        return Err("arsip zip tidak bisa dibuka".into());
+    }
+    Ok(())
+}
+
+/// Pastikan yt-dlp (selalu), ffmpeg dan Deno (bila diminta) ada; yt-dlp diperbarui bila sudah
+/// lebih dari 3 hari (YouTube sering berubah). Memblokir: panggil dari thread latar.
+pub fn ensure_tools(data: &Path, needs: Needs, note: &dyn Fn(&str)) -> Result<(), String> {
+    let _guard = TOOLS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tools_dir(data);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let y = ytdlp(data);
     if !y.exists() {
-        note("yt-dlp");
         let tmp = dir.join("yt-dlp.download");
-        crate::win::download(YTDLP_URL, &tmp)?;
+        fetch_any(&[YTDLP_URL], &tmp, "yt-dlp", note)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
         }
         std::fs::rename(&tmp, &y).map_err(|e| e.to_string())?;
+        let _ = std::fs::write(dir.join("yt-dlp.checked"), b"1");
+    } else {
+        let mark = dir.join("yt-dlp.checked");
+        let stale = std::fs::metadata(&mark).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|d| d.as_secs() > 3 * 86_400);
+        if stale {
+            note("yt-dlp (memperbarui)");
+            let mut cmd = Command::new(&y);
+            cmd.arg("-U").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            hide_window(&mut cmd);
+            match cmd.output() {
+                Ok(o) => {
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    crate::log(&format!("yt-dlp -U: {}", out.lines().last().unwrap_or("").trim()));
+                }
+                Err(e) => crate::log(&format!("yt-dlp -U gagal: {e}")),
+            }
+            let _ = std::fs::write(&mark, b"1");
+        }
     }
-    let f = ffmpeg(data);
-    if need_ffmpeg && !f.exists() {
-        note("ffmpeg");
-        let zip = dir.join("ffmpeg.zip");
-        crate::win::download(FFMPEG_URL, &zip)?;
-        let out = dir.join("ffmpeg-extract");
-        let _ = std::fs::remove_dir_all(&out);
-        std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-        // tar bawaan Windows 10/11 (bsdtar) bisa membuka zip.
-        let mut cmd = Command::new("tar");
-        cmd.arg("-xf").arg(&zip).arg("-C").arg(&out);
-        hide_window(&mut cmd);
-        let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
-        let found = ok.then(|| find_file(&out, if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })).flatten();
-        let res = match found {
-            Some(p) => std::fs::rename(&p, &f).or_else(|_| std::fs::copy(&p, &f).map(|_| ())).map_err(|e| e.to_string()),
-            None => Err("ffmpeg tidak ditemukan di arsip".into()),
-        };
+    if needs.deno && cfg!(windows) && !deno(data).exists() {
+        let zip = dir.join("deno.zip.download");
+        let out = dir.join("deno-extract");
+        let r = fetch_any(&[DENO_URL], &zip, "Deno", note).and_then(|_| unzip(&zip, &out)).and_then(|_| {
+            let f = find_file(&out, "deno.exe").ok_or("deno.exe tidak ditemukan di arsip")?;
+            std::fs::rename(&f, deno(data)).or_else(|_| std::fs::copy(&f, deno(data)).map(|_| ())).map_err(|e| e.to_string())
+        });
         let _ = std::fs::remove_dir_all(&out);
         let _ = std::fs::remove_file(&zip);
-        res?;
+        // Tanpa Deno yt-dlp masih bisa mencoba (format mungkin lebih sedikit): jangan gagalkan.
+        if let Err(e) = r {
+            crate::log(&format!("Deno tidak terpasang, yt-dlp jalan tanpa runtime JavaScript: {e}"));
+        }
+    }
+    if needs.ffmpeg && cfg!(windows) && !ffmpeg(data).exists() {
+        let zip = dir.join("ffmpeg.zip.download");
+        fetch_any(FFMPEG_URLS, &zip, "ffmpeg", note)?;
+        note("ffmpeg (membuka arsip)");
+        let out = dir.join("ffmpeg-extract");
+        let target = ffmpeg_dir(data);
+        let r = unzip(&zip, &out).and_then(|_| {
+            // Folder bin: ffmpeg.exe, ffprobe.exe, dan DLL build "shared". ffplay tidak perlu.
+            let exe = find_file(&out, "ffmpeg.exe").ok_or("ffmpeg.exe tidak ditemukan di arsip")?;
+            let bin = exe.parent().ok_or("arsip ffmpeg aneh")?.to_path_buf();
+            let _ = std::fs::remove_dir_all(&target);
+            std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            for e in std::fs::read_dir(&bin).map_err(|e| e.to_string())?.flatten() {
+                let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+                if name == "ffplay.exe" || !(name.ends_with(".exe") || name.ends_with(".dll")) {
+                    continue;
+                }
+                std::fs::rename(e.path(), target.join(e.file_name()))
+                    .or_else(|_| std::fs::copy(e.path(), target.join(e.file_name())).map(|_| ()))
+                    .map_err(|e| e.to_string())?;
+            }
+            if ffmpeg(data).exists() {
+                Ok(())
+            } else {
+                Err("ffmpeg.exe tidak tersalin".into())
+            }
+        });
+        let _ = std::fs::remove_dir_all(&out);
+        let _ = std::fs::remove_file(&zip);
+        if r.is_err() {
+            let _ = std::fs::remove_dir_all(&target);
+        }
+        r?;
     }
     Ok(())
+}
+
+/// Argumen yt-dlp untuk komponen yang tersedia (ffmpeg dan Deno milik Ovner).
+pub fn tool_args(data: &Path) -> Vec<std::ffi::OsString> {
+    let mut a: Vec<std::ffi::OsString> = Vec::new();
+    if ffmpeg(data).exists() {
+        a.push("--ffmpeg-location".into());
+        a.push(ffmpeg_dir(data).into_os_string());
+    }
+    let d = deno(data);
+    if d.exists() {
+        let mut v = std::ffi::OsString::from("deno:");
+        v.push(d.as_os_str());
+        a.push("--js-runtimes".into());
+        a.push(v);
+    }
+    a
 }
 
 fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
@@ -114,6 +271,8 @@ fn hide_window(cmd: &mut Command) {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Title(String),
+    /// Kabar persiapan (mis. "ffmpeg (35 MB)"), bukan nama berkas.
+    Note(String),
     /// Nama berkas akhir (untuk menghapus sisa .part bila dibatalkan).
     Path(String),
     Progress { received: u64, total: u64, speed: u64, eta: u64 },
@@ -179,12 +338,15 @@ impl Spec {
     pub fn needs_ffmpeg(&self) -> bool {
         self.key != "a:m4a"
     }
+    pub fn needs(&self) -> Needs {
+        Needs { ffmpeg: self.needs_ffmpeg(), deno: is_youtube(&self.page) }
+    }
 }
 
 /// Ekstensi berkas hasil untuk sebuah pilihan.
 pub fn ext_for(key: &str) -> &'static str {
     match key {
-        "a:m4a" => "m4a",
+        "a:m4a" | "a:m4ax" => "m4a",
         "a:opus" => "opus",
         "a:flac" => "flac",
         k if k.starts_with("a:mp3") => "mp3",
@@ -223,14 +385,18 @@ pub fn args_for(spec: &Spec) -> Vec<String> {
         a.extend(["--merge-output-format".into(), "mp4".into()]);
     } else if key == "a:m4a" {
         f("ba[ext=m4a]/ba");
+    } else if key == "a:m4ax" {
+        // Halaman tanpa format audio terpisah (pemutar video biasa): suara diambil dari videonya.
+        f("ba[ext=m4a]/ba/b");
+        a.extend(["-x".into(), "--audio-format".into(), "m4a".into()]);
     } else if key == "a:opus" {
-        f("ba[acodec=opus]/ba");
+        f("ba[acodec=opus]/ba/b");
         a.extend(["-x".into(), "--audio-format".into(), "opus".into()]);
     } else if key == "a:flac" {
-        f("ba");
+        f("ba/b");
         a.extend(["-x".into(), "--audio-format".into(), "flac".into()]);
     } else if let Some(q) = key.strip_prefix("a:mp3:") {
-        f("ba");
+        f("ba/b");
         let q = if q == "0" { "0".to_string() } else { format!("{}K", q.parse::<u32>().unwrap_or(192)) };
         a.extend(["-x".into(), "--audio-format".into(), "mp3".into(), "--audio-quality".into(), q]);
     } else {
@@ -289,7 +455,8 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
         list.push(json!({"key": "v:best", "label": "MP4", "size": fmts.last().map(size).unwrap_or(0), "ext": "mp4", "kind": "video"}));
     }
     let est = |kbps: f64| (kbps * 1000.0 / 8.0 * dur) as u64;
-    list.push(json!({"key": "a:m4a", "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": a_size, "ext": "m4a", "kind": "audio"}));
+    let m4a_key = if audio.is_empty() { "a:m4ax" } else { "a:m4a" };
+    list.push(json!({"key": m4a_key, "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": if dur > 0.0 || best_m4a.is_some() { a_size } else { 0 }, "ext": "m4a", "kind": "audio"}));
     list.push(json!({"key": "a:mp3:0", "label": "Audio MP3 VBR", "en": "Audio only MP3 VBR", "size": est(245.0), "ext": "mp3", "kind": "audio", "approx": true}));
     for k in [320, 256, 192, 128] {
         list.push(json!({"key": format!("a:mp3:{k}"), "label": format!("Audio MP3 {k} kbps"), "en": format!("Audio only MP3 {k} kbps"), "size": est(k as f64), "ext": "mp3", "kind": "audio"}));
@@ -323,7 +490,7 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
 /// Telusuri halaman dengan yt-dlp (`-J`): daftar format, judul, subtitle. Memblokir.
 pub fn probe(data: &Path, page_url: &str) -> Result<serde_json::Value, String> {
     let mut cmd = Command::new(ytdlp(data));
-    cmd.args(["-J", "--no-playlist", "--no-warnings", "--no-colors"]).arg(page_url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(["-J", "--no-playlist", "--no-warnings", "--no-colors"]).args(tool_args(data)).arg(page_url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut cmd);
     let out = cmd.output().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
     if !out.status.success() {
@@ -337,7 +504,6 @@ pub fn probe(data: &Path, page_url: &str) -> Result<serde_json::Value, String> {
 
 /// Mulai mengunduh sesuai `spec`. `cb` dipanggil dari thread latar.
 pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'static) -> Result<Job, String> {
-    let have_ff = ffmpeg(data).exists();
     let mut cmd = Command::new(ytdlp(data));
     cmd.args(["--newline", "--no-colors", "--no-playlist", "--no-simulate", "--progress", "--no-mtime"])
         .args(["--progress-template", "download:[ovner] %(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s"])
@@ -347,9 +513,7 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
         .args(args_for(spec))
         .arg("-o")
         .arg(Path::new(&spec.dir).join(format!("{}.%(ext)s", strip_ext(&spec.name).replace('%', "%%"))));
-    if have_ff {
-        cmd.arg("--ffmpeg-location").arg(ffmpeg(data));
-    }
+    cmd.args(tool_args(data));
     cmd.arg(&spec.page).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     hide_window(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
@@ -408,6 +572,61 @@ mod tests {
         assert_eq!(parse_line("[ovner-title] Naruto OP 1"), Some(Event::Title("Naruto OP 1".into())));
         assert!(matches!(parse_line("[ovner-file] C:\\Users\\x\\Downloads\\a.mp4"), Some(Event::Done { ok: true, .. })));
         assert_eq!(parse_line("[youtube] abc: Downloading webpage"), None);
+    }
+
+    /// Uji ujung ke ujung (tanpa internet): halaman lokal berisi <video>, yt-dlp dan ffmpeg di
+    /// OVNER_VIDEO_E2E_DATA/tools, alamat halaman di OVNER_VIDEO_E2E_URL.
+    #[test]
+    #[ignore]
+    fn video_e2e() {
+        let data = PathBuf::from(std::env::var("OVNER_VIDEO_E2E_DATA").unwrap());
+        let url = std::env::var("OVNER_VIDEO_E2E_URL").unwrap();
+        let info = probe(&data, &url).expect("probe");
+        eprintln!("{info}");
+        let out = data.join("out");
+        let _ = std::fs::remove_dir_all(&out);
+        for c in info["choices"].as_array().unwrap() {
+            let key = c["key"].as_str().unwrap().to_string();
+            if !["v:best", "a:m4ax", "a:mp3:192", "a:flac"].contains(&key.as_str()) {
+                continue;
+            }
+            let spec = Spec { page: url.clone(), key: key.clone(), dir: out.display().to_string(), name: format!("tes {key}.mp4").replace(':', "_"), ..Default::default() };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _job = start(&data, &spec, move |ev| {
+                let _ = tx.send(ev);
+            })
+            .unwrap();
+            let done = loop {
+                match rx.recv_timeout(std::time::Duration::from_secs(60)).expect("kejadian") {
+                    ev @ Event::Done { .. } => break ev,
+                    _ => {}
+                }
+            };
+            eprintln!("{key}: {done:?}");
+            let Event::Done { ok, path, .. } = done else { unreachable!() };
+            assert!(ok, "{key}");
+            assert!(path.ends_with(&format!(".{}", ext_for(&key))), "{key}: {path}");
+            assert!(std::fs::metadata(&path).unwrap().len() > 1000);
+        }
+    }
+
+    /// Dua penelusuran bersamaan saat yt-dlp belum ada (dulu: "Operation aborted 0x80004004").
+    #[test]
+    #[ignore]
+    fn tools_parallel() {
+        let data = std::env::temp_dir().join(format!("ovner-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let hs: Vec<_> = (0..3)
+            .map(|_| {
+                let d = data.clone();
+                std::thread::spawn(move || ensure_tools(&d, Needs::default(), &|_| {}))
+            })
+            .collect();
+        for h in hs {
+            assert_eq!(h.join().unwrap(), Ok(()));
+        }
+        assert!(ytdlp(&data).exists());
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

@@ -71,6 +71,27 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.16
+
+- **Unduh video YouTube gagal "The system cannot locate the object specified (0x800C0006)".**
+  Akar masalah: berkas ffmpeg yang diunduh Ovner (`ffmpeg-master-latest-win64-lgpl.zip`) sudah
+  tidak diterbitkan lagi oleh yt-dlp/FFmpeg-Builds, jadi alamatnya 404. Kini Ovner memakai build
+  `win64-gpl-shared` (±87 MB, setengah dari build statis) dengan dua sumber cadangan, dan memasang
+  seluruh isi folder `bin` (ffmpeg, **ffprobe**, DLL) ke `tools\ffmpeg`. ffprobe juga dibutuhkan
+  yt-dlp untuk mengubah ke MP3/OPUS/FLAC.
+- **"Telusuri video gagal: Operation aborted (0x80004004)".** Akar masalah: dua penelusuran
+  berjalan bersamaan saat yt-dlp belum terpasang, keduanya menulis ke berkas sementara yang sama.
+  Kini pemasangan komponen dikunci (satu per satu) dan diunduh lewat mesin WinHTTP Ovner (tanpa
+  cache IE) dengan tampilan MB yang sudah diterima.
+- **YouTube butuh Deno.** Sejak yt-dlp 2025.11.12 YouTube memerlukan runtime JavaScript; Ovner
+  memasang Deno (±43 MB, sekali) ke `tools` dan memberikannya ke yt-dlp (`--js-runtimes`).
+  yt-dlp juga diperbarui otomatis (`yt-dlp -U`) bila sudah lebih dari 3 hari.
+- **Daftar unduhan:** kabar "Menyiapkan komponen…" tidak lagi menimpa nama berkas; alasan gagal
+  tampil di baris status ("Gagal / dibatalkan: …"). Entri lama yang rusak dirapikan otomatis.
+- Halaman tanpa format audio terpisah (pemutar video biasa): pilihan audio diambil dari videonya.
+- Penghentian respons PDF yang disengaja (jalur Ovner lebih cepat) tidak lagi tercatat sebagai
+  galat di Diagnostik.
+
 ## Perbaikan 0.8.15
 
 - **Tombol "Unduh video" langsung di atas video** (seperti panel unduh Mister Download Manager).

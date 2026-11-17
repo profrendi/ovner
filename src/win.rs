@@ -1227,7 +1227,13 @@ mod imp {
         (st.cb)(DlEvent::Log(if ok {
             format!("PDF tersimpan: {} ({} KB dalam {:.1} dtk, {:.0} KB/dtk)", st.path, st.received / 1024, secs, st.received as f64 / 1024.0 / secs.max(0.1))
         } else {
-            format!("PDF gagal: {} ({reason}; {} dari {} byte, {:.1} dtk)", st.path, st.received, st.total, secs)
+            // "dibatalkan" = sengaja dihentikan (jalur Ovner lebih cepat / pengguna membatalkan),
+            // bukan galat: jangan masuk daftar "Crash dan galat" di Diagnostik.
+            if reason == "dibatalkan" {
+                format!("PDF: pembacaan respons halaman dihentikan: {} ({} dari {} byte, {:.1} dtk)", st.path, st.received, st.total, secs)
+            } else {
+                format!("PDF gagal: {} ({reason}; {} dari {} byte, {:.1} dtk)", st.path, st.received, st.total, secs)
+            }
         }));
         if ok {
             use base64::Engine as _;

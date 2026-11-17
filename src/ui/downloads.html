@@ -88,13 +88,13 @@
       const st = el.querySelector(".st");
       const live = d.state === "progress" || d.state === "paused";
       if (live) {
-        st.textContent = size(d.received) + (d.total > 0 ? " / " + size(d.total) : "") +
+        st.textContent = d.note ? d.note : size(d.received) + (d.total > 0 ? " / " + size(d.total) : "") +
           (d.state === "paused" ? " · " + w.paused : d.engine && d.speed ? ` · ${size(d.speed)}/s · ${d.conns} ${w.conns}` : d.speed ? ` · ${size(d.speed)}/s` : "");
         if (d.engine) st.title = w.engine;
         const bar = document.createElement("div"); bar.className = "bar";
         bar.innerHTML = `<i style="width:${d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30}%"></i>`;
         el.querySelector(".info").append(bar);
-      } else st.textContent = gone ? w.deleted : d.state === "failed" ? w.failed : size(d.received || d.total);
+      } else st.textContent = gone ? w.deleted : d.state === "failed" ? w.failed + (d.error ? ": " + d.error : "") : size(d.received || d.total);
       if (!gone && d.state === "done") el.querySelector("a").onclick = () => post({ t: "dl-open", id: d.id });
       const acts = el.querySelector(".acts");
       const btn = (icon, title, fn) => { const b = document.createElement("button"); b.innerHTML = svg[icon]; b.title = title; b.onclick = fn; acts.append(b); };
