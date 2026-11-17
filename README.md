@@ -71,6 +71,21 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.11
+
+- **Kartu PDF SIPP lebih cepat selesai dan tidak mengulang dari nol.** Log 0.8.10: jalur halaman
+  33 KB/dtk, koneksi Ovner 154 KB/dtk (jadi jalur halaman dihentikan, benar), tetapi koneksi Ovner
+  diputus server di 99,8% lalu mengulang dari nol (±200 dtk lagi). Kini:
+  - **Dua jalur koneksi Ovner** (jalur kedua 4 detik kemudian) mengunduh berkas yang sama; yang
+    pertama selesai utuh dipakai, yang lain dihentikan. Bila satu jalur diputus, jalur lain sudah
+    hampir selesai sehingga tidak mulai dari nol; jalur yang putus langsung diulang.
+  - Jalur Ovner langsung dimulai begitu server mulai mengirim (dulu menunggu 6 detik), dan
+    keputusan jalur mana yang lebih cepat diambil setelah 10 detik (dulu 15).
+  - Bila jalur Ovner sempat dihentikan karena jalur halaman lebih cepat lalu jalur halaman putus,
+    jalur Ovner dijalankan lagi.
+- Catatan: server kartu SIPP tidak mendukung unduhan per bagian (Range), jadi satu berkas tidak
+  bisa dibagi ke 8 koneksi seperti Google Drive; kecepatan per koneksi ditentukan server.
+
 ## Perbaikan 0.8.10
 
 - **Kartu PDF SIPP: koneksi kedua seperti download manager.** Log 0.8.9 menunjukkan PDF gagal

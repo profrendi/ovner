@@ -96,31 +96,58 @@ struct Download {
     tab: u64,
 }
 
-/// Kabar koneksi kedua PDF.
+/// Kabar jalur koneksi Ovner untuk PDF (nomor jalur, isi).
 #[derive(Debug)]
 enum RaceMsg {
-    Progress(u64),
-    Attempt(u32),
-    Failed(String),
-    Done(Result<u64, String>),
+    Progress(usize, u64),
+    Attempt(usize, u32),
+    Failed(usize, String),
+    Done(usize, Result<u64, String>),
 }
 
-/// Koneksi kedua untuk PDF: diunduh ulang lewat WinHTTP dengan cookie situs, berlomba dengan
-/// pembacaan respons halaman. Server SIPP mengirim tiap koneksi pelan (±35–80 KB/dtk, tanpa
-/// Range) dan memutus koneksi yang terlalu lama; Mister Download Manager berhasil karena memakai
-/// koneksinya sendiri. Mana yang selesai utuh lebih dulu, itulah yang disimpan.
+/// Jumlah jalur koneksi Ovner (WinHTTP) untuk PDF yang dibuat server tanpa Range. Server tidak
+/// bisa dibagi per bagian, jadi tiap jalur mengunduh seluruh berkas; yang pertama selesai utuh
+/// dipakai. Dua jalur: bila satu diputus server di tengah (log 0.8.10: putus di 99,8%), jalur
+/// lain sudah jauh berjalan, tidak mengulang dari nol.
+const RACE_LANES: usize = 2;
+
+#[derive(Default, Clone)]
+struct Lane {
+    received: u64,
+    /// Saat jalur ini mulai menerima data (percobaan sekarang).
+    t0: Option<Instant>,
+    done: bool,
+}
+
+/// Koneksi Ovner untuk PDF: diunduh ulang lewat WinHTTP dengan cookie situs, berlomba dengan
+/// pembacaan respons halaman. Server SIPP mengirim pelan lewat jalur halaman (±33 KB/dtk) tetapi
+/// lebih cepat lewat WinHTTP (±150 KB/dtk), tanpa Range, dan kadang memutus koneksi. Mana yang
+/// selesai utuh lebih dulu, itulah yang disimpan.
 struct PdfRace {
     req: dlengine::Request,
     /// Mulai setelah ini (bila pembacaan respons belum selesai).
     due: Instant,
     started: bool,
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    lanes: Vec<Lane>,
+    /// Byte terjauh dari semua jalur.
     received: u64,
     finished: bool,
-    /// Saat koneksi kedua mulai menerima data, dan posisi pembacaan respons saat itu.
+    /// Posisi pembacaan respons saat jalur pertama mulai menerima data.
     t0: Option<(Instant, i64)>,
     /// Sudah diputuskan mana yang dipertahankan (yang lebih lambat dihentikan).
     decided: bool,
+    /// Sudah dijalankan ulang sekali setelah respons halaman putus.
+    restarted: bool,
+}
+
+impl PdfRace {
+    fn lanes_running(&self) -> usize {
+        if !self.started || self.finished {
+            return 0;
+        }
+        self.lanes.iter().filter(|l| !l.done).count()
+    }
 }
 
 /// Info tambahan unduhan untuk kotak unduhan (seperti IDM/Mister Download Manager).
@@ -227,7 +254,7 @@ fn log_crash_report() {
 fn free_download_path(path: &Path) -> PathBuf {
     let used = |p: &Path| {
         let s = p.display().to_string();
-        p.exists() || ["ovnerpart", "crdownload", "ovnerrace"].iter().any(|e| Path::new(&format!("{s}.{e}")).exists())
+        p.exists() || ["ovnerpart", "crdownload", "ovnerrace0", "ovnerrace1"].iter().any(|e| Path::new(&format!("{s}.{e}")).exists())
     };
     if !used(path) {
         return path.to_path_buf();
@@ -258,7 +285,7 @@ fn delete_download_files(path: &str) {
                 let ours = n == name
                     || n == format!("{name}.ovnerpart")
                     || n == format!("{name}.crdownload")
-                    || n == format!("{name}.ovnerrace")
+                    || n.starts_with(&format!("{name}.ovnerrace"))
                     || (!stem.is_empty() && n.starts_with(&format!("{stem}.")) && (n.ends_with(".part") || n.ends_with(".ytdl") || n.contains(".part-Frag") || n.contains(".temp.") || {
                         // Potongan format yt-dlp: "judul [id].f137.mp4".
                         let rest = &n[stem.len() + 1..];
@@ -1898,8 +1925,8 @@ impl App {
             "engine": d.engine, "speed": d.speed, "video": d.video,
             "conns": if meta.is_some_and(|m| m.pdf) {
                 // PDF: respons halaman + koneksi kedua Ovner yang masih berjalan.
-                let race = self.pdf_race.get(&d.id).is_some_and(|r| r.started && !r.finished);
-                (usize::from(!meta.is_some_and(|m| m.stream_dead)) + usize::from(race)).max(1)
+                let lanes = self.pdf_race.get(&d.id).map_or(0, |r| r.lanes_running());
+                (usize::from(!meta.is_some_and(|m| m.stream_dead && !m.race_won)) + lanes).max(1)
             } else {
                 d.conns
             },
@@ -1951,7 +1978,8 @@ impl App {
                 }
                 headers.push(("Accept".to_string(), "application/pdf,*/*".to_string()));
                 // Kecil (selesai beberapa detik) tidak perlu koneksi kedua: tunggu sebentar dulu.
-                let wait = if total > 0 && total < 2 * 1_048_576 { 20 } else { 6 };
+                // Besar: langsung, karena server butuh waktu lagi untuk membuat berkasnya.
+                let wait = if total > 0 && total < 2 * 1_048_576 { 15 } else { 0 };
                 self.pdf_race.insert(
                     id,
                     PdfRace {
@@ -1959,10 +1987,12 @@ impl App {
                         due: Instant::now() + Duration::from_secs(wait),
                         started: false,
                         cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        lanes: vec![Lane::default(); RACE_LANES],
                         received: 0,
                         finished: false,
                         t0: None,
                         decided: false,
+                        restarted: false,
                     },
                 );
                 return;
@@ -2131,7 +2161,7 @@ impl App {
         self.render();
     }
 
-    /// Mulai koneksi kedua PDF yang sudah waktunya (dipanggil tiap detik dari on_tick).
+    /// Mulai jalur koneksi Ovner untuk PDF yang sudah waktunya (dipanggil tiap 2 detik).
     fn start_due_races(&mut self) {
         let due: Vec<u64> = self.pdf_race.iter().filter(|(_, r)| !r.started && !r.finished && Instant::now() >= r.due).map(|(id, _)| *id).collect();
         for id in due {
@@ -2139,42 +2169,48 @@ impl App {
                 self.pdf_race.remove(&id);
                 continue;
             };
-            let race_path = PathBuf::from(format!("{}.ovnerrace", d.path));
+            let base = d.path.clone();
             let Some(r) = self.pdf_race.get_mut(&id) else { continue };
             r.started = true;
-            let (req, cancel, p) = (r.req.clone(), r.cancel.clone(), self.proxy.clone());
-            log(&format!("PDF: koneksi kedua (Ovner/WinHTTP) dimulai untuk {}", req.url));
-            std::thread::spawn(move || {
-                let mut last = String::new();
-                for attempt in 1..=3u32 {
-                    if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                        break;
-                    }
-                    send(&p, UserEvent::PdfRace(id, RaceMsg::Attempt(attempt)));
-                    let p2 = p.clone();
-                    match dlengine::fetch_whole(&req, &race_path, true, &cancel, move |g| send(&p2, UserEvent::PdfRace(id, RaceMsg::Progress(g)))) {
-                        Ok(n) => {
-                            send(&p, UserEvent::PdfRace(id, RaceMsg::Done(Ok(n))));
-                            return;
+            log(&format!("PDF: {RACE_LANES} jalur koneksi Ovner (WinHTTP) dimulai untuk {}", r.req.url));
+            for lane in 0..RACE_LANES {
+                let race_path = PathBuf::from(format!("{base}.ovnerrace{lane}"));
+                let (req, cancel, p) = (r.req.clone(), r.cancel.clone(), self.proxy.clone());
+                std::thread::spawn(move || {
+                    // Jalur berikutnya sedikit belakangan: tidak diputus server di saat yang sama.
+                    std::thread::sleep(Duration::from_secs(lane as u64 * 4));
+                    let mut last = String::new();
+                    for attempt in 1..=3u32 {
+                        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
                         }
-                        Err(e) => {
-                            last = e;
-                            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                                break;
+                        send(&p, UserEvent::PdfRace(id, RaceMsg::Attempt(lane, attempt)));
+                        let p2 = p.clone();
+                        match dlengine::fetch_whole(&req, &race_path, true, &cancel, move |g| send(&p2, UserEvent::PdfRace(id, RaceMsg::Progress(lane, g)))) {
+                            Ok(n) => {
+                                send(&p, UserEvent::PdfRace(id, RaceMsg::Done(lane, Ok(n))));
+                                return;
                             }
-                            send(&p, UserEvent::PdfRace(id, RaceMsg::Failed(format!("percobaan {attempt}: {last}"))));
-                            std::thread::sleep(Duration::from_secs(3));
+                            Err(e) => {
+                                last = e;
+                                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                                    break;
+                                }
+                                send(&p, UserEvent::PdfRace(id, RaceMsg::Failed(lane, format!("percobaan {attempt}: {last}"))));
+                                std::thread::sleep(Duration::from_secs(2));
+                            }
                         }
                     }
-                }
-                let _ = std::fs::remove_file(&race_path);
-                send(&p, UserEvent::PdfRace(id, RaceMsg::Done(Err(last))));
-            });
+                    let _ = std::fs::remove_file(&race_path);
+                    send(&p, UserEvent::PdfRace(id, RaceMsg::Done(lane, Err(last))));
+                });
+            }
         }
     }
 
-    /// Setelah kedua jalur PDF menerima data ±15 detik, hentikan yang jelas lebih lambat supaya
-    /// bandwidth (dan batas koneksi server) dipakai yang lebih cepat selesai.
+    /// Setelah jalur Ovner menerima data ±10 detik: bila jelas lebih cepat dari respons halaman,
+    /// respons halaman dihentikan (dan sebaliknya), supaya batas koneksi server dipakai yang
+    /// lebih cepat selesai.
     fn decide_races(&mut self) {
         let mut stop_stream = Vec::new();
         for (id, r) in self.pdf_race.iter_mut() {
@@ -2183,68 +2219,90 @@ impl App {
             }
             let Some((t0, s0)) = r.t0 else { continue };
             let dt = t0.elapsed().as_secs_f64();
-            if dt < 15.0 {
+            if dt < 10.0 {
                 continue;
             }
             let Some(d) = self.downloads.iter().find(|d| d.id == *id && d.state == "progress") else { continue };
             let Some(m) = self.dl_meta.get(id) else { continue };
+            r.decided = true;
             if d.total <= 0 || m.stream_dead {
                 continue;
             }
-            let race_rate = r.received as f64 / dt;
+            // Jalur Ovner tercepat.
+            let (best_rate, best_got) = r
+                .lanes
+                .iter()
+                .filter(|l| !l.done)
+                .filter_map(|l| l.t0.map(|t| (l.received as f64 / t.elapsed().as_secs_f64().max(1.0), l.received)))
+                .fold((0.0f64, 0u64), |a, b| if b.0 > a.0 { b } else { a });
             let stream_rate = (m.stream_received - s0).max(0) as f64 / dt;
-            let eta_race = (d.total as f64 - r.received as f64).max(0.0) / race_rate.max(1.0);
+            let eta_race = (d.total as f64 - best_got as f64).max(0.0) / best_rate.max(1.0);
             let eta_stream = (d.total - m.stream_received).max(0) as f64 / stream_rate.max(1.0);
             log(&format!(
-                "PDF: respons halaman {:.0} KB/dtk (sisa {:.0} dtk), koneksi kedua {:.0} KB/dtk (sisa {:.0} dtk)",
+                "PDF: respons halaman {:.0} KB/dtk (sisa {:.0} dtk), jalur Ovner tercepat {:.0} KB/dtk (sisa {:.0} dtk)",
                 stream_rate / 1024.0,
                 eta_stream,
-                race_rate / 1024.0,
+                best_rate / 1024.0,
                 eta_race
             ));
-            r.decided = true;
             if eta_race < eta_stream * 0.8 {
                 stop_stream.push(*id);
             } else if eta_stream < eta_race * 0.8 {
-                log("PDF: koneksi kedua dihentikan (respons halaman lebih cepat selesai)");
+                log("PDF: jalur Ovner dihentikan (respons halaman lebih cepat selesai)");
                 r.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 r.finished = true;
                 r.received = 0;
             }
         }
         for id in stop_stream {
-            log("PDF: respons halaman dihentikan (koneksi kedua lebih cepat selesai)");
+            log("PDF: respons halaman dihentikan (jalur Ovner lebih cepat selesai)");
             win::cancel_download(id);
         }
     }
 
-    /// Kabar koneksi kedua PDF.
+    /// Kabar jalur koneksi Ovner untuk PDF.
     fn on_pdf_race(&mut self, id: u64, m: RaceMsg) {
         match m {
-            RaceMsg::Attempt(n) => {
+            RaceMsg::Attempt(lane, n) => {
                 if n > 1 {
-                    log(&format!("PDF: koneksi kedua diulang (percobaan {n})"));
+                    log(&format!("PDF: jalur {} diulang (percobaan {n})", lane + 1));
+                }
+                if let Some(l) = self.pdf_race.get_mut(&id).and_then(|r| r.lanes.get_mut(lane)) {
+                    l.received = 0;
+                    l.t0 = None;
                 }
                 return;
             }
-            RaceMsg::Failed(e) => {
-                log(&format!("PDF: koneksi kedua gagal, {e}"));
+            RaceMsg::Failed(lane, e) => {
+                log(&format!("PDF: jalur {} gagal, {e}", lane + 1));
                 if let Some(r) = self.pdf_race.get_mut(&id) {
-                    r.received = 0;
-                    r.t0 = None;
-                    r.decided = false;
+                    if let Some(l) = r.lanes.get_mut(lane) {
+                        l.received = 0;
+                        l.t0 = None;
+                    }
+                    r.received = r.lanes.iter().map(|l| l.received).max().unwrap_or(0);
                 }
                 return;
             }
-            RaceMsg::Progress(g) => {
+            RaceMsg::Progress(lane, g) => {
                 let stream = self.dl_meta.get(&id).map_or(0, |m| m.stream_received);
                 if let Some(r) = self.pdf_race.get_mut(&id) {
-                    r.received = g;
+                    if r.finished {
+                        return;
+                    }
+                    if let Some(l) = r.lanes.get_mut(lane) {
+                        l.received = g;
+                        if g > 0 && l.t0.is_none() {
+                            l.t0 = Some(Instant::now());
+                        }
+                    }
                     if g > 0 && r.t0.is_none() {
                         r.t0 = Some((Instant::now(), stream));
                     }
+                    r.received = r.lanes.iter().map(|l| l.received).max().unwrap_or(0);
                 }
-                let shown = stream.max(g as i64);
+                let best = self.pdf_race.get(&id).map_or(0, |r| r.received) as i64;
+                let shown = if self.dl_meta.get(&id).is_some_and(|m| m.stream_dead) { best } else { stream.max(best) };
                 let now = Instant::now();
                 let meta = self.dl_meta.entry(id).or_default();
                 let mut speed = None;
@@ -2265,10 +2323,11 @@ impl App {
                 }
                 return;
             }
-            RaceMsg::Done(res) => {
-                let race_path = self.downloads.iter().find(|d| d.id == id).map(|d| PathBuf::from(format!("{}.ovnerrace", d.path)));
-                if let Some(r) = self.pdf_race.get_mut(&id) {
-                    r.finished = true;
+            RaceMsg::Done(lane, res) => {
+                let base = self.downloads.iter().find(|d| d.id == id).map(|d| d.path.clone());
+                let race_path = base.as_ref().map(|b| PathBuf::from(format!("{b}.ovnerrace{lane}")));
+                if let Some(l) = self.pdf_race.get_mut(&id).and_then(|r| r.lanes.get_mut(lane)) {
+                    l.done = true;
                 }
                 let active = self.downloads.iter().any(|d| d.id == id && d.state == "progress");
                 match res {
@@ -2278,12 +2337,18 @@ impl App {
                         let _ = std::fs::remove_file(&final_path);
                         let moved = race_path.as_ref().is_some_and(|rp| std::fs::rename(rp, &final_path).is_ok());
                         if !moved {
-                            log(&format!("PDF: hasil koneksi kedua tidak bisa dipindah ke {final_path}"));
+                            log(&format!("PDF: hasil jalur {} tidak bisa dipindah ke {final_path}", lane + 1));
                             return;
                         }
-                        log(&format!("PDF tersimpan lewat koneksi kedua: {final_path} ({} KB)", n / 1024));
+                        let secs = self.dl_meta.get(&id).and_then(|m| m.started).map_or(0.0, |t| t.elapsed().as_secs_f64());
+                        log(&format!("PDF tersimpan lewat jalur {}: {final_path} ({} KB, {:.0} dtk sejak dibuka)", lane + 1, n / 1024, secs));
                         if let Some(m) = self.dl_meta.get_mut(&id) {
                             m.race_won = true;
+                        }
+                        // Jalur lain berhenti (berkasnya dihapus oleh jalur itu sendiri).
+                        if let Some(r) = self.pdf_race.get_mut(&id) {
+                            r.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                            r.finished = true;
                         }
                         let d = &mut self.downloads[pos];
                         d.state = "done".into();
@@ -2297,21 +2362,30 @@ impl App {
                         self.update_priority();
                     }
                     Ok(_) => {
-                        // Pembacaan respons sudah selesai lebih dulu.
+                        // Sudah selesai lewat jalur lain / respons halaman.
                         if let Some(rp) = race_path {
                             let _ = std::fs::remove_file(rp);
                         }
                     }
                     Err(e) => {
-                        log(&format!("PDF: koneksi kedua berhenti ({e})"));
-                        let dead = self.dl_meta.get(&id).is_some_and(|m| m.stream_dead);
-                        if dead && active {
-                            if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
-                                d.state = "failed".into();
-                                d.speed = 0;
+                        let all_done = self.pdf_race.get(&id).is_none_or(|r| r.lanes.iter().all(|l| l.done));
+                        if !e.is_empty() && e != "dibatalkan" {
+                            log(&format!("PDF: jalur {} berhenti ({e})", lane + 1));
+                        }
+                        if all_done {
+                            if let Some(r) = self.pdf_race.get_mut(&id) {
+                                r.finished = true;
                             }
-                            self.save_downloads();
-                            self.update_priority();
+                            let dead = self.dl_meta.get(&id).is_some_and(|m| m.stream_dead);
+                            if dead && active {
+                                if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+                                    d.state = "failed".into();
+                                    d.speed = 0;
+                                }
+                                log("PDF gagal: semua jalur berhenti");
+                                self.save_downloads();
+                                self.update_priority();
+                            }
                         }
                     }
                 }
@@ -2327,7 +2401,24 @@ impl App {
     fn pdf_stream_done(&mut self, id: u64, tab: u64, ok: bool) -> bool {
         let Some(m) = self.dl_meta.get(&id).filter(|m| m.pdf) else { return false };
         let (won, user) = (m.race_won, m.user_cancel);
-        let race_running = self.pdf_race.get(&id).is_some_and(|r| !r.finished);
+        let mut race_running = self.pdf_race.get(&id).is_some_and(|r| !r.finished);
+        // Jalur Ovner sempat dihentikan karena respons halaman lebih cepat, lalu respons halaman
+        // putus: jalankan jalur Ovner lagi (sekali) daripada gagal.
+        if !ok && !won && !user && !race_running {
+            if let Some(r) = self.pdf_race.get_mut(&id).filter(|r| r.started && !r.restarted) {
+                r.restarted = true;
+                r.started = false;
+                r.finished = false;
+                r.decided = true;
+                r.t0 = None;
+                r.received = 0;
+                r.lanes = vec![Lane::default(); RACE_LANES];
+                r.cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                r.due = Instant::now();
+                race_running = true;
+                log("PDF: respons halaman putus, jalur Ovner dijalankan lagi");
+            }
+        }
         if ok {
             // Pembacaan respons menang: hentikan koneksi kedua.
             if let Some(r) = self.pdf_race.get_mut(&id) {
