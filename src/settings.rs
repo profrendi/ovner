@@ -187,6 +187,10 @@ pub struct Settings {
     /// server, koneksi, dan berkas otomatis masuk folder sesuai jenisnya (Video, Music, ...).
     /// Mati = gelembung unduhan biasa.
     pub dl_box_v2: bool,
+    /// Tombol "Unduh video" di atas video di halaman (seperti panel unduh Mister Download Manager).
+    pub video_button: bool,
+    /// Situs yang tidak pernah menampilkan tombol itu.
+    pub video_button_never: Vec<String>,
     /// Cari lokasi server unduhan (negara/kota/penyedia) lewat ipwho.is.
     pub dl_server_info: bool,
     /// PDF besar langsung diunduh, tidak dibuka di penampil PDF bawaan.
@@ -305,6 +309,8 @@ impl Default for Settings {
             dl_connections: 8,
             dl_min_mb: 2,
             dl_box_v2: true,
+            video_button: true,
+            video_button_never: Vec::new(),
             dl_server_info: true,
             pdf_download: true,
             pdf_download_mb: 5,
@@ -537,7 +543,7 @@ impl Settings {
         self.schema = SCHEMA;
     }
 
-    fn normalize(&mut self) {
+    pub fn normalize(&mut self) {
         let pick = |v: &mut String, ok: &[&str], def: &str| {
             if !ok.contains(&v.as_str()) {
                 *v = def.into();
@@ -582,6 +588,7 @@ impl Settings {
             &mut self.dark_off_sites,
             &mut self.allow_copy_sites,
             &mut self.sleep_never_sites,
+            &mut self.video_button_never,
         ] {
             *list = list.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
             list.sort();

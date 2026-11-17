@@ -101,7 +101,7 @@
       btn("link", w.copy, () => navigator.clipboard && navigator.clipboard.writeText(d.url));
       if (!gone && d.state === "done") btn("folder", w.show, () => post({ t: "dl-show", id: d.id }));
       if (d.engine && d.state === "progress") btn("pause", w.pause, () => post({ t: "dl-pause", id: d.id }));
-      if (d.engine && d.state === "paused") btn("play", w.resume, () => post({ t: "dl-resume", id: d.id }));
+      if ((d.engine || d.later) && d.state === "paused") btn("play", w.resume, () => post({ t: "dl-resume", id: d.id }));
       if (live) btn("x", w.cancel, () => post({ t: "dl-cancel", id: d.id }));
       else btn("x", w.remove, () => ask(w.delT, d.name, d.state === "done" && d.exists, (files) => post({ t: files ? "dl-delete" : "dl-remove", id: d.id })));
       list.append(el);

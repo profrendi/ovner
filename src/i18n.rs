@@ -214,6 +214,7 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
             "{n} unduhan masih berjalan di jendela ini dan akan terhenti. Tutup jendela?",
             "{n} downloads are still running in this window and will stop. Close the window?",
         ),
+        "d.video_folder" => ("Pilih folder simpan video", "Choose a folder for the video"),
         "d.lists_full" => ("daftar lengkap", "full lists"),
         "d.lists_builtin" => ("daftar bawaan (daftar lengkap sedang diunduh)", "built-in list (full lists downloading)"),
         _ => return Box::leak(key.to_string().into_boxed_str()),

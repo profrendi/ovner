@@ -71,6 +71,24 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.15
+
+- **Tombol "Unduh video" langsung di atas video** (seperti panel unduh Mister Download Manager).
+  Saat kursor di atas video (YouTube dan situs lain), tombol muncul di pojok kanan atas video.
+  Menu ▾: *Unduh video*, *Sembunyikan di video ini*, *Jangan di situs ini*, *Pengaturan tombol…*.
+  Klik tombol tidak menjeda/memutar video. Di YouTube hanya muncul di halaman video (bukan
+  pratinjau di beranda). Pengaturan → Unduhan: *Tombol unduh di atas video* dan daftar situs
+  yang dikecualikan.
+- **Dialog "Unduh video dari halaman"** (juga dari tombol video di toolbar):
+  - Alamat halaman + *Telusuri*, judul video, daftar semua kualitas yang tersedia (mis. 1080p,
+    720p, 480p, 360p MP4) dengan ukurannya, plus *Audio saja*: M4A asli, MP3 VBR, MP3
+    320/256/192/128 kbps, OPUS, FLAC (≈ = perkiraan).
+  - *Simpan ke* (folder Video/Music otomatis, tombol … untuk memilih folder), *Nama berkas*
+    (ekstensi mengikuti pilihan), *Subtitle* (buatan pemilik video, atau otomatis Indonesia/
+    Inggris) dan *Masukkan ke video*.
+  - *Unduh sekarang*, *Nanti* (masuk daftar unduhan sebagai dijeda, tetap ada setelah Ovner
+    ditutup; klik ▶ untuk mulai), *Batal*. Klik dua kali pada pilihan = unduh sekarang.
+
 ## Perbaikan 0.8.14
 
 - **Info RAM/CPU/GPU di judul muncul di semua jendela.** Dulu hanya jendela pertama yang punya

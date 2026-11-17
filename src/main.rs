@@ -95,6 +95,9 @@ struct Download {
     video: bool,
     #[serde(skip)]
     tab: u64,
+    /// Video yang ditunda ("Nanti" di dialog unduh video): dimulai saat dilanjutkan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vspec: Option<video::Spec>,
 }
 
 /// Kabar jalur koneksi Ovner untuk PDF (nomor jalur, isi).
@@ -481,6 +484,8 @@ enum UserEvent {
     /// Kabar unduhan video (yt-dlp).
     Video(u64, video::Event),
     VideoJob(u64, video::Job),
+    /// Hasil penelusuran format video (nomor penelusuran, data dialog).
+    VideoInfo(u64, Result<Value, String>),
     TrayClick,
     Remote(Remote),
 }
@@ -734,6 +739,9 @@ struct App {
     /// Proses halaman yang sedang dalam mode efisiensi karena semua tabnya tersembunyi.
     eco_pids: HashSet<u32>,
     eco_at: Instant,
+    /// Dialog unduh video: nomor penelusuran terakhir dan jendelanya.
+    video_req: u64,
+    video_win: u32,
 }
 
 /// Bagian App yang berbeda untuk tiap jendela Ovner. Urutan field penting: tab, toolbar, dan
@@ -2183,7 +2191,7 @@ impl App {
             Vec::new()
         };
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
-            "engine": d.engine, "speed": d.speed, "video": d.video,
+            "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(),
             "conns": if meta.is_some_and(|m| m.pdf) {
                 // PDF: respons halaman + koneksi kedua Ovner yang masih berjalan.
                 let lanes = self.pdf_race.get(&d.id).map_or(0, |r| r.lanes_running());
@@ -2319,6 +2327,7 @@ impl App {
                     speed: 0,
                     conns: 0,
                     video: false,
+                    vspec: None,
                     tab: 0,
                 });
                 self.dl_meta.entry(id).or_default().connecting = true;
@@ -2391,6 +2400,7 @@ impl App {
                     speed: 0,
                     conns: 0,
                     video: false,
+                    vspec: None,
                     tab: 0,
                 });
                 self.dl_bubble = true;
@@ -2813,6 +2823,7 @@ impl App {
                 speed: 0,
                 conns: 0,
                 video: false,
+                vspec: None,
                 tab: 0,
             });
             let started = self.dl_waiting.get(&id).map(|w| w.2);
@@ -2950,64 +2961,119 @@ impl App {
     }
 
     /// Unduh video halaman aktif dengan yt-dlp (kualitas: "best", "720", "audio").
-    fn start_video(&mut self, choice: &str) {
-        let Some(url) = self.tabs.get(self.active).map(|t| t.url.clone()).filter(|u| video::is_video_page(u)) else { return };
+    /// Folder simpan bawaan untuk video/audio (Video/Music bila Download box v2).
+    fn video_dir(&self, audio: bool) -> PathBuf {
+        let out = self.download_dir();
+        if self.settings.borrow().dl_box_v2 {
+            out.join(if audio { "Music" } else { "Video" })
+        } else {
+            out
+        }
+    }
+
+    /// Buka dialog "Unduh video dari halaman" (seperti Mister Download Manager) untuk `url`
+    /// (kosong = alamat tab aktif), lalu telusuri formatnya dengan yt-dlp.
+    fn open_video_dialog(&mut self, url: &str) {
+        let url = if url.is_empty() { self.tabs.get(self.active).map(|t| t.url.clone()).unwrap_or_default() } else { url.to_string() };
+        if !url.starts_with("http") {
+            return;
+        }
+        self.video_req += 1;
+        self.video_win = self.win_no;
+        let v = json!({
+            "open": true, "loading": true, "url": url,
+            "title": self.tabs.get(self.active).map(|t| t.title.clone()).unwrap_or_default(),
+            "videoDir": self.video_dir(false).display().to_string(),
+            "audioDir": self.video_dir(true).display().to_string(),
+        });
+        post_page(&self.toolbar, "videoDlg", &v.to_string(), "window.ovner && ovner.videoDlg");
+        self.lookup_video(&url);
+    }
+
+    fn lookup_video(&mut self, url: &str) {
+        let (p, data, req, url) = (self.proxy.clone(), data_dir().to_path_buf(), self.video_req, url.to_string());
+        let lang = self.lang;
+        log(&format!("telusuri video: {url}"));
+        std::thread::spawn(move || {
+            let note = |what: &str| send(&p, UserEvent::VideoInfo(req, Ok(json!({"note": tf(lang, "d.video_tools", &[("t", what)])}))));
+            let r = video::ensure_tools(&data, false, &note).and_then(|_| video::probe(&data, &url));
+            send(&p, UserEvent::VideoInfo(req, r));
+        });
+    }
+
+    fn on_video_info(&mut self, req: u64, r: Result<Value, String>) {
+        if req != self.video_req || !self.switch_to(self.video_win) {
+            return;
+        }
+        let v = match r {
+            Ok(mut v) if v.get("note").is_some() => {
+                v["loading"] = json!(true);
+                v
+            }
+            Ok(mut v) => {
+                v["loading"] = json!(false);
+                v["tools"] = json!([video::ytdlp(data_dir()).exists(), video::ffmpeg(data_dir()).exists()]);
+                v
+            }
+            Err(e) => {
+                log(&format!("telusuri video gagal: {e}"));
+                json!({"loading": false, "error": e})
+            }
+        };
+        post_page(&self.toolbar, "videoDlg", &v.to_string(), "window.ovner && ovner.videoDlg");
+    }
+
+    /// Mulai (atau tunda, `later`) unduhan video dari dialog.
+    fn start_video_spec(&mut self, spec: video::Spec, later: bool) {
         let id = win::next_download_id();
-        let title = self.tabs[self.active].title.clone();
+        let name = format!("{}.{}", video::strip_ext(&spec.name), video::ext_for(&spec.key));
         self.downloads.push(Download {
             id,
-            url: url.clone(),
-            path: String::new(),
-            name: if title.is_empty() { url.clone() } else { title },
+            url: spec.page.clone(),
+            path: Path::new(&spec.dir).join(&name).display().to_string(),
+            name,
             total: 0,
             received: 0,
-            state: "progress".into(),
+            state: if later { "paused".into() } else { "progress".into() },
             time: store::now(),
             engine: false,
             speed: 0,
             conns: 0,
             video: true,
             tab: 0,
+            vspec: later.then(|| spec.clone()),
         });
         self.dl_bubble = true;
-        self.download_started(id);
-        let out = {
-            let d = self.settings.borrow().download_dir.trim().to_string();
-            if d.is_empty() {
-                std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
-            } else {
-                PathBuf::from(d)
-            }
-        };
-        let out = if self.settings.borrow().dl_box_v2 {
-            let d = out.join(if choice == "audio" { "Music" } else { "Video" });
-            if std::fs::create_dir_all(&d).is_ok() {
-                d
-            } else {
-                out
-            }
+        if later {
+            log(&format!("unduh video ditunda ({}): {}", spec.key, spec.page));
+            self.save_downloads();
         } else {
-            out
-        };
-        let (p, data, choice) = (self.proxy.clone(), data_dir().to_path_buf(), choice.to_string());
+            self.download_started(id);
+            self.run_video(id, spec);
+        }
+        self.refresh_pages("downloads");
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    /// Jalankan yt-dlp untuk unduhan video `id`.
+    fn run_video(&mut self, id: u64, spec: video::Spec) {
+        let _ = std::fs::create_dir_all(&spec.dir);
+        let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
         let lang = self.lang;
-        log(&format!("unduh video ({choice}): {url}"));
+        log(&format!("unduh video ({}): {}", spec.key, spec.page));
         std::thread::spawn(move || {
-            let need_ff = choice != "audio";
             let note = |what: &str| send(&p, UserEvent::Video(id, video::Event::Title(tf(lang, "d.video_tools", &[("t", what)]))));
-            if let Err(e) = video::ensure_tools(&data, need_ff, &note) {
+            if let Err(e) = video::ensure_tools(&data, spec.needs_ffmpeg(), &note) {
                 send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e }));
                 return;
             }
             let p2 = p.clone();
-            match video::start(&data, &url, &choice, &out, move |ev| send(&p2, UserEvent::Video(id, ev))) {
+            match video::start(&data, &spec, move |ev| send(&p2, UserEvent::Video(id, ev))) {
                 Ok(job) => send(&p, UserEvent::VideoJob(id, job)),
                 Err(e) => send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e })),
             }
         });
-        self.refresh_pages("downloads");
-        self.last_render_key.clear();
-        self.render();
     }
 
     fn on_video(&mut self, id: u64, ev: video::Event) {
@@ -3109,6 +3175,7 @@ impl App {
                         speed: 0,
                         conns: 0,
                         video: false,
+                        vspec: None,
                         tab: 0,
                     }),
                 }
@@ -3193,6 +3260,24 @@ impl App {
     fn download_action(&mut self, kind: &str, id: u64) {
         let Some(pos) = self.downloads.iter().position(|d| d.id == id) else { return };
         let path = self.downloads[pos].path.clone();
+        // Video yang ditunda ("Nanti"): lanjutkan = mulai sekarang, batalkan = hapus dari antrean.
+        if self.downloads[pos].vspec.is_some() && matches!(kind, "dl-resume" | "dl-cancel") {
+            let spec = self.downloads[pos].vspec.take();
+            if kind == "dl-resume" {
+                self.downloads[pos].state = "progress".into();
+                self.download_started(id);
+                if let Some(spec) = spec {
+                    self.run_video(id, spec);
+                }
+            } else {
+                self.downloads[pos].state = "failed".into();
+            }
+            self.save_downloads();
+            self.refresh_pages("downloads");
+            self.last_render_key.clear();
+            self.render();
+            return;
+        }
         match kind {
             "dl-open" if Path::new(&path).exists() => win::open_path(&path, false),
             "dl-show" if Path::new(&path).exists() => win::open_path(&path, true),
@@ -4384,10 +4469,37 @@ impl App {
             log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings") {
             return false;
         }
         match kind {
+            // Tombol "Unduh video" di atas video halaman.
+            "video-dl" => {
+                if i != self.active {
+                    self.activate(i);
+                }
+                // Alamat halaman saat ini (YouTube berpindah video tanpa memuat ulang).
+                let page = msg["page"].as_str().filter(|u| u.starts_with("http")).map(str::to_string).unwrap_or(current_url.clone());
+                self.open_video_dialog(&page);
+            }
+            "video-never" => {
+                if let Some(h) = host_of(&current_url).map(|h| settings::norm_host(&h)) {
+                    {
+                        let mut st = self.settings.borrow_mut();
+                        if !host_in(&st.video_button_never, &h) {
+                            st.video_button_never.push(h.clone());
+                        }
+                        st.normalize();
+                        st.save(data_dir());
+                    }
+                    log(&format!("tombol unduh video tidak ditampilkan lagi di {h}"));
+                    self.refresh_pages("settings");
+                }
+            }
+            "video-settings" => {
+                let url = format!("{}#s-downloads", internal_url("settings"));
+                self.open_tab(&url, true, false);
+            }
             "anubis" => {
                 // Tantangan anti-bot Anubis: hitung di thread latar dengan semua inti CPU.
                 let data = msg["data"].as_str().unwrap_or("").to_string();
@@ -4976,9 +5088,40 @@ impl App {
                 self.store.relocate(g("url"), g("from"), g("folder"), msg["dest"].as_str().unwrap_or(""), g("beforeUrl"), g("beforeFolder"), copy);
                 self.bookmarks_changed();
             }
-            "video-dl" => {
-                let choice = msg["fmt"].as_str().unwrap_or("best").to_string();
-                self.start_video(&choice);
+            "video-open" => self.open_video_dialog(""),
+            "video-lookup" => {
+                let url = msg["url"].as_str().unwrap_or("").trim().to_string();
+                if url.starts_with("http") {
+                    self.video_req += 1;
+                    self.video_win = self.win_no;
+                    self.lookup_video(&url);
+                }
+            }
+            "video-browse" => {
+                let start = msg["dir"].as_str().unwrap_or("").to_string();
+                #[cfg(windows)]
+                let owner = {
+                    use tao::platform::windows::WindowExtWindows;
+                    Some(self.window.hwnd() as isize)
+                };
+                #[cfg(not(windows))]
+                let owner = None;
+                if let Some(dir) = win::pick_folder(owner, t(self.lang, "d.video_folder"), Path::new(&start)) {
+                    post_page(&self.toolbar, "videoDlg", &json!({"dir": dir.display().to_string()}).to_string(), "window.ovner && ovner.videoDlg");
+                }
+            }
+            "video-start" => {
+                let spec = video::Spec {
+                    page: msg["url"].as_str().unwrap_or("").trim().to_string(),
+                    key: msg["key"].as_str().unwrap_or("v:best").to_string(),
+                    dir: msg["dir"].as_str().unwrap_or("").trim().to_string(),
+                    name: video::safe_name(msg["name"].as_str().unwrap_or("video")),
+                    sub: msg["sub"].as_str().unwrap_or("").to_string(),
+                    embed: msg["embed"].as_bool().unwrap_or(false),
+                };
+                if spec.page.starts_with("http") && !spec.dir.is_empty() {
+                    self.start_video_spec(spec, msg["later"].as_bool().unwrap_or(false));
+                }
             }
             "dark-site" => {
                 if let Some(h) = self.active_site() {
@@ -6735,6 +6878,10 @@ fn main() {
                 std::fs::read_to_string(data_dir().join("downloads.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             // Unduhan yang belum selesai saat Ovner ditutup tidak bisa dilanjutkan lagi.
             for d in &mut v {
+                // Video yang ditunda tetap menunggu dilanjutkan.
+                if d.state == "paused" && d.vspec.is_some() {
+                    continue;
+                }
                 if d.state == "progress" || d.state == "paused" {
                     d.state = "failed".into();
                     // Sisa berkas setengah jadi (.ovnerpart/.crdownload) tidak bisa dilanjutkan:
@@ -6799,6 +6946,8 @@ fn main() {
         z_order: vec![0],
         eco_pids: HashSet::new(),
         eco_at: Instant::now(),
+        video_req: 0,
+        video_win: 0,
         lang,
         session_key: shields::session_key(),
         script_gen: 0,
@@ -7042,6 +7191,7 @@ fn main() {
                     app.render();
                 }
                 UserEvent::Video(id, ev) => app.on_video(id, ev),
+                UserEvent::VideoInfo(req, r) => app.on_video_info(req, r),
                 UserEvent::VideoJob(id, job) => {
                     app.video_jobs.insert(id, job);
                 }

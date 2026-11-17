@@ -159,6 +159,32 @@
   #vidpanel { position: absolute; right: 90px; top: 4px; width: 300px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
     box-shadow: 0 8px 28px rgba(0,0,0,.28); padding: 12px 14px; color: var(--text); font-size: 13px; }
   #vidpanel.show { display: block; }
+  /* Dialog "Unduh video dari halaman" (seperti Mister Download Manager). */
+  #viddlg { position: absolute; left: calc(50% - 290px); top: 6px; width: 580px; display: none; background: var(--bar); color: var(--text); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 10px 34px rgba(0,0,0,.35); padding: 14px 16px; font-size: 13px; box-sizing: border-box; }
+  #viddlg.show { display: block; }
+  #viddlg h3 { margin: 0 0 10px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  #viddlg h3 button { all: unset; cursor: pointer; padding: 2px 6px; border-radius: 6px; color: var(--muted); }
+  #viddlg h3 button:hover { background: var(--tab-hover); }
+  #viddlg .lbl { color: var(--muted); font-size: 12px; margin: 8px 0 4px; }
+  #viddlg .row { display: flex; gap: 8px; align-items: center; }
+  #viddlg input[type=text], #viddlg select { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; }
+  #viddlg button.btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
+  #viddlg button.btn:hover { border-color: var(--accent); }
+  #viddlg button.btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #viddlg button.btn:disabled { opacity: .5; cursor: default; }
+  #viddlg .ttl { font-weight: 600; margin: 10px 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #viddlg .list { height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }
+  #viddlg .it { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: default; }
+  #viddlg .it:hover { background: var(--tab-hover); }
+  #viddlg .it.sel { background: var(--accent); color: #fff; }
+  #viddlg .it .sz { margin-left: auto; font-variant-numeric: tabular-nums; }
+  #viddlg .it svg { width: 16px; height: 16px; flex: none; }
+  #viddlg .msg { padding: 14px; color: var(--muted); }
+  #viddlg .msg.err { color: #d93025; }
+  #viddlg .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  #viddlg .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
+  #viddlg label.chk { display: flex; gap: 6px; align-items: center; white-space: nowrap; color: var(--text); }
   #vidpanel h3 { margin: 0 0 4px; font-size: 14px; }
   #vidpanel .t { color: var(--muted); font-size: 12px; margin-bottom: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #vidpanel button.f { display: flex; width: 100%; justify-content: space-between; align-items: center; margin: 5px 0; padding: 8px 10px; border-radius: 8px;
@@ -258,7 +284,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -796,9 +822,31 @@
       if (m.icons) window.ovner.icons(m.icons);
       if (m.render) window.ovner.render(m.render);
       if ("usage" in m && window.ovner.usage) window.ovner.usage(m.usage);
+      if (m.videoDlg && window.ovner.videoDlg) window.ovner.videoDlg(m.videoDlg);
     });
   }
   window.ovner = {
+    // Data dialog unduh video dari Ovner: {open, url, title, ...} lalu {choices, subs, name} / {error} / {dir}.
+    videoDlg(o) {
+      if (o.open) {
+        hideOmni(); closeDark(); closeVid(); closeBm(); send({ cmd: "bubble-close" });
+        vd = { open: true, url: o.url, title: o.title, loading: true, videoDir: o.videoDir, audioDir: o.audioDir, dir: o.videoDir, dirEdited: false, sub: "", embed: false };
+        $("viddlg").classList.add("show");
+      }
+      if (!vd.open) return;
+      if (o.dir) { vd.dir = o.dir; vd.dirEdited = true; }
+      if ("note" in o) vd.note = o.note;
+      if ("error" in o) { vd.error = o.error; vd.loading = false; }
+      if (o.choices) {
+        vd.choices = o.choices; vd.subs = o.subs || []; vd.loading = false; vd.error = ""; vd.tools = o.tools;
+        if (o.title) vd.title = o.title;
+        vd.name = o.name || vd.name;
+        vdSelect(o.choices.length ? o.choices[0].key : "");
+        return;
+      }
+      if ("loading" in o) vd.loading = o.loading;
+      renderVidDlg();
+    },
     // Tab dari jendela lain dijatuhkan di titik (x) ini: pindahkan ke urutan yang sesuai.
     dropAt(id, x, y) {
       const p = x;
@@ -1041,7 +1089,7 @@
         else it.querySelector(".ds").textContent = live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
           : d.state === "failed" ? W.dlFailed : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
         const pz = it.querySelector(".pz");
-        if (d.engine && live) {
+        if ((d.engine || d.later) && live) {
           pz.innerHTML = d.state === "paused"
             ? '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M7 5l12 7-12 7z" fill="currentColor"/></svg>'
             : '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.6" fill="none"/></svg>';
@@ -1121,6 +1169,7 @@
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
     const dp = Math.max($("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0,
       $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0,
+      $("viddlg").classList.contains("show") ? $("viddlg").offsetHeight + 12 : 0,
       $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
       $("bmctx").classList.contains("show") ? $("bmctx").offsetTop + $("bmctx").offsetHeight + 12 : 0);
     let bm = 0;
@@ -1128,7 +1177,7 @@
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
     // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
     const rects = [];
-    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
       if (!el || !el.offsetParent || !el.offsetWidth) continue;
       const r = el.getBoundingClientRect();
       rects.push([r.left, r.top, r.width, r.height + 10]);
@@ -1136,7 +1185,7 @@
     send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm), rects });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeVid(); closeBm(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeVid(); closeVidDlg(); closeBm(); send({ cmd: "bubble-close" }); } });
   // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
   let darkOpen = false, darkKey = "";
   function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }
@@ -1212,27 +1261,105 @@
     if (!state.video && vidOpen) closeVid();
   }
   $("vidbtn").onclick = () => {
-    if (vidOpen) { closeVid(); return; }
+    if (vd.open) { closeVidDlg(); return; }
     hideOmni(); closeDark(); send({ cmd: "bubble-close" });
-    const p = $("vidpanel"); p.textContent = "";
-    const h = document.createElement("h3"); h.textContent = W.vid;
-    const t = document.createElement("div"); t.className = "t"; t.textContent = state.pageTitle || state.url || "";
-    p.append(h, t);
-    for (const [fmt, label, small] of [["best", W.vidBest, W.vidMp4], ["720", W.vid720, W.vidMp4], ["audio", W.vidAudio, "M4A"]]) {
-      const x = document.createElement("button"); x.className = "f";
-      x.innerHTML = "<span></span><small></small>";
-      x.firstChild.textContent = label; x.lastChild.textContent = small;
-      x.onclick = () => { send({ cmd: "video-dl", fmt }); closeVid(); };
-      p.append(x);
-    }
-    const tools = state.videoTools || [];
-    if (!tools[0] || !tools[1]) {
-      const n = document.createElement("div"); n.className = "note";
-      n.textContent = (tools[0] ? W.vidNoteFf : W.vidNote1 + W.vidNote2) + W.vidNote3;
-      p.append(n);
-    }
-    vidOpen = true; p.classList.add("show"); sendHeight();
+    send({ cmd: "video-open" });
   };
+  // ---- Dialog "Unduh video dari halaman": format/kualitas, audio saja, subtitle, folder, nama ----
+  let vd = { open: false };
+  const VW = {
+    id: { title: "Unduh video dari halaman", page: "Alamat halaman", look: "Telusuri", saveTo: "Simpan ke", name: "Nama berkas", subs: "Subtitle", noSubs: "Tidak ada di halaman ini",
+          none: "Tanpa subtitle", embed: "Masukkan ke video", now: "Unduh sekarang", later: "Nanti", cancel: "Batal", loading: "Mencari format video…", audio: "Audio saja", empty: "Tidak ada format yang bisa diunduh.",
+          tools: "Komponen yt-dlp/ffmpeg diunduh sekali saat pertama dipakai." },
+    en: { title: "Download video from a page", page: "Page address", look: "Look up", saveTo: "Save to", name: "File name", subs: "Subtitles", noSubs: "None on this page",
+          none: "No subtitles", embed: "Put them into the video", now: "Download Now", later: "Later", cancel: "Cancel", loading: "Looking up video formats…", audio: "Audio only", empty: "No downloadable formats.",
+          tools: "The yt-dlp/ffmpeg components are downloaded once on first use." },
+  };
+  const vfmt = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(2) + " GB" : (n / 1048576).toFixed(2) + " MB");
+  function closeVidDlg() { if (!vd.open) return; vd.open = false; $("viddlg").classList.remove("show"); sendHeight(); }
+  function vdChoice() { return (vd.choices || []).find((c) => c.key === vd.sel); }
+  function vdBase() { return (vd.name || "video").replace(/\.(mp4|m4a|mp3|opus|flac|webm|mkv)$/i, ""); }
+  function vdSelect(key) {
+    vd.sel = key;
+    const c = vdChoice();
+    if (!c) { renderVidDlg(); return; }
+    vd.name = vdBase() + "." + c.ext;
+    if (!vd.dirEdited) vd.dir = c.kind === "audio" ? vd.audioDir : vd.videoDir;
+    renderVidDlg();
+  }
+  function vdStart(later) {
+    const c = vdChoice();
+    if (!c || !vd.dir) return;
+    send({ cmd: "video-start", url: vd.url, key: c.key, dir: vd.dir, name: vd.name, sub: c.kind === "audio" ? "" : vd.sub || "", embed: !!vd.embed, later: !!later });
+    closeVidDlg();
+  }
+  function renderVidDlg() {
+    const w = VW[state && state.lang === "en" ? "en" : "id"];
+    const p = $("viddlg");
+    const ae = document.activeElement, focusId = ae && p.contains(ae) ? ae.dataset.k : null;
+    p.textContent = "";
+    const el = (tag, props, ...kids) => { const e = document.createElement(tag); Object.assign(e, props || {}); for (const k of kids) e.append(k); return e; };
+    const x = el("button", { textContent: "✕", title: w.cancel, onclick: closeVidDlg });
+    p.append(el("h3", {}, el("span", { textContent: w.title }), x));
+    p.append(el("div", { className: "lbl", textContent: w.page }));
+    const url = el("input", { type: "text", value: vd.url || "" }); url.dataset.k = "url";
+    url.oninput = () => { vd.url = url.value; };
+    url.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); look.click(); } };
+    const look = el("button", { className: "btn", textContent: w.look, onclick: () => { vd.loading = true; vd.error = ""; vd.choices = []; renderVidDlg(); send({ cmd: "video-lookup", url: vd.url }); } });
+    p.append(el("div", { className: "row" }, url, look));
+    p.append(el("div", { className: "ttl", textContent: vd.title || "", title: vd.title || "" }));
+    const list = el("div", { className: "list", tabIndex: 0 }); list.dataset.k = "list";
+    if (vd.loading) list.append(el("div", { className: "msg", textContent: vd.note || w.loading }));
+    else if (vd.error) list.append(el("div", { className: "msg err", textContent: vd.error }));
+    else if (!(vd.choices || []).length) list.append(el("div", { className: "msg", textContent: w.empty }));
+    for (const c of vd.loading ? [] : vd.choices || []) {
+      const ic = c.kind === "audio"
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>';
+      const row = el("div", { className: "it" + (c.key === vd.sel ? " sel" : "") });
+      row.innerHTML = ic;
+      const label = c.kind === "audio" && state && state.lang === "en" && c.en ? c.en : c.label;
+      row.append(el("span", { textContent: label }), el("span", { className: "sz", textContent: (c.approx ? "≈ " : "") + (c.size ? vfmt(c.size) : "—") }));
+      row.onclick = () => vdSelect(c.key);
+      row.ondblclick = () => { vdSelect(c.key); vdStart(false); };
+      list.append(row);
+    }
+    list.onkeydown = (e) => {
+      const cs = vd.choices || [], k = cs.findIndex((c) => c.key === vd.sel);
+      if (e.key === "ArrowDown" && k < cs.length - 1) { e.preventDefault(); vdSelect(cs[k + 1].key); }
+      else if (e.key === "ArrowUp" && k > 0) { e.preventDefault(); vdSelect(cs[k - 1].key); }
+    };
+    p.append(list);
+    p.append(el("div", { className: "lbl", textContent: w.saveTo }));
+    const dir = el("input", { type: "text", value: vd.dir || "" }); dir.dataset.k = "dir";
+    dir.oninput = () => { vd.dir = dir.value; vd.dirEdited = true; };
+    p.append(el("div", { className: "row" }, dir, el("button", { className: "btn", textContent: "…", onclick: () => send({ cmd: "video-browse", dir: vd.dir || "" }) })));
+    p.append(el("div", { className: "lbl", textContent: w.name }));
+    const name = el("input", { type: "text", value: vd.name || "" }); name.dataset.k = "name";
+    name.oninput = () => { vd.name = name.value; };
+    p.append(el("div", { className: "row" }, name));
+    const c = vdChoice(), audio = c && c.kind === "audio", subs = vd.subs || [];
+    p.append(el("div", { className: "lbl", textContent: w.subs }));
+    const sel = el("select", { disabled: audio || !subs.length }); sel.dataset.k = "sub";
+    sel.append(el("option", { value: "", textContent: subs.length ? w.none : w.noSubs }));
+    for (const sb of subs) sel.append(el("option", { value: sb.lang, textContent: sb.name + " (" + sb.lang + ")", selected: sb.lang === vd.sub }));
+    sel.onchange = () => { vd.sub = sel.value; renderVidDlg(); };
+    const emb = el("input", { type: "checkbox", checked: !!vd.embed, disabled: audio || !vd.sub }); emb.dataset.k = "embed";
+    emb.onchange = () => { vd.embed = emb.checked; };
+    p.append(el("div", { className: "row" }, sel, el("label", { className: "chk" }, emb, w.embed)));
+    if (vd.tools && (!vd.tools[0] || !vd.tools[1])) p.append(el("div", { className: "note", textContent: w.tools }));
+    const ready = !vd.loading && !!c;
+    const now = el("button", { className: "btn pri", textContent: w.now, disabled: !ready, onclick: () => vdStart(false) });
+    const later = el("button", { className: "btn", textContent: w.later, disabled: !ready, onclick: () => vdStart(true) });
+    p.append(el("div", { className: "foot" }, now, later, el("button", { className: "btn", textContent: w.cancel, onclick: closeVidDlg })));
+    p.onkeydown = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); closeVidDlg(); }
+      else if (e.key === "Enter" && e.target.tagName !== "INPUT" && e.target.tagName !== "BUTTON" && ready) { e.preventDefault(); vdStart(false); }
+    };
+    if (focusId) { const f = p.querySelector(`[data-k="${focusId}"]`); if (f) f.focus(); }
+    else if (ready) list.focus();
+    sendHeight();
+  }
   findq.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); send({ cmd: "find", text: findq.value, back: e.shiftKey }); }
     else if (e.key === "Escape") send({ cmd: "find-close" });

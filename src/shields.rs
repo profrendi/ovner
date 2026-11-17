@@ -260,6 +260,10 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "hideWv": s.hide_webview2 || s.uniform_fingerprint,
         "referrer": s.referrer_policy,
         "h264": s.youtube_h264 == "on" || (s.youtube_h264 == "auto" && s.gpu_mode == "off"),
+        // Tombol unduh di atas video (tab privat juga), kecuali di situs yang dikecualikan.
+        "videoBtn": s.video_button,
+        "videoNever": s.video_button_never,
+        "lang": crate::i18n::resolve(&s.language).code(),
         // Tab privat memakai kunci berbeda supaya tidak bisa dicocokkan dengan tab biasa.
         "key": format!("{:016x}", session ^ if private { 0x9e37_79b9_7f4a_7c15 } else { 0 }),
     });

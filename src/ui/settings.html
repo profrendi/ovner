@@ -171,6 +171,8 @@
       ["dl_connections", "number", yes("Koneksi per unduhan", "Connections per download"), yes("1–32, bawaan 8.", "1–32, default 8.")],
       ["dl_min_mb", "number", yes("Ambil alih berkas mulai (MB)", "Take over files from (MB)"), yes("Berkas kecil (PDF, gambar) tetap diunduh langsung oleh WebView2 karena lebih cepat. Bawaan 2 MB.", "Small files (PDFs, images) are still downloaded directly by WebView2 because that's faster. Default 2 MB.")],
       ["dl_box_v2", "bool", yes("Download box v2", "Download box v2"), yes("Gelembung unduhan yang lebih besar seperti Mister Download Manager: kecepatan, sisa waktu, lama berjalan, negara dan jarak server, koneksi, peta bagian. Berkas otomatis masuk folder sesuai jenisnya (Video, Music, Documents, Compressed, Programs, Pictures, Torrents). Mati = gelembung unduhan biasa.", "A larger download bubble like Mister Download Manager: speed, time left, elapsed, server country and distance, connections, part map. Files go into folders by type automatically (Video, Music, Documents, Compressed, Programs, Pictures, Torrents). Off = the normal download bubble.")],
+      ["video_button", "bool", yes("Tombol unduh di atas video", "Download button over videos"), yes("Seperti panel unduh Mister Download Manager: tombol \"Unduh video\" muncul di pojok kanan atas video (YouTube dan situs lain) saat kursor di atas video, lalu pilih kualitas, audio saja (M4A/MP3/OPUS/FLAC), subtitle, folder, dan nama berkas.", "Like Mister Download Manager's download panels: a \"Download video\" button appears at the top right of videos (YouTube and other sites) when the pointer is over them; then pick quality, audio only (M4A/MP3/OPUS/FLAC), subtitles, folder and file name.")],
+      ["video_button_never", "list", yes("Jangan tampilkan tombol itu di situs ini", "Never show it on these sites"), yes("Juga lewat menu tombol → Jangan di situs ini.", "Also via the button's menu → Never on this site.")],
       ["dl_server_info", "bool", yes("Tampilkan lokasi dan jarak server", "Show server location and distance"), yes("Negara, kota, penyedia, dan jarak server unduhan dicari lewat ipwho.is (hanya alamat IP yang dikirim).", "The download server's country, city, provider and distance are looked up via ipwho.is (only IP addresses are sent).")],
       ["pdf_download", "bool", yes("Unduh PDF besar, jangan dibuka", "Download large PDFs instead of opening them"), yes("PDF berukuran besar (mis. kartu BPJS ratusan peserta) langsung masuk ke unduhan dan bisa dibuka dengan aplikasi PDF. Penampil PDF bawaan sering kosong/hitam untuk PDF sebesar itu.", "Large PDFs (e.g. hundreds of BPJS cards) go straight to downloads and can be opened in a PDF app. The built-in viewer often stays blank for files that big.")],
       ["pdf_download_mb", "number", yes("Ukuran PDF minimum untuk diunduh (MB)", "Minimum PDF size to download (MB)"), yes("PDF yang lebih kecil tetap dibuka di tab.", "Smaller PDFs still open in the tab.")],
@@ -381,6 +383,12 @@
     renderPresets();
     if (!langChanged && a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT") && a.id !== "q") return;
     build();
+    // Dibuka ke bagian tertentu (mis. #s-downloads dari menu tombol unduh video).
+    if (location.hash && !window.__hashDone) {
+      window.__hashDone = true;
+      const el = document.getElementById(location.hash.slice(1));
+      if (el) el.scrollIntoView();
+    }
   };
   document.getElementById("q").oninput = filter;
   document.getElementById("update").onclick = () => post({ t: "check-update" });

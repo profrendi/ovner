@@ -565,3 +565,126 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();
 })();
+
+// Tombol "Unduh video" di atas video (seperti panel unduh Mister Download Manager): muncul di
+// pojok kanan atas video saat kursor di atasnya; menu ▾: sembunyikan di video ini, jangan di
+// situs ini, pengaturan tombol. Ringan: hanya bereaksi pada gerak mouse (maks. ~8x/detik).
+(function () {
+  const cfg = window.__ovnerCfg || {};
+  if (window.top !== window || !cfg.videoBtn || !/^https?:$/.test(location.protocol) || window.__ovnerVid) return;
+  try { Object.defineProperty(window, "__ovnerVid", { value: true }); } catch (e) { return; }
+  const host = location.hostname.replace(/^www\./, "").toLowerCase();
+  if ((cfg.videoNever || []).some((h) => host === h || host.endsWith("." + h))) return;
+  const cw = window.chrome && window.chrome.webview;
+  const send = cw && cw.postMessage ? cw.postMessage.bind(cw) : null;
+  const ipc = window.ipc;
+  const post = (o) => { try { const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s); } catch (e) {} };
+  const id = cfg.lang !== "en";
+  const W = id
+    ? { dl: "Unduh video", hide: "Sembunyikan di video ini", never: "Jangan di " + location.hostname, set: "Pengaturan tombol…" }
+    : { dl: "Download video", hide: "Hide on this video", never: "Never on " + location.hostname, set: "Button settings…" };
+  const vids = document.getElementsByTagName("video");
+  const hidden = new WeakSet();
+  let hostEl = null, box = null, menu = null, cur = null, hideT = 0, off = false, menuOpen = false, last = 0, raf = 0;
+
+  function build() {
+    hostEl = document.createElement("ovner-video-button");
+    hostEl.style.cssText = "all:initial;position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none";
+    const root = hostEl.attachShadow({ mode: "closed" });
+    root.innerHTML = `<style>
+      .b{position:fixed;display:none;align-items:stretch;pointer-events:auto;font:500 13px/1 "Segoe UI",system-ui,sans-serif;color:#1f2328;
+         background:#f6f7f9;border:1px solid rgba(0,0,0,.18);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.35);overflow:hidden;user-select:none}
+      .b button{all:unset;cursor:pointer;display:flex;align-items:center;gap:7px;padding:7px 11px}
+      .b button:hover{background:#e6eaf0}
+      .b .m{padding:7px 7px;border-left:1px solid rgba(0,0,0,.14)}
+      svg{width:16px;height:16px;flex:none}
+      .menu{position:fixed;display:none;pointer-events:auto;min-width:210px;padding:4px;font:400 13px/1.2 "Segoe UI",system-ui,sans-serif;color:#1f2328;
+         background:#fbfbfc;border:1px solid rgba(0,0,0,.18);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+      .menu button{all:unset;display:block;box-sizing:border-box;width:100%;padding:8px 12px;border-radius:5px;cursor:pointer}
+      .menu button:hover{background:#e6eaf0}
+      .menu hr{border:0;border-top:1px solid rgba(0,0,0,.12);margin:4px 2px}
+    </style>
+    <div class="b"><button class="d"><svg viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span></span></button><button class="m" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10l5 5 5-5"/></svg></button></div>
+    <div class="menu"><button data-a="dl"></button><hr><button data-a="hide"></button><button data-a="never"></button><hr><button data-a="set"></button></div>`;
+    box = root.querySelector(".b");
+    menu = root.querySelector(".menu");
+    box.querySelector(".d span").textContent = W.dl;
+    for (const b of menu.querySelectorAll("button")) b.textContent = W[b.dataset.a];
+    box.querySelector(".d").onclick = (e) => { e.stopPropagation(); download(); };
+    box.querySelector(".m").onclick = (e) => {
+      e.stopPropagation();
+      menuOpen = !menuOpen;
+      menu.style.display = menuOpen ? "block" : "none";
+      if (menuOpen) {
+        const r = box.getBoundingClientRect();
+        menu.style.top = r.bottom + 4 + "px";
+        menu.style.left = Math.max(4, r.right - menu.offsetWidth) + "px";
+      }
+    };
+    menu.onclick = (e) => {
+      const a = e.target.dataset && e.target.dataset.a;
+      if (!a) return;
+      e.stopPropagation();
+      if (a === "dl") download();
+      else if (a === "hide") { if (cur) hidden.add(cur); hide(); }
+      else if (a === "never") { off = true; hide(); post({ t: "video-never" }); }
+      else if (a === "set") { hide(); post({ t: "video-settings" }); }
+    };
+    for (const el of [box, menu]) {
+      // Klik di tombol tidak sampai ke pemutar video halaman (jeda/putar).
+      for (const ev of ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "dblclick"]) el.addEventListener(ev, (e) => e.stopPropagation());
+      el.addEventListener("mouseenter", () => clearTimeout(hideT));
+    }
+    (document.body || document.documentElement).appendChild(hostEl);
+  }
+  function download() {
+    hide();
+    post({ t: "video-dl", page: location.href, src: cur && /^https?:/.test(cur.currentSrc || "") ? cur.currentSrc : "" });
+  }
+  function place() {
+    if (!cur || !box) return;
+    const r = cur.getBoundingClientRect();
+    if (!r.width || r.bottom < 0 || r.top > innerHeight) { hide(); return; }
+    box.style.left = Math.max(4, Math.min(r.right, innerWidth) - box.offsetWidth - 12) + "px";
+    box.style.top = Math.max(r.top, 0) + 12 + "px";
+  }
+  function show(v) {
+    if (!box) build();
+    if (cur !== v) { menuOpen = false; menu.style.display = "none"; }
+    cur = v;
+    box.style.display = "flex";
+    place();
+    clearTimeout(hideT);
+  }
+  function hide() {
+    clearTimeout(hideT);
+    if (!box) return;
+    box.style.display = "none";
+    menu.style.display = "none";
+    menuOpen = false;
+    cur = null;
+  }
+  // YouTube: hanya di halaman video (bukan pratinjau video di beranda/hasil pencarian).
+  const ytList = () => /(^|\.)youtube\.com$/.test(host) && !/^\/(watch|shorts|live|embed)/.test(location.pathname);
+  function check(x, y) {
+    if (off || document.fullscreenElement || ytList()) { if (cur) hide(); return; }
+    for (const v of vids) {
+      if (hidden.has(v)) continue;
+      const r = v.getBoundingClientRect();
+      if (r.width < 220 || r.height < 120) continue;
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { show(v); return; }
+    }
+    if (cur && !menuOpen) { clearTimeout(hideT); hideT = setTimeout(hide, 1200); }
+  }
+  document.addEventListener("mousemove", (e) => {
+    const now = e.timeStamp;
+    if (now - last < 120 || !vids.length) return;
+    last = now;
+    check(e.clientX, e.clientY);
+  }, { capture: true, passive: true });
+  document.addEventListener("mouseleave", () => { if (cur && !menuOpen) { clearTimeout(hideT); hideT = setTimeout(hide, 800); } });
+  document.addEventListener("click", (e) => { if (menuOpen && !e.composedPath().includes(hostEl)) { menuOpen = false; menu.style.display = "none"; } }, true);
+  const follow = () => { if (cur && !raf) raf = requestAnimationFrame(() => { raf = 0; place(); }); };
+  addEventListener("scroll", follow, { capture: true, passive: true });
+  addEventListener("resize", follow, { passive: true });
+})();
