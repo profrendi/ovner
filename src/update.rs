@@ -102,7 +102,21 @@ pub fn check_and_stage(data_dir: &Path, channel: &str) -> Result<Option<String>,
     if !latest.url.starts_with(&format!("https://github.com/{REPO}/releases/download/")) {
         return Err("URL update tidak dikenal, dibatalkan".into());
     }
-    let new = exe.with_extension("exe.new");
+    // Instalasi Program Files: folder exe tidak bisa ditulis tanpa admin. Simpan update di
+    // folder data; dipasang dengan izin admin saat Ovner dibuka ulang (apply_machine_update).
+    let machine = crate::install::is_machine_copy(&exe);
+    let stage_dir = data_dir.join("update");
+    if machine && machine_staged(data_dir).is_some_and(|(_, v)| v == latest.version) {
+        // Sudah diunduh, tinggal dipasang dengan izin admin.
+        let label = if channel == "nightly" { format!("{}-nightly.{}", latest.version, latest.build) } else { latest.version.clone() };
+        return Ok(Some(label));
+    }
+    let new = if machine {
+        std::fs::create_dir_all(&stage_dir).map_err(|e| e.to_string())?;
+        stage_dir.join(crate::install::EXE_NAME)
+    } else {
+        exe.with_extension("exe.new")
+    };
     let old = exe.with_extension("exe.old");
     crate::win::download(&latest.url, &new)?;
     let bytes = std::fs::read(&new).map_err(|e| e.to_string())?;
@@ -111,14 +125,26 @@ pub fn check_and_stage(data_dir: &Path, channel: &str) -> Result<Option<String>,
         let _ = std::fs::remove_file(&new);
         return Err("checksum update tidak cocok, dibatalkan".into());
     }
+    let label = if channel == "nightly" { format!("{}-nightly.{}", latest.version, latest.build) } else { latest.version.clone() };
+    if machine {
+        std::fs::write(stage_dir.join("version.txt"), &latest.version).map_err(|e| e.to_string())?;
+        return Ok(Some(label));
+    }
     let _ = std::fs::remove_file(&old);
     std::fs::rename(&exe, &old).map_err(|e| format!("ganti nama exe lama: {e}"))?;
     if let Err(e) = std::fs::rename(&new, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("pasang exe baru: {e}"));
     }
-    let label = if channel == "nightly" { format!("{}-nightly.{}", latest.version, latest.build) } else { latest.version };
     Ok(Some(label))
+}
+
+/// Update Program Files yang sudah diunduh dan lebih baru dari versi ini: (exe, versi).
+pub fn machine_staged(data_dir: &Path) -> Option<(std::path::PathBuf, String)> {
+    let dir = data_dir.join("update");
+    let exe = dir.join(crate::install::EXE_NAME);
+    let v = std::fs::read_to_string(dir.join("version.txt")).ok()?.trim().to_string();
+    (exe.is_file() && is_newer(&v, env!("CARGO_PKG_VERSION"))).then_some((exe, v))
 }
 
 #[cfg(not(windows))]

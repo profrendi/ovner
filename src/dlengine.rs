@@ -277,6 +277,16 @@ pub fn pdf_name(disposition: &str, url: &str) -> String {
     name
 }
 
+/// Alamat yang biasanya menghasilkan berkas (PDF kartu, laporan, ekspor). Hanya bagian path
+/// yang dilihat, bukan query (pencarian "download ..." bukan unduhan).
+pub fn looks_like_download(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    let Some(rest) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) else { return false };
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once('/').map(|(_, p)| p).unwrap_or("");
+    ["download", "cetak", ".pdf", "export", "unduh"].iter().any(|k| path.contains(k))
+}
+
 pub fn unique_path(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
@@ -719,6 +729,16 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_like_urls() {
+        assert!(looks_like_download("https://sipp.bpjsketenagakerjaan.go.id/kartu/download"));
+        assert!(looks_like_download("https://x.go.id/laporan/cetak-kartu?id=1"));
+        assert!(looks_like_download("http://a.b/doc/file.PDF"));
+        assert!(!looks_like_download("https://www.startpage.com/sp/search?query=download+pdf"));
+        assert!(!looks_like_download("https://download.example.com/"));
+        assert!(!looks_like_download("ovner://downloads"));
+    }
 
     #[test]
     fn pdf_names() {

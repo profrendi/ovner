@@ -28,6 +28,14 @@ pub enum DlEvent {
     Progress { id: u64, received: i64, total: i64 },
     /// Selesai (`ok`), gagal/dibatalkan (`!ok`).
     Done { id: u64, ok: bool, path: String, received: i64 },
+    /// Halaman yang tampaknya unduhan (alamat berisi "download", "cetak", ".pdf", ...) sedang
+    /// menunggu server: ditampilkan langsung di daftar unduhan (server SIPP butuh ±1 menit
+    /// membuat PDF sebelum mengirim byte pertama).
+    Waiting { id: u64, url: String },
+    /// Ternyata bukan unduhan (halaman biasa) atau gagal: hapus tampilan menunggu.
+    WaitEnd { id: u64 },
+    /// Baris untuk ovner.log.
+    Log(String),
 }
 
 /// Jenis kegagalan proses WebView2.
@@ -82,9 +90,102 @@ mod imp {
         message_box(text, MB_YESNO | MB_ICONQUESTION) == IDYES.0
     }
 
+    /// Ya = Some(true), Tidak = Some(false), Batal = None.
+    pub fn ask_yes_no_cancel(text: &str) -> Option<bool> {
+        use windows::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION, MB_YESNOCANCEL};
+        match message_box(text, MB_YESNOCANCEL | MB_ICONQUESTION) {
+            r if r == IDYES.0 => Some(true),
+            r if r == IDNO.0 => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn info(text: &str) {
         use windows::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK};
         message_box(text, MB_OK | MB_ICONINFORMATION);
+    }
+
+    /// Jalankan `exe args` sebagai admin (dialog UAC) dan tunggu sampai selesai. Hasil: kode
+    /// keluar proses itu; Err bila UAC ditolak atau gagal dijalankan.
+    pub fn run_elevated(exe: &Path, args: &str) -> Result<u32, String> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+        use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let verb = HSTRING::from("runas");
+        let file = HSTRING::from(exe.as_os_str());
+        let params = HSTRING::from(args);
+        let parent = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dir = HSTRING::from(parent.as_os_str());
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+            lpVerb: windows::core::PCWSTR(verb.as_ptr()),
+            lpFile: windows::core::PCWSTR(file.as_ptr()),
+            lpParameters: windows::core::PCWSTR(params.as_ptr()),
+            lpDirectory: windows::core::PCWSTR(dir.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        unsafe {
+            ShellExecuteExW(&mut info).map_err(|e| e.message().to_string())?;
+            if info.hProcess.is_invalid() {
+                return Err("proses admin tidak bisa dipantau".into());
+            }
+            WaitForSingleObject(info.hProcess, INFINITE);
+            let mut code = 1u32;
+            let _ = GetExitCodeProcess(info.hProcess, &mut code);
+            let _ = CloseHandle(info.hProcess);
+            Ok(code)
+        }
+    }
+
+    /// Proses ini berjalan sebagai admin (token elevated).
+    pub fn is_elevated() -> bool {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+                return false;
+            }
+            let mut e = TOKEN_ELEVATION::default();
+            let mut len = 0u32;
+            let ok = GetTokenInformation(token, TokenElevation, Some(&mut e as *mut _ as *mut core::ffi::c_void), std::mem::size_of::<TOKEN_ELEVATION>() as u32, &mut len).is_ok();
+            let _ = CloseHandle(token);
+            ok && e.TokenIsElevated != 0
+        }
+    }
+
+    /// Dialog pilih folder Windows. `start` = folder awal.
+    pub fn pick_folder(owner: Option<isize>, title: &str, start: &Path) -> Option<std::path::PathBuf> {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+        use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            let opts = dlg.GetOptions().unwrap_or_default();
+            let _ = dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+            let _ = dlg.SetTitle(&HSTRING::from(title));
+            let mut dir = start.to_path_buf();
+            while !dir.is_dir() {
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => break,
+                }
+            }
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(dir.as_os_str()), None::<&windows::Win32::System::Com::IBindCtx>) {
+                let _ = dlg.SetFolder(&item);
+            }
+            dlg.Show(owner.map(|h| HWND(h as *mut core::ffi::c_void))).ok()?;
+            let item = dlg.GetResult().ok()?;
+            let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+            s.map(std::path::PathBuf::from)
+        }
     }
 
     /// Identitas aplikasi untuk taskbar (ikon & pengelompokan jendela).
@@ -479,7 +580,15 @@ mod imp {
     /// Batalkan unduhan WebView2 / PDF `id`. Mengembalikan true bila unduhan itu dikenal.
     pub fn cancel_download(id: u64) -> bool {
         if STREAMS.with(|m| m.borrow().contains_key(&id)) {
-            finish_stream(id, false);
+            finish_stream(id, false, "dibatalkan");
+            return true;
+        }
+        let waiting = WAITING.with(|m| {
+            m.borrow_mut().values_mut().find(|(i, _)| *i == id).map(|w| {
+                w.1 = true;
+            })
+        });
+        if waiting.is_some() {
             return true;
         }
         DOWNLOADS.with(|d| {
@@ -1024,7 +1133,20 @@ mod imp {
         received: i64,
         total: i64,
         last: std::time::Instant,
+        started: std::time::Instant,
         cb: std::rc::Rc<dyn Fn(DlEvent)>,
+    }
+
+    thread_local! {
+        /// Permintaan dokumen yang sedang menunggu jawaban server: kunci tugas Fetch
+        /// ("interception-job-N", tanpa akhiran pengalihan) → (id unduhan, dibatalkan).
+        static WAITING: std::cell::RefCell<std::collections::HashMap<String, (u64, bool)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// Alamat yang biasanya menghasilkan berkas (PDF kartu, laporan, ekspor).
+    fn looks_like_download(url: &str) -> bool {
+        crate::dlengine::looks_like_download(url)
     }
 
     /// Panggil metode DevTools pada `core` dan terima hasilnya (`None` = gagal).
@@ -1051,18 +1173,32 @@ mod imp {
 
     /// Akhiri unduhan PDF `id`: `ok` = selesai utuh. Halaman (yang menunggu) diberi halaman
     /// kecil "tersimpan" atau dibatalkan, lalu `Done` dikirim.
-    fn finish_stream(id: u64, ok: bool) {
+    fn finish_stream(id: u64, ok: bool, reason: &str) {
         let Some(mut st) = STREAMS.with(|m| m.borrow_mut().remove(&id)) else { return };
         drop(st.file.take());
         if !st.handle.is_empty() {
             cdp_core(&st.core, "IO.close", &serde_json::json!({"handle": st.handle}).to_string());
         }
+        let mut reason = reason.to_string();
         // Aliran berakhir lebih pendek dari Content-Length: koneksi putus, berkas tidak utuh.
-        let mut ok = ok && (st.total <= 0 || st.received == st.total);
+        let mut ok = ok;
+        if ok && st.total > 0 && st.received != st.total {
+            ok = false;
+            reason = "koneksi server terputus sebelum selesai".into();
+        }
         if ok {
             let _ = std::fs::remove_file(&st.path);
-            ok = std::fs::rename(&st.part, &st.path).is_ok();
+            if let Err(e) = std::fs::rename(&st.part, &st.path) {
+                ok = false;
+                reason = format!("ganti nama berkas gagal: {e}");
+            }
         }
+        let secs = st.started.elapsed().as_secs_f64();
+        (st.cb)(DlEvent::Log(if ok {
+            format!("PDF tersimpan: {} ({} KB dalam {:.1} dtk, {:.0} KB/dtk)", st.path, st.received / 1024, secs, st.received as f64 / 1024.0 / secs.max(0.1))
+        } else {
+            format!("PDF gagal: {} ({reason}; {} dari {} byte, {:.1} dtk)", st.path, st.received, st.total, secs)
+        }));
         if ok {
             use base64::Engine as _;
             let name = Path::new(&st.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -1096,12 +1232,12 @@ mod imp {
         cdp_then(&core, "IO.read", &params, move |v| {
             use base64::Engine as _;
             use std::io::Write as _;
-            let Some(v) = v else { return finish_stream(id, false) };
+            let Some(v) = v else { return finish_stream(id, false, "IO.read gagal (tab ditutup atau aliran putus)") };
             let data = v["data"].as_str().unwrap_or("");
             let bytes = if v["base64Encoded"].as_bool().unwrap_or(false) {
                 match base64::prelude::BASE64_STANDARD.decode(data) {
                     Ok(b) => b,
-                    Err(_) => return finish_stream(id, false),
+                    Err(_) => return finish_stream(id, false, "data aliran rusak"),
                 }
             } else {
                 data.as_bytes().to_vec()
@@ -1123,10 +1259,10 @@ mod imp {
             });
             let Some((due, received, total, cb)) = progress else {
                 // Dibatalkan (sudah dihapus dari daftar) atau gagal menulis.
-                return finish_stream(id, false);
+                return finish_stream(id, false, "gagal menulis berkas");
             };
             if eof {
-                return finish_stream(id, true);
+                return finish_stream(id, true, "");
             }
             if due {
                 cb(DlEvent::Progress { id, received, total: total.max(received) });
@@ -1163,10 +1299,38 @@ mod imp {
             if req.is_empty() {
                 return Ok(());
             }
+            let url = v["request"]["url"].as_str().unwrap_or("").to_string();
+            let job = req.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or_else(|| req.clone());
+            let continue_req = |sender: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2| cdp_core(sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+            // Tahap permintaan (hanya alamat yang mirip unduhan): tampilkan "menunggu server"
+            // segera, jangan tunggu server selesai membuat berkasnya.
+            if v.get("responseStatusCode").is_none() && v.get("responseErrorReason").is_none() {
+                if looks_like_download(&url) && !WAITING.with(|m| m.borrow().contains_key(&job)) {
+                    let id = next_download_id();
+                    WAITING.with(|m| m.borrow_mut().insert(job.clone(), (id, false)));
+                    cb(DlEvent::Waiting { id, url: url.clone() });
+                }
+                continue_req(&sender);
+                return Ok(());
+            }
+            let waiting = WAITING.with(|m| m.borrow_mut().remove(&job));
+            if let Some((wid, true)) = waiting {
+                // Dibatalkan pengguna saat menunggu server.
+                cdp_core(&sender, "Fetch.failRequest", &serde_json::json!({"requestId": req, "errorReason": "Aborted"}).to_string());
+                cb(DlEvent::WaitEnd { id: wid });
+                return Ok(());
+            }
             let headers = v["responseHeaders"].as_array().cloned().unwrap_or_default();
             let hv = |name: &str| headers.iter().find(|h| h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name))).and_then(|h| h["value"].as_str()).map(str::to_string);
-            let url = v["request"]["url"].as_str().unwrap_or("").to_string();
             let status = v["responseStatusCode"].as_i64().unwrap_or(0);
+            if (300..400).contains(&status) {
+                // Pengalihan: permintaan berikutnya masih tugas yang sama.
+                if let Some(w) = waiting {
+                    WAITING.with(|m| m.borrow_mut().insert(job.clone(), w));
+                }
+                continue_req(&sender);
+                return Ok(());
+            }
             let is_pdf = hv("content-type").is_some_and(|c| c.to_ascii_lowercase().contains("application/pdf"));
             let disp = hv("content-disposition").unwrap_or_default();
             let len = hv("content-length").and_then(|l| l.trim().parse::<u64>().ok());
@@ -1180,19 +1344,26 @@ mod imp {
                 None
             };
             let Some(path) = target else {
-                cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+                if let Some((wid, _)) = waiting {
+                    cb(DlEvent::WaitEnd { id: wid });
+                }
+                continue_req(&sender);
                 return Ok(());
             };
             let part = std::path::PathBuf::from(format!("{path}.ovnerpart"));
             let file = match std::fs::File::create(&part) {
                 Ok(f) => f,
-                Err(_) => {
+                Err(e) => {
                     // Tidak bisa menulis: tampilkan PDF seperti biasa.
-                    cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+                    cb(DlEvent::Log(format!("PDF tidak bisa disimpan ke {path}: {e}")));
+                    if let Some((wid, _)) = waiting {
+                        cb(DlEvent::WaitEnd { id: wid });
+                    }
+                    continue_req(&sender);
                     return Ok(());
                 }
             };
-            let id = next_download_id();
+            let id = waiting.map(|(w, _)| w).unwrap_or_else(next_download_id);
             STREAMS.with(|m| {
                 m.borrow_mut().insert(
                     id,
@@ -1206,10 +1377,12 @@ mod imp {
                         received: 0,
                         total,
                         last: std::time::Instant::now(),
+                        started: std::time::Instant::now(),
                         cb: cb.clone(),
                     },
                 )
             });
+            cb(DlEvent::Log(format!("PDF diunduh langsung dari respons: {url} → {path} ({} KB)", total / 1024)));
             cb(DlEvent::Started { id, url, path, total });
             cdp_then(&sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
                 let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
@@ -1223,7 +1396,7 @@ mod imp {
                     return;
                 }
                 if handle.is_empty() {
-                    return finish_stream(id, false);
+                    return finish_stream(id, false, "aliran respons tidak didapat");
                 }
                 read_stream(id);
             });
@@ -1235,7 +1408,13 @@ mod imp {
                 let _ = r.add_DevToolsProtocolEventReceived(&handler, &mut token);
             }
         }
-        cdp(webview, "Fetch.enable", r#"{"patterns":[{"urlPattern":"*","resourceType":"Document","requestStage":"Response"}]}"#);
+        // Tahap respons: semua dokumen (cek PDF). Tahap permintaan: hanya alamat yang mirip
+        // unduhan, supaya bisa langsung ditampilkan "menunggu server".
+        let mut patterns = vec![serde_json::json!({"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"})];
+        for k in ["*download*", "*Download*", "*cetak*", "*.pdf*", "*export*", "*unduh*"] {
+            patterns.push(serde_json::json!({"urlPattern": k, "resourceType": "Document", "requestStage": "Request"}));
+        }
+        cdp(webview, "Fetch.enable", &serde_json::json!({"patterns": patterns}).to_string());
     }
 
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
@@ -1544,6 +1723,18 @@ mod imp {
         eprintln!("[info] {text}");
     }
     pub fn init_identity() {}
+    pub fn ask_yes_no_cancel(_text: &str) -> Option<bool> {
+        None
+    }
+    pub fn run_elevated(_exe: &Path, _args: &str) -> Result<u32, String> {
+        Err("hanya di Windows".into())
+    }
+    pub fn is_elevated() -> bool {
+        false
+    }
+    pub fn pick_folder(_owner: Option<isize>, _title: &str, _start: &Path) -> Option<std::path::PathBuf> {
+        None
+    }
     pub fn create_shortcut(_lnk: &Path, _exe: &Path, _description: &str) -> Result<(), String> {
         Ok(())
     }

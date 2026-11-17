@@ -21,6 +21,7 @@ mod dlengine;
 mod video;
 mod usage;
 mod settings;
+mod setup_ui;
 mod vault;
 mod shields;
 mod store;
@@ -560,10 +561,21 @@ struct App {
     dl_meta: HashMap<u64, DlMeta>,
     /// Sedang membuka ulang Ovner (setelah mesin WebView2 mati).
     restarting: bool,
+    /// Buka ulang untuk memasang update (instalasi Program Files: minta izin admin).
+    apply_update: bool,
     /// Unduhan yang dibatalkan saat masih menguji server.
     dl_cancelled: HashSet<u64>,
     /// Unduhan WebView2 yang dibatalkan paksa (WebView2 tidak menanggapi Cancel).
     dl_forced: HashSet<u64>,
+    /// Halaman mirip unduhan yang menunggu server: id → (tab, alamat, sejak).
+    dl_waiting: HashMap<u64, (u64, String, Instant)>,
+    /// Unduhan mesin Ovner yang dijeda sementara supaya PDF (satu koneksi) dapat seluruh
+    /// bandwidth; dilanjutkan otomatis setelah PDF selesai.
+    dl_yield: HashSet<u64>,
+    /// Dilanjutkan sendiri oleh pengguna saat PDF berjalan: jangan dijeda lagi.
+    dl_no_yield: HashSet<u64>,
+    /// Mode efisiensi Windows (EcoQoS, prioritas rendah) sedang diterapkan ke proses Ovner.
+    eco_on: bool,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
     bm_edit: Option<(String, bool)>,
     /// Folder bookmark yang sedang diedit (alamat yang sama bisa ada di beberapa folder).
@@ -1604,9 +1616,7 @@ impl App {
                 }
             }
         }
-        if s.efficiency_mode {
-            win::set_background_mode(true);
-        }
+        self.refresh_eco();
         if s.trim_when_hidden {
             // Beri waktu WebView2 membuang cache dulu, baru working set dikosongkan.
             self.next_trim = Some(Instant::now() + Duration::from_secs(3));
@@ -1620,9 +1630,7 @@ impl App {
         }
         self.background = false;
         self.next_trim = None;
-        if self.settings.borrow().efficiency_mode {
-            win::set_background_mode(false);
-        }
+        self.refresh_eco();
         // activate() membangunkan tab aktif (dan pasangan split) dan menampilkannya lagi.
         let a = self.active;
         self.activate(a);
@@ -1867,6 +1875,21 @@ impl App {
 
     fn on_download(&mut self, tab: u64, ev: win::DlEvent) {
         match ev {
+            win::DlEvent::Log(text) => {
+                log(&text);
+                return;
+            }
+            win::DlEvent::Waiting { id, url } => {
+                // Ditampilkan bila server belum menjawab setelah sebentar (lihat on_tick), supaya
+                // halaman biasa yang alamatnya berisi "download" tidak berkedip di daftar.
+                self.dl_waiting.insert(id, (tab, url, Instant::now()));
+                return;
+            }
+            win::DlEvent::WaitEnd { id } => {
+                self.dl_waiting.remove(&id);
+                self.drop_waiting_entry(id);
+                return;
+            }
             win::DlEvent::Offer { id, url, path, total, cookie } => {
                 self.popup_started_download(tab, &url);
                 // Uji server di latar: Range didukung → mesin unduh Ovner, selain itu WebView2.
@@ -1925,6 +1948,7 @@ impl App {
                 return;
             }
             win::DlEvent::Started { id, url, path, total } => {
+                self.dl_waiting.remove(&id);
                 if let Some(i) = self.tab_index(tab) {
                     self.tabs[i].downloads_live += 1;
                 }
@@ -1941,6 +1965,7 @@ impl App {
                         m.resumable = Some(false);
                     }
                 }
+                self.connecting_done(id);
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     // Sudah ditampilkan saat menguji server: lanjut dengan WebView2.
                     d.path = path;
@@ -2011,11 +2036,118 @@ impl App {
                     }
                 }
                 self.save_downloads();
+                self.update_priority();
             }
         }
         self.refresh_pages("downloads");
         self.last_render_key.clear();
         self.render();
+    }
+
+    /// Hapus tampilan "menunggu server" yang ternyata bukan unduhan.
+    fn drop_waiting_entry(&mut self, id: u64) {
+        let connecting = self.dl_meta.get(&id).is_some_and(|m| m.connecting);
+        if let Some(pos) = self.downloads.iter().position(|d| d.id == id && d.state == "progress") {
+            if connecting {
+                self.downloads.remove(pos);
+                self.dl_meta.remove(&id);
+                self.save_downloads();
+                self.refresh_pages("downloads");
+                self.last_render_key.clear();
+                self.render();
+            }
+        }
+    }
+
+    /// Tampilkan halaman yang sudah menunggu server lebih dari 1,5 detik sebagai unduhan
+    /// ("Menghubungkan…" dengan waktu berjalan), sebelum byte pertama datang.
+    fn promote_waiting(&mut self) {
+        // Tab-nya sudah ditutup: lupakan.
+        let gone: Vec<u64> = self.dl_waiting.iter().filter(|(_, w)| self.tab_index(w.0).is_none()).map(|(k, _)| *k).collect();
+        for k in gone {
+            self.dl_waiting.remove(&k);
+            self.drop_waiting_entry(k);
+        }
+        let due: Vec<(u64, u64, String)> = self
+            .dl_waiting
+            .iter()
+            .filter(|(id, (_, _, t))| t.elapsed() >= Duration::from_millis(1500) && !self.downloads.iter().any(|d| d.id == **id))
+            .map(|(id, (tab, url, _))| (*id, *tab, url.clone()))
+            .collect();
+        for (id, _tab, url) in due {
+            let name = url.split(['?', '#']).next().unwrap_or("").rsplit('/').find(|s| !s.is_empty()).unwrap_or("unduhan").to_string();
+            self.downloads.push(Download {
+                id,
+                url: url.clone(),
+                path: String::new(),
+                name,
+                total: 0,
+                received: 0,
+                state: "progress".into(),
+                time: store::now(),
+                engine: false,
+                speed: 0,
+                conns: 0,
+                video: false,
+                tab: 0,
+            });
+            let started = self.dl_waiting.get(&id).map(|w| w.2);
+            let m = self.dl_meta.entry(id).or_default();
+            m.connecting = true;
+            m.started = started;
+            self.dl_bubble = true;
+            self.download_started(id);
+            log(&format!("menunggu server membuat berkas: {url}"));
+            self.last_render_key.clear();
+            self.render();
+        }
+    }
+
+    /// Server mulai mengirim: tampilan "menunggu" menjadi unduhan berjalan.
+    fn connecting_done(&mut self, id: u64) {
+        if let Some(m) = self.dl_meta.get_mut(&id) {
+            m.connecting = false;
+        }
+        self.update_priority();
+    }
+
+    /// PDF (satu koneksi, dari respons halaman) didahulukan: unduhan mesin Ovner yang lain
+    /// dijeda sementara supaya tidak berebut bandwidth (dulu PDF kartu SIPP hanya ±35 KB/dtk
+    /// karena ISO 8 koneksi berjalan bersamaan, lalu server memutus sebelum selesai).
+    fn update_priority(&mut self) {
+        let pdf = self.downloads.iter().any(|d| d.state == "progress" && self.dl_meta.get(&d.id).is_some_and(|m| m.pdf));
+        if pdf {
+            for (id, (job, _)) in &self.dl_jobs {
+                if !job.paused() && !self.dl_yield.contains(id) && !self.dl_no_yield.contains(id) {
+                    job.pause();
+                    self.dl_yield.insert(*id);
+                    log(&format!("unduhan {id} dijeda sementara: PDF didahulukan"));
+                }
+            }
+        } else if !self.dl_yield.is_empty() {
+            for id in std::mem::take(&mut self.dl_yield) {
+                if let Some((job, _)) = self.dl_jobs.get(&id) {
+                    job.resume();
+                    log(&format!("unduhan {id} dilanjutkan"));
+                }
+            }
+            self.dl_no_yield.clear();
+        }
+    }
+
+    /// Ada unduhan berjalan (atau halaman yang menunggu server membuat berkas).
+    fn downloading(&self) -> bool {
+        !self.dl_waiting.is_empty() || self.downloads.iter().any(|d| d.state == "progress")
+    }
+
+    /// Mode efisiensi Windows hanya saat Ovner di latar DAN tidak sedang mengunduh: EcoQoS dan
+    /// prioritas rendah juga memperlambat proses jaringan WebView2 dan pembacaan PDF.
+    fn refresh_eco(&mut self) {
+        let want = self.background && self.settings.borrow().efficiency_mode && !self.downloading();
+        if want != self.eco_on {
+            win::set_background_mode(want);
+            self.eco_on = want;
+        }
     }
 
     /// Unduhan dimulai dari tab pop-up yang tidak menampilkan halaman (mis. tombol "Download
@@ -2345,6 +2477,9 @@ impl App {
                     // mulai mesin unduh saat hasil uji datang (dulu tetap lanjut sampai selesai).
                     self.dl_cancelled.insert(id);
                     win::resolve_download(id, true);
+                    // Masih menunggu server (halaman mirip unduhan): batalkan permintaannya.
+                    win::cancel_download(id);
+                    self.dl_waiting.remove(&id);
                     if let Some(m) = self.dl_meta.get_mut(&id) {
                         m.connecting = false;
                     }
@@ -2384,6 +2519,9 @@ impl App {
             "dl-resume" => {
                 if let Some((job, _)) = self.dl_jobs.get(&id) {
                     job.resume();
+                }
+                if self.dl_yield.remove(&id) {
+                    self.dl_no_yield.insert(id);
                 }
             }
             "dl-remove" | "dl-delete" => {
@@ -2709,7 +2847,18 @@ impl App {
             self.last_sleep_check = Instant::now();
             self.sleep_idle_tabs();
         }
-        if let Some(due) = self.next_trim {
+        self.promote_waiting();
+        self.refresh_eco();
+        if !self.dl_yield.is_empty() || self.downloads.iter().any(|d| d.state == "progress" && self.dl_meta.get(&d.id).is_some_and(|m| m.pdf)) {
+            self.update_priority();
+        }
+        if let Some(due) = self.next_trim.filter(|_| self.downloading()) {
+            // Jangan kosongkan working set proses jaringan selagi mengunduh: tunda.
+            if Instant::now() >= due {
+                self.next_trim = Some(Instant::now() + Duration::from_secs(30));
+            }
+        }
+        if let Some(due) = self.next_trim.filter(|_| !self.downloading()) {
             if Instant::now() >= due {
                 self.trim_now();
                 let every = self.settings.borrow().trim_every_minutes;
@@ -4883,17 +5032,25 @@ struct Args {
     uninstall: bool,
     restarted: bool,
     tray: bool,
+    /// Proses admin dari pemasang/update: salin exe ini ke Program Files lalu keluar.
+    install_machine: bool,
+    desktop: bool,
+    /// Dibuka ulang dari "pasang update sekarang".
+    apply_update: bool,
     urls: Vec<String>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { portable: false, uninstall: false, restarted: false, tray: false, urls: Vec::new() };
+    let mut a = Args { portable: false, uninstall: false, restarted: false, tray: false, install_machine: false, desktop: false, apply_update: false, urls: Vec::new() };
     for v in std::env::args().skip(1) {
         match v.as_str() {
             "--portable" => a.portable = true,
             "--uninstall" => a.uninstall = true,
             "--restarted" => a.restarted = true,
             "--tray" => a.tray = true,
+            "--install-machine" => a.install_machine = true,
+            "--desktop" => a.desktop = true,
+            "--apply-update" => a.apply_update = true,
             s if s.starts_with("http://") || s.starts_with("https://") => a.urls.push(s.to_string()),
             s if s.starts_with("ovner://") => a.urls.push(internal_url(s.trim_start_matches("ovner://").trim_end_matches('/'))),
             _ => {}
@@ -4902,7 +5059,118 @@ fn parse_args() -> Args {
     a
 }
 
+/// Jendela pemasang. Mengembalikan exe terpasang yang harus dijalankan (None = batal).
+fn run_setup(exe: &Path) -> Option<PathBuf> {
+    let lang = i18n::system_lang();
+    let id = matches!(lang, i18n::Lang::Id);
+    let user = install::installed_exe().exists().then(install::installed_version).flatten();
+    let machine = install::machine_exe().exists().then(install::machine_installed_version).flatten();
+    let html = setup_ui::page(if id { "id" } else { "en" }, &install::default_portable_dir(exe), machine.as_deref(), user.as_deref(), win::is_elevated());
+    match setup_ui::run(html, |a| perform_install(exe, a, id)) {
+        Ok(r) => r,
+        Err(e) => {
+            // WebView2 tidak bisa dipakai untuk jendela pemasang: tanya lewat kotak pesan.
+            let text = if id {
+                format!("Pasang Ovner {}?\n\nYa = Install di Program Files (perlu admin)\nTidak = Portable di {}\nBatal = keluar\n\n({e})", env!("CARGO_PKG_VERSION"), install::default_portable_dir(exe).display())
+            } else {
+                format!("Install Ovner {}?\n\nYes = Install in Program Files (needs admin)\nNo = Portable in {}\nCancel = quit\n\n({e})", env!("CARGO_PKG_VERSION"), install::default_portable_dir(exe).display())
+            };
+            let action = match win::ask_yes_no_cancel(&text)? {
+                true => setup_ui::Action::Machine { desktop: true },
+                false => setup_ui::Action::Portable { dir: install::default_portable_dir(exe), desktop: false },
+            };
+            match perform_install(exe, action, id) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    win::info(&tf(lang, "d.install_failed", &[("e", &e)]));
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Kerjakan pilihan pemasang. Ovner yang sedang terbuka ditutup dulu.
+fn perform_install(exe: &Path, action: setup_ui::Action, id: bool) -> Result<PathBuf, String> {
+    match action {
+        setup_ui::Action::User => install::install_self(exe, stop_running_instance),
+        setup_ui::Action::Portable { dir, desktop } => {
+            stop_running_instance();
+            install::install_portable(exe, &dir, desktop)
+        }
+        setup_ui::Action::Machine { desktop } => {
+            stop_running_instance();
+            if win::is_elevated() {
+                install::install_machine(exe, desktop)?;
+            } else {
+                let args = if desktop { "--install-machine --desktop" } else { "--install-machine" };
+                match win::run_elevated(exe, args) {
+                    Ok(0) => {}
+                    Ok(code) => return Err(if id { format!("Pemasangan di Program Files gagal (kode {code}).") } else { format!("Installing in Program Files failed (code {code}).") }),
+                    Err(_) => {
+                        return Err(if id {
+                            "Izin admin dibatalkan atau ditolak. Tanpa akses admin, pilih Portable.".into()
+                        } else {
+                            "Admin permission was cancelled or denied. Without admin access, choose Portable.".into()
+                        })
+                    }
+                }
+            }
+            // Instalasi per-pengguna lama tidak dipakai lagi (datanya tetap, folder data sama).
+            if install::installed_exe().exists() {
+                install::remove_user_install();
+            }
+            Ok(install::machine_exe())
+        }
+    }
+}
+
+/// Pasang update Program Files yang sudah diunduh (perlu admin). `asked` = pengguna baru saja
+/// memilih "pasang update sekarang". True bila update terpasang (Ovner harus dibuka ulang).
+fn apply_machine_update(exe: &Path, asked: bool) -> bool {
+    let Some((staged, v)) = update::machine_staged(data_dir()) else { return false };
+    let declined = data_dir().join("update").join("declined.txt");
+    if !asked {
+        // Ditolak sebelumnya untuk versi ini: tunggu pengguna memilih sendiri lewat menu.
+        if std::fs::read_to_string(&declined).is_ok_and(|d| d.trim() == v) {
+            return false;
+        }
+        let lang = i18n::resolve(&Settings::load(data_dir()).language);
+        let q = if matches!(lang, i18n::Lang::Id) {
+            format!("Update Ovner {v} sudah diunduh. Pasang sekarang? (Ovner terpasang di Program Files, jadi perlu izin admin.)")
+        } else {
+            format!("Ovner update {v} is downloaded. Install it now? (Ovner is installed in Program Files, so admin permission is needed.)")
+        };
+        if !win::confirm(&q) {
+            let _ = std::fs::write(&declined, &v);
+            return false;
+        }
+    }
+    match win::run_elevated(&staged, "--install-machine --update") {
+        Ok(0) => {
+            log(&format!("update {v} terpasang di {}", exe.display()));
+            let _ = std::fs::remove_dir_all(data_dir().join("update"));
+            true
+        }
+        Ok(c) => {
+            log(&format!("update {v} gagal dipasang (kode {c})"));
+            false
+        }
+        Err(e) => {
+            log(&format!("update {v} tidak dipasang: {e}"));
+            false
+        }
+    }
+}
+
 fn run_uninstall(exe: &Path, portable: bool) {
+    // Instalasi Program Files: hapus sebagai admin (Apps & features belum tentu meminta UAC).
+    if install::is_machine_copy(exe) && !win::is_elevated() {
+        if let Err(e) = win::run_elevated(exe, "--uninstall") {
+            win::info(&format!("Ovner: {e}"));
+        }
+        return;
+    }
     let lang = i18n::resolve(&Settings::load(&install::data_dir(exe, portable)).language);
     if !win::confirm(t(lang, "d.uninstall")) {
         return;
@@ -4911,7 +5179,11 @@ fn run_uninstall(exe: &Path, portable: bool) {
     let _ = win::set_autostart(false, exe);
     install::remove_integration();
     let data = install::data_dir(exe, portable);
-    if install::is_installed_copy(exe) {
+    if install::is_machine_copy(exe) {
+        install::remove_machine_integration();
+        win::delete_dirs_later(&[&data, &install::machine_dir()]);
+        win::info(t(lang, "d.uninstalled"));
+    } else if install::is_installed_copy(exe) {
         win::delete_dirs_later(&[&data, &install::install_dir()]);
         win::info(t(lang, "d.uninstalled"));
     } else {
@@ -4935,16 +5207,31 @@ fn main() {
         run_uninstall(&exe, portable);
         return;
     }
-    // Dijalankan dari Downloads (Ovner-Setup.exe): pasang ke LocalAppData lalu jalankan salinannya.
-    if install::should_install(&exe, args.portable) {
-        match install::install_self(&exe, stop_running_instance) {
-            Ok(target) => {
-                if std::process::Command::new(&target).args(&args.urls).spawn().is_ok() {
-                    return;
-                }
+    // Proses admin dari pemasang / update Program Files: salin exe ini lalu keluar.
+    if args.install_machine {
+        let tmp = std::env::temp_dir().join("ovner-setup");
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = DATA_DIR.set(tmp);
+        let code = match install::install_machine(&exe, args.desktop) {
+            Ok(t) => {
+                log(&format!("terpasang di {}", t.display()));
+                0
             }
-            Err(e) => win::info(&tf(i18n::system_lang(), "d.install_failed", &[("e", &e)])),
+            Err(e) => {
+                win::info(&tf(i18n::system_lang(), "d.install_failed", &[("e", &e)]));
+                1
+            }
+        };
+        std::process::exit(code);
+    }
+    // Dijalankan dari Downloads (Ovner-Setup.exe): pilih Install (Program Files) / Portable.
+    if install::should_install(&exe, args.portable) {
+        if let Some(target) = run_setup(&exe) {
+            if std::process::Command::new(&target).args(&args.urls).spawn().is_err() {
+                win::info(&format!("Ovner: {}", target.display()));
+            }
         }
+        return;
     }
 
     let data = std::env::var_os("OVNER_DATA").map(PathBuf::from).unwrap_or_else(|| install::data_dir(&exe, portable));
@@ -4953,6 +5240,13 @@ fn main() {
     win::install_crash_logger(&data_dir().join("ovner.log"));
     if install::is_installed_copy(&exe) {
         install::ensure_integration(&exe, false);
+    }
+    // Instalasi Program Files: update yang sudah diunduh dipasang dengan izin admin.
+    if install::is_machine_copy(&exe) && apply_machine_update(&exe, args.apply_update) {
+        let mut c = std::process::Command::new(&exe);
+        c.arg("--restarted").args(&args.urls);
+        let _ = c.spawn();
+        return;
     }
 
     let cmd = args.urls.first().map(|u| format!("open {u}")).unwrap_or_else(|| "show".into());
@@ -5160,8 +5454,13 @@ fn main() {
         dl_page_at: Instant::now(),
         dl_meta: HashMap::new(),
         restarting: false,
+        apply_update: false,
         dl_cancelled: HashSet::new(),
         dl_forced: HashSet::new(),
+        dl_waiting: HashMap::new(),
+        dl_yield: HashSet::new(),
+        dl_no_yield: HashSet::new(),
+        eco_on: false,
         bm_edit: None,
         bm_edit_from: None,
         last_bm_folder: String::new(),
@@ -5550,6 +5849,12 @@ fn main() {
                     }
                 }
                 UserEvent::NavDone(id, ok, status) => {
+                    // Navigasi tab selesai tanpa menjadi unduhan: hapus tampilan menunggunya.
+                    let stale: Vec<u64> = app.dl_waiting.iter().filter(|(_, w)| w.0 == id).map(|(k, _)| *k).collect();
+                    for k in stale {
+                        app.dl_waiting.remove(&k);
+                        app.drop_waiting_entry(k);
+                    }
                     if let Some(i) = app.tab_index(id) {
                         let t = &mut app.tabs[i];
                         // Situs tanpa HTTPS: kembali ke alamat http:// aslinya (seperti Brave).
@@ -5589,6 +5894,7 @@ fn main() {
                     // Diminta lewat menu/Tentang: langsung tawarkan pasang dan buka ulang.
                     if std::mem::take(&mut app.update_prompt) && win::confirm(&tf(app.lang, "d.update_now", &[("v", &v)])) {
                         app.save_session();
+                        app.apply_update = true;
                         restart = true;
                     }
                 }
@@ -5631,7 +5937,12 @@ fn main() {
             app.save_session();
             app.save_downloads();
             if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).arg("--restarted").spawn();
+                let mut c = std::process::Command::new(exe);
+                c.arg("--restarted");
+                if app.apply_update {
+                    c.arg("--apply-update");
+                }
+                let _ = c.spawn();
             }
             quit = true;
         } else if restart {

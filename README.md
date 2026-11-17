@@ -19,9 +19,17 @@ Browser ringan untuk Windows 10/11, ditulis dengan Rust. Tampilan tersedia dalam
 ## Pasang
 
 1. Unduh **Ovner-Setup.exe** dari [Releases](https://github.com/profrendi/ovner/releases/latest).
-2. Jalankan. Ovner menyalin dirinya ke `%LOCALAPPDATA%\Programs\Ovner`, membuat ikon di
-   **Start Menu** dan **Desktop**, lalu membuka halaman selamat datang (bahasa, mesin pencari,
-   Shields, impor bookmark dari Chrome/Edge/Brave).
+2. Jalankan, lalu pilih cara memasang:
+   - **Install**: seperti software lain, ke `C:\Program Files\Ovner` untuk semua pengguna PC,
+     ikon di Start Menu (dan Desktop bila dicentang), entri di Apps & features. Perlu izin admin
+     (UAC); update berikutnya juga meminta izin admin.
+   - **Portable**: tanpa admin, ke folder pilihan (bawaan `Ovner Portable` di sebelah Setup).
+     `ovner.exe` + `portable.txt`; semua data di folder `Data` di sebelahnya.
+   - **Perbarui instalasi saat ini**: muncul bila sudah ada instalasi per-pengguna lama di
+     `%LOCALAPPDATA%\Programs\Ovner` (tanpa admin).
+
+   Tidak perlu Visual C++ Redistributable (runtime-nya sudah di dalam exe). Setelah terpasang,
+   Ovner membuka halaman selamat datang (bahasa, mesin pencari, Shields, impor bookmark).
 3. Kalau Windows SmartScreen muncul: **More info → Run anyway** (exe belum ditandatangani).
 
 Ovner memeriksa versi baru saat dibuka; tombol hijau **Update** muncul di toolbar bila ada.
@@ -62,6 +70,24 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   di preset Maksimal; kini setelan terpisah), referrer hanya dipangkas untuk navigasi, dan situs
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
+
+## Perbaikan 0.8.9
+
+- **Kartu PDF SIPP cepat dan tidak gagal di tengah jalan.** Penyebab lambat (±35 KB/dtk) dan
+  "tiba-tiba gagal": PDF hanya satu koneksi, berebut bandwidth dengan ISO 8 koneksi yang sedang
+  diunduh, dan saat Ovner diminimalkan mode efisiensi Windows (EcoQoS, prioritas rendah) juga
+  memperlambat proses jaringan dan pembacaan PDF; transfer yang terlalu lama lalu diputus server.
+  Kini selama PDF berjalan, unduhan mesin Ovner lain **dijeda sementara** dan dilanjutkan otomatis
+  setelahnya, mode efisiensi dan perapian RAM **tidak dijalankan selama ada unduhan**.
+- **Langsung tampil saat tab kartu terbuka.** Server SIPP butuh ±1 menit membuat PDF 522 kartu
+  sebelum mengirim byte pertama (ukurannya sudah diketahui di awal, artinya PDF dibuat utuh dulu
+  di server; Chrome dan download manager lain juga menunggu selama itu). Halaman yang alamatnya
+  mirip unduhan (`download`, `cetak`, `.pdf`, `export`, `unduh`) kini langsung muncul di daftar
+  unduhan sebagai "Menghubungkan…" dengan waktu berjalan, bisa dibatalkan, dan begitu server
+  mengirim, PDF langsung dibaca dari respons yang sama (tidak meminta ulang ke server).
+- Log mencatat setiap PDF: ukuran, lama, kecepatan, dan alasan bila gagal.
+- **Pemasang baru**: pilihan Install (Program Files, admin) atau Portable (tanpa admin). Update
+  instalasi Program Files diunduh di latar lalu dipasang dengan izin admin saat Ovner dibuka ulang.
 
 ## Perbaikan 0.8.8
 
@@ -447,8 +473,9 @@ interface (Settings → Language; follows Windows by default).
 - **No admin rights**: per-user install, Visual C++ runtime built into the exe.
 
 **Install**: download **Ovner-Setup.exe** from
-[Releases](https://github.com/profrendi/ovner/releases/latest) and run it. It installs to
-`%LOCALAPPDATA%\Programs\Ovner`, adds Start Menu and Desktop shortcuts, and opens a welcome page.
+[Releases](https://github.com/profrendi/ovner/releases/latest) and run it, then choose **Install**
+(Program Files for all users, needs admin; updates ask for admin too) or **Portable** (no admin,
+any folder, data next to the exe). No Visual C++ Redistributable is needed.
 Choose the **Stable** or **Nightly** update channel in Settings → System.
 **Portable**: extract **Ovner-Portable.zip** anywhere and run `ovner.exe`; data stays in the
 `Data` folder next to it (saved site logins are tied to the Windows account).
