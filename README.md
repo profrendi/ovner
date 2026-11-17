@@ -63,6 +63,12 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.0
+
+- **Indikator RAM/CPU/GPU pindah ke bilah judul Windows**, tepat di kiri tombol minimize, jadi
+  tidak lagi memakan tempat di baris tab. Teksnya tembus-klik (bilah judul tetap bisa diseret),
+  mengikuti jendela saat dipindah/diubah ukurannya, dan hilang saat layar penuh atau di tray.
+
 ## Perbaikan 0.7.9
 
 - **Batal unduhan = berkas terhapus**: sisa `.ovnerpart` mesin Ovner dan `.part`/`.ytdl`/potongan

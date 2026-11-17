@@ -1518,6 +1518,7 @@ impl App {
         self.in_tray = true;
         self.window.set_visible(false);
         self.enter_background();
+        self.push_usage();
     }
 
     fn show_from_tray(&mut self) {
@@ -2428,6 +2429,7 @@ impl App {
             let s = self.settings.borrow();
             self.usage_view(&s)
         };
+        self.update_caption(&v);
         let js = format!("window.ovner && ovner.usage && ovner.usage({v})");
         let _ = self.toolbar.evaluate_script(&js);
         if let Some(sb) = &self.sidebar {
@@ -2511,6 +2513,48 @@ impl App {
         }
     }
 
+    /// Indikator pemakaian di bilah judul Windows, di kiri tombol minimize (Windows saja).
+    fn update_caption(&self, v: &Value) {
+        let mut parts: Vec<(String, bool)> = Vec::new();
+        if !self.in_tray && !self.window.is_minimized() && self.window.fullscreen().is_none() {
+            let mb = |b: u64| format!("{} MB", b / 1_048_576);
+            let pct = |c: f64| if c >= 10.0 { format!("{c:.0}%") } else { format!("{c:.1}%") };
+            let n = |x: &Value| x.as_f64().unwrap_or(0.0);
+            if let Some(a) = v["app"].as_object() {
+                parts.push(("Ovner ".into(), false));
+                parts.push((mb(n(&a["ram"]) as u64), true));
+                parts.push(("  ·  CPU ".into(), false));
+                parts.push((pct(n(&a["cpu"])), true));
+                parts.push(("  ·  GPU ".into(), false));
+                parts.push((pct(n(&a["gpu"])), true));
+            }
+            if let Some(t) = v["tab"].as_object() {
+                let tab = if self.lang.code() == "en" { "Tab" } else { "Tab" };
+                parts.push((if parts.is_empty() { format!("{tab} ") } else { format!("     |     {tab} ") }, false));
+                let ram = n(&t["ram"]) as u64;
+                parts.push((if ram > 0 { mb(ram) } else { "—".into() }, true));
+                if t["proc"] != json!(true) {
+                    parts.push((" JS".into(), false));
+                }
+                parts.push(("  ·  CPU ".into(), false));
+                parts.push((pct(n(&t["cpu"])), true));
+            }
+        }
+        let theme = self.settings.borrow().theme.clone();
+        let dark = match theme.as_str() {
+            "dark" => true,
+            "light" => false,
+            _ => win::system_dark(),
+        };
+        #[cfg(windows)]
+        {
+            use tao::platform::windows::WindowExtWindows;
+            win::caption_text(self.window.hwnd() as isize, &parts, dark);
+        }
+        #[cfg(not(windows))]
+        let _ = (parts, dark);
+    }
+
     /// Angka untuk indikator pemakaian di toolbar.
     fn usage_view(&self, s: &Settings) -> Value {
         if !(s.usage_overlay_app || s.usage_overlay_tab) || self.stats.is_empty() {
@@ -2528,7 +2572,8 @@ impl App {
                 })
             })
             .flatten();
-        json!({"app": app, "tab": tab})
+        // Windows: angka tampil di bilah judul (dekat tombol minimize), bukan di baris tab.
+        json!({"app": app, "tab": tab, "title": cfg!(windows)})
     }
 
     /// Laporan lengkap untuk halaman diagnostik dan "Salin laporan".
@@ -4897,8 +4942,10 @@ fn main() {
                             app.leave_background();
                         }
                         app.layout();
+                        app.push_usage();
                     }
                 }
+                WindowEvent::Moved(_) => app.push_usage(),
                 WindowEvent::ScaleFactorChanged { .. } => app.layout(),
                 WindowEvent::ThemeChanged(_) => {
                     let dark = win::system_dark();

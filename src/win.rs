@@ -850,6 +850,135 @@ mod imp {
         }
     }
 
+    /// Teks pemakaian RAM/CPU di bilah judul Windows, tepat di kiri tombol minimize (tidak
+    /// memakan tempat tab). Bilah judul digambar Windows (DWM), jadi teksnya digambar di jendela
+    /// kecil tembus-klik milik jendela utama yang mengikuti posisinya. `parts` = (teks, tebal).
+    /// `parts` kosong = sembunyikan.
+    pub fn caption_text(owner: isize, parts: &[(String, bool)], dark: bool) {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::*;
+        use windows::Win32::Graphics::Dwm::*;
+        use windows::Win32::Graphics::Gdi::*;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        thread_local! {
+            static CAP: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+        }
+        unsafe extern "system" fn proc_(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            if m == WM_NCHITTEST {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
+            unsafe { DefWindowProcW(h, m, wp, lp) }
+        }
+        unsafe {
+            let owner_h = HWND(owner as *mut _);
+            let mut cap = CAP.with(|c| c.get());
+            if parts.is_empty() || IsIconic(owner_h).as_bool() || !IsWindowVisible(owner_h).as_bool() {
+                if cap != 0 {
+                    let _ = ShowWindow(HWND(cap as *mut _), SW_HIDE);
+                }
+                return;
+            }
+            if cap == 0 {
+                let inst = GetModuleHandleW(PCWSTR::null()).map(|m| HINSTANCE(m.0)).ok();
+                let wc = WNDCLASSW { lpfnWndProc: Some(proc_), hInstance: inst.unwrap_or_default(), lpszClassName: w!("OvnerCaptionInfo"), ..Default::default() };
+                RegisterClassW(&wc);
+                let Ok(h) = CreateWindowExW(
+                    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    w!("OvnerCaptionInfo"),
+                    w!(""),
+                    WS_POPUP,
+                    0,
+                    0,
+                    1,
+                    1,
+                    Some(owner_h),
+                    None,
+                    inst,
+                    None,
+                ) else {
+                    return;
+                };
+                cap = h.0 as isize;
+                CAP.with(|c| c.set(cap));
+            }
+            let hwnd = HWND(cap as *mut _);
+            // Letak tombol judul (minimize/maximize/close) relatif ke jendela.
+            let mut win = RECT::default();
+            let _ = GetWindowRect(owner_h, &mut win);
+            let dpi = GetDpiForWindow(owner_h).max(96) as i32;
+            let mut btn = RECT::default();
+            let ok = DwmGetWindowAttribute(owner_h, DWMWA_CAPTION_BUTTON_BOUNDS, &mut btn as *mut _ as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() && btn.right > btn.left;
+            if !ok {
+                let bw = 46 * dpi / 96;
+                btn = RECT { left: win.right - win.left - 3 * bw - 8 * dpi / 96, top: 0, right: win.right - win.left, bottom: 32 * dpi / 96 };
+            }
+            let h = (btn.bottom - btn.top).max(20 * dpi / 96);
+            // Gambar teks: putih di atas hitam, lalu kecerahan jadi alpha (teks halus tanpa kotak).
+            let dc = CreateCompatibleDC(None);
+            let size = -12 * dpi / 96;
+            let mk = |weight: i32| CreateFontW(size, 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, 0, w!("Segoe UI"));
+            let (f_reg, f_bold) = (mk(400), mk(600));
+            let mut widths = Vec::new();
+            let mut total = 0;
+            for (t, b) in parts {
+                SelectObject(dc, HGDIOBJ(if *b { f_bold.0 } else { f_reg.0 }));
+                let wide: Vec<u16> = t.encode_utf16().collect();
+                let mut sz = SIZE::default();
+                let _ = GetTextExtentPoint32W(dc, &wide, &mut sz);
+                widths.push(sz);
+                total += sz.cx;
+            }
+            let pad = 6 * dpi / 96;
+            let wpx = total + pad * 2;
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: wpx,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+            let Ok(bmp) = CreateDIBSection(Some(dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
+                let _ = DeleteDC(dc);
+                return;
+            };
+            let old = SelectObject(dc, HGDIOBJ(bmp.0));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, COLORREF(0x00FF_FFFF));
+            let mut x = pad;
+            for ((t, b), sz) in parts.iter().zip(&widths) {
+                SelectObject(dc, HGDIOBJ(if *b { f_bold.0 } else { f_reg.0 }));
+                let wide: Vec<u16> = t.encode_utf16().collect();
+                let _ = TextOutW(dc, x, (h - sz.cy) / 2, &wide);
+                x += sz.cx;
+            }
+            let _ = GdiFlush();
+            let (r, g, b) = if dark { (232u32, 234, 237) } else { (32u32, 33, 36) };
+            let px = std::slice::from_raw_parts_mut(bits as *mut u32, (wpx * h) as usize);
+            for p in px.iter_mut() {
+                let a = ((*p >> 16) & 0xff).max((*p >> 8) & 0xff).max(*p & 0xff);
+                *p = (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255);
+            }
+            let dst = POINT { x: win.left + btn.left - wpx - 4 * dpi / 96, y: win.top + btn.top };
+            let sz = SIZE { cx: wpx, cy: h };
+            let src = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+            let _ = UpdateLayeredWindow(hwnd, None, Some(&dst), Some(&sz), Some(dc), Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA);
+            SelectObject(dc, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteObject(HGDIOBJ(f_reg.0));
+            let _ = DeleteObject(HGDIOBJ(f_bold.0));
+            let _ = DeleteDC(dc);
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
         use webview2_com::WindowCloseRequestedEventHandler;
         use wry::WebViewExtWindows;
@@ -1174,6 +1303,7 @@ mod imp {
     ) {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
+    pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool) {}
     pub fn next_download_id() -> u64 {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

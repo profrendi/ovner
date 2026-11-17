@@ -341,7 +341,8 @@
     // Saat tab vertikal, baris tab tersembunyi: indikator pindah ke baris alamat.
     const home = state.vertical ? $("bar") : $("tabs");
     if (el.parentElement !== home) home.insertBefore(el, state.vertical ? $("menu") : null);
-    if (!u || (!u.app && !u.tab)) { el.classList.remove("show"); return; }
+    // Di Windows angka ini tampil di bilah judul (dekat tombol minimize), tidak memakan baris tab.
+    if (!u || (!u.app && !u.tab) || u.title) { el.classList.remove("show"); return; }
     let html = "";
     if (u.app) html += `<span title="${W.usageApp}">Ovner <b>${mb(u.app.ram)}</b> · CPU <b>${pct(u.app.cpu)}</b> · GPU <b>${pct(u.app.gpu)}</b></span>`;
     if (u.app && u.tab) html += `<span class="sep">|</span>`;
