@@ -723,7 +723,7 @@ struct App {
     /// Jendela yang terakhir difokuskan pengguna (tujuan perintah dari tray/peluncuran ulang).
     focused_win: u32,
     /// Jendela yang menampilkan menu terakhir (pilihan menu berlaku untuk jendela itu).
-    menu_win: u32,
+    menu_win: Cell<u32>,
     /// Jendela baru yang menunggu dibuat (butuh target event loop).
     want_windows: Vec<WinRequest>,
 }
@@ -5109,7 +5109,7 @@ impl App {
             use tray_icon::menu::ContextMenu;
             let pos = tray_icon::dpi::Position::Logical(tray_icon::dpi::LogicalPosition::new(x, y));
             unsafe {
-                self.menu_win = self.win_no;
+                self.menu_win.set(self.win_no);
                 m.show_context_menu_for_hwnd(self.window.hwnd() as isize, Some(pos));
             }
         }
@@ -5127,7 +5127,7 @@ impl App {
             use tray_icon::menu::ContextMenu;
             let pos = tray_icon::dpi::Position::Logical(tray_icon::dpi::LogicalPosition::new(x, y));
             unsafe {
-                self.menu_win = self.win_no;
+                self.menu_win.set(self.win_no);
                 m.show_context_menu_for_hwnd(self.window.hwnd() as isize, Some(pos));
             }
         }
@@ -5250,7 +5250,7 @@ impl App {
             let pos = tray_icon::dpi::Position::Logical(tray_icon::dpi::LogicalPosition::new(if tab_menu { x } else { (x - 260.0).max(0.0) }, y));
             let m = if tab_menu { &self.menus.tab } else { &self.menus.main };
             unsafe {
-                self.menu_win = self.win_no;
+                self.menu_win.set(self.win_no);
                 m.show_context_menu_for_hwnd(self.window.hwnd() as isize, Some(pos));
             }
         }
@@ -5854,7 +5854,7 @@ impl App {
         use UserEvent::*;
         let tab = match ev {
             Toolbar(no, _) | CloseWindow(no) => return Some(*no),
-            Menu(_) => return Some(self.menu_win),
+            Menu(_) => return Some(self.menu_win.get()),
             TrayClick | Remote(_) => return Some(self.focused_win),
             Content(id, _) | Title(id, _) | PageLoad(id, ..) | NewTab(id, _) | Navigate(id, _) | ScriptNav(id, ..) | ProcFailed(id, ..)
             | TabMetrics(id, _) | Anubis(id, _) | Problem(id, ..) | ScriptClose(id) | NavDone(id, ..) | Upgraded(id, _) | Favicon(id, _)
@@ -6581,7 +6581,7 @@ fn main() {
         others: Vec::new(),
         next_win: 1,
         focused_win: 0,
-        menu_win: 0,
+        menu_win: Cell::new(0),
         want_windows: Vec::new(),
         lang,
         session_key: shields::session_key(),
