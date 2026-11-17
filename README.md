@@ -63,6 +63,14 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.1
+
+- **Rekam masalah lebih lengkap untuk login/logout macet**: mencatat setiap pindah halaman
+  (`NAV`), permintaan halaman beserta metodenya dan pengalihannya (`DOC-REQ … dialihkan dari
+  HTTP-302`), status halaman (`HTTP-200 Document`), cookie yang ditolak mesin
+  (`COOKIE-BLOCKED`), dan navigasi yang dibatalkan Ovner sendiri (`OVNER-REWRITE`,
+  `OVNER-SCRIPTNAV`).
+
 ## Perbaikan 0.8.0
 
 - **Indikator RAM/CPU/GPU pindah ke bilah judul Windows**, tepat di kiri tombol minimize, jadi

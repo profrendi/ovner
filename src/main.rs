@@ -679,6 +679,8 @@ fn build_tab_view(
                 }
             }
             if let Some(t) = target {
+                // Untuk Rekam masalah: navigasi yang dibatalkan Ovner lalu diulang ke alamat lain.
+                send(&p_nav, UserEvent::Problem(id, "ovner".into(), format!("OVNER-REWRITE {url} -> {t}")));
                 send(&p_nav, UserEvent::Navigate(id, t));
                 return false;
             }
@@ -686,9 +688,11 @@ fn build_tab_view(
             //    jadi navigasi ini dibatalkan lalu diulang dengan setelan yang benar.
             let want = internal_page(&url).is_some() || s.scripts_allowed(&url);
             if want != scripts_on.get() {
+                send(&p_nav, UserEvent::Problem(id, "ovner".into(), format!("OVNER-SCRIPTNAV js={want} {url}")));
                 send(&p_nav, UserEvent::ScriptNav(id, url, want));
                 return false;
             }
+            send(&p_nav, UserEvent::Problem(id, "ovner".into(), format!("NAV {url}")));
             *nav_page.borrow_mut() = url;
             nav_blocked.set(0);
             true
@@ -2973,6 +2977,11 @@ impl App {
         if !self.tabs[i].recording || self.problems.len() >= 3000 {
             return;
         }
+        if name == "ovner" {
+            let secs = self.record_at.elapsed().as_secs_f32();
+            self.problems.push(format!("+{secs:.1}s {}", j.chars().take(600).collect::<String>()));
+            return;
+        }
         let v: Value = serde_json::from_str(j).unwrap_or_default();
         // Isu DevTools yang hanya saran (label formulir, cookie lambat, quirks, API usang) tidak
         // membantu mencari penyebab halaman rusak dan membanjiri laporan.
@@ -3015,10 +3024,34 @@ impl App {
             "Network.responseReceived" => {
                 let r = &v["response"];
                 let status = r["status"].as_i64().unwrap_or(0);
-                if status < 400 {
+                let doc = v["type"] == "Document";
+                if status < 400 && !doc {
                     return;
                 }
                 format!("HTTP-{status} {} {}", v["type"].as_str().unwrap_or(""), cut(r["url"].as_str().unwrap_or(""), 300))
+            }
+            // Halaman (dokumen): metode, alamat, dan pengalihan (302 → Location).
+            "Network.requestWillBeSent" => {
+                if v["type"] != "Document" {
+                    return;
+                }
+                let req = &v["request"];
+                let redir = &v["redirectResponse"];
+                let from = if redir.is_object() { format!(" (dialihkan dari HTTP-{} {})", redir["status"], cut(redir["url"].as_str().unwrap_or(""), 200)) } else { String::new() };
+                format!("DOC-REQ {} {}{from}", req["method"].as_str().unwrap_or(""), cut(req["url"].as_str().unwrap_or(""), 300))
+            }
+            // Cookie yang ditolak mesin (penyebab umum login/logout macet).
+            "Network.responseReceivedExtraInfo" => {
+                let blocked: Vec<String> = v["blockedCookies"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| format!("{}={:?}", c["cookie"]["name"].as_str().or(c["cookieLine"].as_str().map(|l| l.split('=').next().unwrap_or(""))).unwrap_or("?"), c["blockedReasons"]))
+                    .collect();
+                if blocked.is_empty() {
+                    return;
+                }
+                format!("COOKIE-BLOCKED {}", cut(&blocked.join("; "), 500))
             }
             "Audits.issueAdded" => format!("ISSUE {}", cut(&v["issue"].to_string(), 600)),
             _ => return,

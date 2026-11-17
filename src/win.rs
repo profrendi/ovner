@@ -802,7 +802,7 @@ mod imp {
         use wry::WebViewExtWindows;
         let core = webview.webview();
         let cb = std::rc::Rc::new(cb);
-        for ev in ["Runtime.exceptionThrown", "Log.entryAdded", "Network.loadingFailed", "Audits.issueAdded", "Network.responseReceived", "Runtime.consoleAPICalled"] {
+        for ev in ["Runtime.exceptionThrown", "Log.entryAdded", "Network.loadingFailed", "Audits.issueAdded", "Network.responseReceived", "Network.requestWillBeSent", "Network.responseReceivedExtraInfo", "Runtime.consoleAPICalled"] {
             let cb = cb.clone();
             let name = ev.to_string();
             let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
