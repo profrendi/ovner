@@ -986,6 +986,15 @@ mod imp {
         }
     }
 
+    /// Kirim data ke halaman Ovner sebagai pesan (`chrome.webview` "message"), bukan sebagai
+    /// skrip. evaluate_script dengan JSON besar tiap detik membuat proses halaman (toolbar,
+    /// halaman Unduhan) terus membengkak sampai lebih dari 1 GB selama mengunduh, karena tiap
+    /// skrip dikompilasi dan disimpan mesin JavaScript. Mengembalikan false bila gagal.
+    pub fn post_text(webview: &wry::WebView, text: &str) -> bool {
+        use wry::WebViewExtWindows;
+        unsafe { webview.webview().PostWebMessageAsString(&HSTRING::from(text)).is_ok() }
+    }
+
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
         use webview2_com::WindowCloseRequestedEventHandler;
         use wry::WebViewExtWindows;
@@ -1311,6 +1320,9 @@ mod imp {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
+    pub fn post_text(_webview: &wry::WebView, _text: &str) -> bool {
+        false
+    }
     pub fn next_download_id() -> u64 {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

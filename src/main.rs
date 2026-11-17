@@ -190,6 +190,14 @@ fn delete_download_files(path: &str) {
     });
 }
 
+/// Kirim `{"<kind>": data}` ke halaman internal Ovner lewat pesan WebView2 (lihat
+/// win::post_text); bila tidak bisa (Linux), panggil `fallback` sebagai skrip.
+fn post_page(wv: &WebView, kind: &str, data: &str, fallback: &str) {
+    if !win::post_text(wv, &format!("{{\"{kind}\":{data}}}")) {
+        let _ = wv.evaluate_script(&format!("{fallback}({data})"));
+    }
+}
+
 /// Jarak dua titik di bumi (km).
 fn haversine_km(a1: f64, o1: f64, a2: f64, o2: f64) -> f64 {
     let (p1, p2) = (a1.to_radians(), a2.to_radians());
@@ -493,6 +501,7 @@ struct App {
     /// Alamat yang harus diunduh WebView2 (mesin Ovner gagal sebelumnya).
     dl_skip: Rc<RefCell<HashSet<String>>>,
     dl_render_at: Instant,
+    dl_page_at: Instant,
     dl_meta: HashMap<u64, DlMeta>,
     /// Unduhan yang dibatalkan saat masih menguji server.
     dl_cancelled: HashSet<u64>,
@@ -519,6 +528,11 @@ struct App {
     last_sleep_check: Instant,
     last_diag: Instant,
     last_render_key: String,
+    /// Ikon terakhir yang dikirim ke toolbar (dikirim ulang hanya bila berubah).
+    last_icons_key: String,
+    /// Frame utama toolbar dan PID proses rendernya (untuk task manager).
+    ui_frame: Option<u32>,
+    ui_pids: Vec<u32>,
     menus: Menus,
     menu_tab: Option<u64>,
     _tray: Option<TrayIcon>,
@@ -619,7 +633,7 @@ fn build_tab_view(
     #[cfg(windows)]
     {
         init = format!(
-            "if(location.href.startsWith({p:?})&&window.chrome&&window.chrome.webview)Object.defineProperty(window,'ipc',{{value:Object.freeze({{postMessage:s=>window.chrome.webview.postMessage(s)}}),configurable:true,writable:true}});\n{init}",
+            "if(location.href.startsWith({p:?})&&window.chrome&&window.chrome.webview){{Object.defineProperty(window,'ipc',{{value:Object.freeze({{postMessage:s=>window.chrome.webview.postMessage(s)}}),configurable:true,writable:true}});window.chrome.webview.addEventListener('message',e=>{{let m;try{{m=JSON.parse(e.data)}}catch(_){{return}}if(m&&m.page&&window.ovnerPage)window.ovnerPage(m.page)}})}}\n{init}",
             p = INTERNAL_PREFIX
         );
     }
@@ -1646,7 +1660,6 @@ impl App {
             "homeButton": s.home_button,
             "bookmarkBar": s.bookmark_bar,
             "bookmarks": bookmarks,
-            "icons": self.store.icons_for(self.store.bookmarks.iter().map(|b| b.url.as_str()).chain(self.tabs.iter().map(|t| t.url.as_str()))),
             "bookmarked": tab.is_some_and(|t| self.store.is_bookmarked(&t.url)),
             "canBack": can_back,
             "canForward": can_forward,
@@ -1680,9 +1693,19 @@ impl App {
         if text == self.last_render_key {
             return;
         }
-        let _ = self.toolbar.evaluate_script(&format!("window.ovner && ovner.render({text})"));
+        // Ikon (data URL) hanya dikirim saat berubah, terpisah dari keadaan yang berubah tiap detik.
+        let icons = self.store.icons_for(self.store.bookmarks.iter().map(|b| b.url.as_str()).chain(self.tabs.iter().map(|t| t.url.as_str())));
+        let icons_text = Value::Object(icons).to_string();
+        if icons_text != self.last_icons_key {
+            post_page(&self.toolbar, "icons", &icons_text, "window.ovner && ovner.icons");
+            if let Some(sb) = &self.sidebar {
+                post_page(sb, "icons", &icons_text, "window.ovner && ovner.icons");
+            }
+            self.last_icons_key = icons_text;
+        }
+        post_page(&self.toolbar, "render", &text, "window.ovner && ovner.render");
         if let Some(sb) = &self.sidebar {
-            let _ = sb.evaluate_script(&format!("window.ovner && ovner.render({text})"));
+            post_page(sb, "render", &text, "window.ovner && ovner.render");
         }
         if let Some(t) = tab {
             let title = if t.title.is_empty() { "Ovner".to_string() } else { format!("{} - Ovner", t.title) };
@@ -2062,6 +2085,7 @@ impl App {
     }
 
     fn on_dl_update(&mut self, id: u64, u: dlengine::Update) {
+        let u_kind = if matches!(u, dlengine::Update::Progress { .. }) { "progress" } else { "done" };
         let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) else { return };
         match u {
             dlengine::Update::Progress { received, total, speed, conns, paused } => {
@@ -2108,7 +2132,11 @@ impl App {
                 self.render();
             }
         }
-        self.refresh_pages("downloads");
+        // Halaman Unduhan paling sering tiap detik (dulu 4× per detik).
+        if self.dl_page_at.elapsed() >= Duration::from_millis(950) || !matches!(u_kind, "progress") {
+            self.dl_page_at = Instant::now();
+            self.refresh_pages("downloads");
+        }
         // Gelembung toolbar diperbarui paling sering tiap detik.
         if self.dl_render_at.elapsed() >= Duration::from_millis(900) {
             self.dl_render_at = Instant::now();
@@ -2311,12 +2339,17 @@ impl App {
                     .iter()
                     .map(|p| {
                         // Seperti "WebView2: <judul>" di Task Manager Windows.
-                        let titles: Vec<String> = self
+                        let mut titles: Vec<String> = self
                             .tabs
                             .iter()
                             .filter(|t| t.proc_pid == p.pid && p.pid != 0)
                             .map(|t| if t.title.is_empty() { display_url(&t.url) } else { t.title.clone() })
                             .collect();
+                        // Proses toolbar/sidebar Ovner sendiri (di Task Manager Windows tampil
+                        // sebagai "WebView2: about:blank").
+                        if p.pid != 0 && self.ui_pids.contains(&p.pid) {
+                            titles.insert(0, "Ovner (toolbar)".into());
+                        }
                         json!({"pid": p.pid, "kind": p.kind, "working": p.working, "commit": p.commit, "cpu": p.cpu, "gpu": p.gpu, "gpuMem": p.gpu_mem, "tabs": titles})
                     })
                     .collect();
@@ -2345,7 +2378,7 @@ impl App {
             _ => return,
         };
         if let Some(wv) = &self.tabs[i].webview {
-            let _ = wv.evaluate_script(&format!("window.ovnerPage && ovnerPage({state})"));
+            post_page(wv, "page", &state.to_string(), "window.ovnerPage && ovnerPage");
         }
     }
 
@@ -2419,6 +2452,11 @@ impl App {
                 owner.insert(*f, *pid);
             }
         }
+        // Proses toolbar dan sidebar Ovner.
+        if self.ui_frame.is_none() {
+            self.ui_frame = win::main_frame_id(&self.toolbar);
+        }
+        self.ui_pids = self.ui_frame.and_then(|f| owner.get(&f).copied()).into_iter().collect();
         let mut shared: HashMap<u32, usize> = HashMap::new();
         for t in &self.tabs {
             if let Some(pid) = t.frame_id.and_then(|f| owner.get(&f)).filter(|_| t.webview.is_some()) {
@@ -2452,10 +2490,10 @@ impl App {
             self.usage_view(&s)
         };
         self.update_caption(&v);
-        let js = format!("window.ovner && ovner.usage && ovner.usage({v})");
-        let _ = self.toolbar.evaluate_script(&js);
+        let vt = v.to_string();
+        post_page(&self.toolbar, "usage", &vt, "window.ovner && ovner.usage && ovner.usage");
         if let Some(sb) = &self.sidebar {
-            let _ = sb.evaluate_script(&js);
+            post_page(sb, "usage", &vt, "window.ovner && ovner.usage && ovner.usage");
         }
     }
 
@@ -3699,6 +3737,13 @@ impl App {
                         }
                     }
                     self.store.rename_bookmark_in(&u, &folder, &title);
+                    // Alamat bisa diubah juga (ditulis tanpa https:// pun diterima).
+                    let typed = msg["url"].as_str().unwrap_or("").trim().to_string();
+                    if !typed.is_empty() && typed != u {
+                        if let Some(nu) = to_url(&typed, &self.settings.borrow()) {
+                            self.store.set_url_in(&u, &folder, &nu);
+                        }
+                    }
                     self.last_bm_folder = folder;
                     self.bookmarks_changed();
                 }
@@ -4901,6 +4946,7 @@ fn main() {
         dl_jobs: HashMap::new(),
         dl_skip: Rc::new(RefCell::new(HashSet::new())),
         dl_render_at: Instant::now(),
+        dl_page_at: Instant::now(),
         dl_meta: HashMap::new(),
         dl_cancelled: HashSet::new(),
         bm_edit: None,
@@ -4919,6 +4965,9 @@ fn main() {
         last_sleep_check: Instant::now(),
         last_diag: Instant::now(),
         last_render_key: String::new(),
+        last_icons_key: String::new(),
+        ui_frame: None,
+        ui_pids: Vec::new(),
         menus,
         menu_tab: None,
         _tray: tray,

@@ -316,6 +316,18 @@ impl Store {
         scored.into_iter().take(limit).map(|(_, t, u, bm)| (t, u, bm)).collect()
     }
 
+    /// Ganti alamat bookmark `url` di folder `folder` menjadi `new`.
+    pub fn set_url_in(&mut self, url: &str, folder: &str, new: &str) {
+        let new = new.trim();
+        if new.is_empty() || new == url {
+            return;
+        }
+        if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url && b.folder == folder) {
+            b.url = new.to_string();
+            write(&self.bookmarks_path, &self.bookmarks);
+        }
+    }
+
     /// Ganti judul bookmark `url` yang ada di folder `folder`.
     pub fn rename_bookmark_in(&mut self, url: &str, folder: &str, title: &str) {
         if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url && b.folder == folder) {

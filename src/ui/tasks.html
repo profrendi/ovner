@@ -102,7 +102,7 @@
     // Nama baris sama dengan Task Manager Windows.
     const util = { network: "WebView2 Utility: Network Service", storage: "WebView2 Utility: Storage Service", audio: "WebView2 Utility: Audio Service" };
     const nameOf = (p) => p.kind === "browser" ? "WebView2 Manager"
-      : p.kind === "renderer" ? ((p.tabs || []).length ? "WebView2: " + p.tabs.join(", ") : "WebView2 Subframe")
+      : p.kind === "renderer" ? ((p.tabs || []).length ? (p.tabs[0].startsWith("Ovner (") ? p.tabs.join(", ") : "WebView2: " + p.tabs.join(", ")) : "WebView2 Subframe")
       : p.kind === "gpu" ? "WebView2 GPU Process" : util[p.kind] || (p.kind === "crashpad" ? "Crashpad" : p.kind === "utility" ? "WebView2 Utility" : "WebView2 " + (w.kinds[p.kind] || p.kind));
     const total = ram || 1;
     const row = (cls, name, exe, pid, c, m, g) => {

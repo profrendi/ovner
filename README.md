@@ -63,6 +63,16 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.4
+
+- **RAM tidak lagi membengkak saat/sesudah mengunduh.** Penyebabnya proses toolbar Ovner (di
+  Task Manager Windows: "WebView2: about:blank", sampai ±1 GB): keadaan toolbar beserta semua
+  ikon bookmark dikirim tiap detik sebagai skrip baru yang terus disimpan mesin JavaScript.
+  Kini dikirim sebagai pesan WebView2 (tanpa kompilasi skrip), ikon hanya dikirim saat berubah,
+  dan halaman Unduhan diperbarui paling sering sekali per detik.
+- Task manager Ovner menamai proses toolbar "Ovner (toolbar)".
+- Kotak edit bookmark punya kolom **URL**.
+
 ## Perbaikan 0.8.3
 
 - **Ovner tidak lagi membeku ±1 menit saat unduhan besar dimulai.** Berkas unduhan dibuat

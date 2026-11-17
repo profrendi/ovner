@@ -62,8 +62,22 @@
     els.set(id, e);
     return e;
   }
+  // Data dari Ovner datang sebagai pesan WebView2 (bukan skrip) supaya proses halaman tidak
+  // membengkak; ikon dikirim terpisah dan hanya saat berubah.
+  let iconsCache = {};
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener("message", (e) => {
+      let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (!m || typeof m !== "object") return;
+      if (m.icons) window.ovner.icons(m.icons);
+      if (m.render) window.ovner.render(m.render);
+      if ("usage" in m && window.ovner.usage) window.ovner.usage(m.usage);
+    });
+  }
   window.ovner = {
+    icons(map) { iconsCache = map || {}; },
     render(s) {
+      s.icons = iconsCache;
       w = W[s.lang] || W.id;
       document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
       document.getElementById("new").textContent = w.newk;

@@ -536,7 +536,8 @@
   function bmDlgDone() {
     const d = $("bmdlg");
     if (!d.classList.contains("show")) return;
-    send({ cmd: "bm-save", title: d.querySelector("input").value, folder: d.querySelector("select").value });
+    const ur = d.querySelector("input.ur");
+    send({ cmd: "bm-save", title: d.querySelector("input").value, folder: d.querySelector("select").value, url: ur ? ur.value.trim() : "" });
   }
   function renderBmDlg() {
     const d = $("bmdlg"), e = state.bmEdit;
@@ -547,12 +548,13 @@
     bmDlgKey = key;
     hideOmni(); closeDark(); closeVid(); closeBm();
     d.innerHTML = `<div class="pic"></div><div class="fm"><h3><span></span><button class="x">×</button></h3>
-      <label><span></span><input></label><label><span></span><select></select></label>
+      <label><span></span><input class="nm"></label><label><span></span><input class="ur" spellcheck="false"></label><label><span></span><select></select></label>
       <div class="bb"><button class="pri dn"></button><button class="rm"></button></div></div>`;
     d.querySelector(".pic").append(badge(e.url, e.title));
     d.querySelector("h3 span").textContent = e.fresh ? W.bmAdded : W.bmEditT;
-    const [l1, l2] = d.querySelectorAll("label > span"); l1.textContent = W.bmName; l2.textContent = W.bmFolder;
-    const inp = d.querySelector("input"); inp.value = e.title;
+    const [l1, lu, l2] = d.querySelectorAll("label > span"); l1.textContent = W.bmName; lu.textContent = "URL"; l2.textContent = W.bmFolder;
+    const inp = d.querySelector("input.nm"); inp.value = e.title;
+    d.querySelector("input.ur").value = e.url;
     const sel = d.querySelector("select");
     const opts = [["", W.bmBar], ...e.folders.filter((f) => f !== "@other" && !f.startsWith("@other/")).map((f) => [f, "\u00a0\u00a0".repeat(f.split("/").length) + f.split("/").pop()]),
       ["@other", W.other], ...e.folders.filter((f) => f.startsWith("@other/")).map((f) => [f, "\u00a0\u00a0".repeat(f.split("/").length - 1) + f.split("/").pop()])];
@@ -561,7 +563,7 @@
     d.querySelector(".dn").onclick = bmDlgDone;
     d.querySelector(".rm").onclick = () => send({ cmd: "bm-remove" });
     d.querySelector(".x").onclick = bmDlgDone;
-    inp.onkeydown = (ev) => { if (ev.key === "Enter") bmDlgDone(); if (ev.key === "Escape") send({ cmd: "bm-close" }); };
+    inp.onkeydown = d.querySelector("input.ur").onkeydown = (ev) => { if (ev.key === "Enter") bmDlgDone(); if (ev.key === "Escape") send({ cmd: "bm-close" }); };
     d.onmouseenter = () => { bmDlgHover = true; }; d.onmouseleave = () => { bmDlgHover = false; };
     // Rata kanan di bawah tombol bintang.
     const star = $("star").getBoundingClientRect();
@@ -726,8 +728,22 @@
   dropZone($("bmitems"), (ev) => (ev.target === $("bmitems") ? { dest: "", cls: "dropIn" } : null));
   dropZone($("bmother"), () => ({ dest: "@other", cls: "dropIn", open: () => openBmMenu($("bmother"), () => folderEntries("@other")) }));
 
+  // Data dari Ovner datang sebagai pesan WebView2 (bukan skrip) supaya proses halaman tidak
+  // membengkak; ikon dikirim terpisah dan hanya saat berubah.
+  let iconsCache = {};
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener("message", (e) => {
+      let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (!m || typeof m !== "object") return;
+      if (m.icons) window.ovner.icons(m.icons);
+      if (m.render) window.ovner.render(m.render);
+      if ("usage" in m && window.ovner.usage) window.ovner.usage(m.usage);
+    });
+  }
   window.ovner = {
+    icons(map) { iconsCache = map || {}; if (state && typeof state === "object") { state.icons = iconsCache; } },
     render(s) {
+      s.icons = iconsCache;
       state = s;
       if (D[s.lang] !== W || !document.documentElement.lang) applyLang(s.lang);
       addr.placeholder = s.noSearch ? W.addrNs : W.addr;
