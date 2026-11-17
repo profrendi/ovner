@@ -145,6 +145,18 @@
   #darkpanel input[type=range] { width: 100%; accent-color: var(--accent); }
   #darkpanel .k { color: var(--muted); font-size: 12px; margin: 8px 0 4px; }
   #darkpanel .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
+  /* Menu folder bookmark seperti Brave: ikon situs, baris lega, submenu ke samping. */
+  .bmm { position: absolute; min-width: 260px; max-width: 440px; max-height: 620px; overflow-y: auto; background: var(--bar); border: 1px solid var(--line);
+    border-radius: 10px; box-shadow: 0 10px 28px #0006; padding: 6px; font-size: 13.5px; }
+  .bmm .r { display: flex; align-items: center; gap: 12px; height: 32px; padding: 0 12px 0 10px; border-radius: 6px; cursor: default; white-space: nowrap; }
+  .bmm .r:hover, .bmm .r.open { background: var(--field); }
+  .bmm .r .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .bmm .r .fi { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: #fff; }
+  .bmm .r .fi.img { background: center / 16px 16px no-repeat; }
+  .bmm .r svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+  .bmm .r .ar { flex: none; color: var(--muted); font-size: 12px; }
+  .bmm .sep { height: 1px; background: var(--line); margin: 5px 4px; }
+  .bmm .empty { color: var(--muted); padding: 8px 12px; }
   #splitbox { display: none; gap: 2px; }
   #splitbox.show { display: flex; }
 </style>
@@ -181,7 +193,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -193,7 +205,7 @@
       swap: "Pindah ke sisi lain", tab: "Tab", usageApp: "Total Ovner + semua proses WebView2 (RAM = kolom Memory di Task Manager Windows)", usageTab: "Tab yang sedang dibuka: RAM dan CPU proses halamannya (seperti baris WebView2 di Task Manager Windows). * = berbagi proses dengan tab lain dari situs yang sama", other: "Bookmark lain",
       darkTitle: "Mode gelap (seperti Dark Reader)", dark: "Mode gelap", darkSite: "Situs:", darkNoSite: "Buka sebuah situs untuk mengatur per situs.", darkDefault: "Ikut umum", darkOn: "Nyala", darkOff: "Mati",
       darkAll: "Semua situs", darkAllOff: "Mati", darkAllOn: "Nyala", darkAllSys: "Ikut tema Windows", darkEngine: "Cara", engDyn: "Dinamis (Dark Reader)", engFilter: "Filter (cepat)", engChromium: "Chromium (paling ringan)",
-      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
@@ -202,7 +214,7 @@
       swap: "Switch side", tab: "Tab", usageApp: "Ovner + all WebView2 processes (RAM = Memory column in Windows Task Manager)", usageTab: "Current tab: RAM and CPU of its page process (like the WebView2 rows in Windows Task Manager). * = shares its process with other tabs of the same site", other: "Other bookmarks",
       darkTitle: "Dark mode (like Dark Reader)", dark: "Dark mode", darkSite: "Site:", darkNoSite: "Open a site to set it per site.", darkDefault: "Use default", darkOn: "On", darkOff: "Off",
       darkAll: "All sites", darkAllOff: "Off", darkAllOn: "On", darkAllSys: "Follow Windows theme", darkEngine: "Method", engDyn: "Dynamic (Dark Reader)", engFilter: "Filter (fast)", engChromium: "Chromium (lightest)",
-      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -328,7 +340,8 @@
       const lb = document.createElement("span"); lb.className = "lb"; lb.textContent = top;
       el.append(lb);
       el.dataset.f = top;
-      el.onclick = (e) => { const r = el.getBoundingClientRect(); send({ cmd: "bm-folder", folder: top, x: r.left, y: r.bottom }); };
+      el.onclick = () => toggleBmMenu(el, () => folderEntries(top));
+      el.onmouseenter = () => { if (bmOpenBtn && bmOpenBtn !== el) openBmMenu(el, () => folderEntries(top)); };
       box.append(el);
     });
     if (!box.children.length) {
@@ -357,13 +370,87 @@
     const limit2 = box.getBoundingClientRect().right;
     for (const e of items) if (e.getBoundingClientRect().right > limit2 + 0.5) e.classList.add("hide");
   }
-  $("bmmore").onclick = (e) => {
-    const hidden = [...$("bmitems").children].filter((x) => x.classList.contains("hide"))
-      .map((x) => (x.dataset.f ? { f: x.dataset.f } : { i: Number(x.dataset.i) }));
-    const r = e.currentTarget.getBoundingClientRect();
-    send({ cmd: "bm-more", items: hidden, x: r.right, y: r.bottom });
-  };
-  $("bmother").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); send({ cmd: "bm-folder", folder: "@other", x: r.left, y: r.bottom }); };
+  // ---- Menu folder bookmark (HTML, seperti Brave) ----
+  let bmOpenBtn = null;
+  function folderEntries(path) {
+    // Isi satu folder sesuai urutan: subfolder (di posisi kemunculan pertamanya) dan bookmark.
+    const out = [], seen = new Set();
+    (state.bookmarks || []).forEach((b) => {
+      if (b.folder === path) out.push({ b });
+      else if (b.folder.startsWith(path + "/")) {
+        const name = b.folder.slice(path.length + 1).split("/")[0];
+        if (!seen.has(name)) { seen.add(name); out.push({ f: path + "/" + name, name }); }
+      }
+    });
+    return out;
+  }
+  function overflowEntries() {
+    return [...$("bmitems").children].filter((x) => x.classList.contains("hide"))
+      .map((x) => (x.dataset.f ? { f: x.dataset.f, name: x.dataset.f } : { b: state.bookmarks[Number(x.dataset.i)] }))
+      .filter((e) => e.f || e.b);
+  }
+  function closeBm() { $("bmmenus").textContent = ""; bmOpenBtn = null; sendHeight(); }
+  function toggleBmMenu(btn, entries) { if (bmOpenBtn === btn) closeBm(); else openBmMenu(btn, entries); }
+  function openBmMenu(btn, entries) {
+    hideOmni(); closeDark();
+    $("bmmenus").textContent = "";
+    bmOpenBtn = btn;
+    const r = btn.getBoundingClientRect();
+    const ovTop = $("ov").getBoundingClientRect().top;
+    showPanel(entries(), r.left, r.bottom - ovTop + 2, 0, btn === $("bmmore"));
+  }
+  function showPanel(list, x, y, level, alignRight) {
+    const box = $("bmmenus");
+    [...box.querySelectorAll(".bmm")].forEach((p) => { if (Number(p.dataset.level) >= level) p.remove(); });
+    const p = document.createElement("div"); p.className = "bmm"; p.dataset.level = level;
+    if (!list.length) p.innerHTML = `<div class="empty">${W.bmFolderEmpty}</div>`;
+    for (const e of list) {
+      const row = document.createElement("div"); row.className = "r";
+      const t = document.createElement("span"); t.className = "t";
+      if (e.f) {
+        row.insertAdjacentHTML("beforeend", folderSvg);
+        t.textContent = e.name.split("/").pop();
+        row.append(t);
+        row.insertAdjacentHTML("beforeend", '<span class="ar">›</span>');
+        const open = () => {
+          [...p.querySelectorAll(".r.open")].forEach((o) => o.classList.remove("open"));
+          row.classList.add("open");
+          const rr = row.getBoundingClientRect(), ovTop = $("ov").getBoundingClientRect().top;
+          showPanel(folderEntries(e.f), rr.right + 2, rr.top - ovTop - 6, level + 1, false);
+        };
+        row.onmouseenter = open; row.onclick = open;
+      } else {
+        const b = e.b;
+        row.append(badge(b.url, b.title), t);
+        t.textContent = b.title || b.url;
+        row.title = (b.title || "") + "\n" + b.url;
+        row.onmouseenter = () => {
+          [...box.querySelectorAll(".bmm")].forEach((q) => { if (Number(q.dataset.level) > level) q.remove(); });
+          [...p.querySelectorAll(".r.open")].forEach((o) => o.classList.remove("open"));
+        };
+        row.onclick = (ev) => { closeBm(); send({ cmd: "open", url: b.url, newtab: ev.ctrlKey }); };
+        row.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); send({ cmd: "open", url: b.url, newtab: true }); } };
+      }
+      p.append(row);
+    }
+    box.append(p);
+    // Jangan keluar dari jendela.
+    const w = p.offsetWidth;
+    let left = alignRight ? x - w : x;
+    if (left + w > innerWidth - 4) {
+      const parent = box.querySelector(`.bmm[data-level="${level - 1}"]`);
+      left = level > 0 && parent ? parent.offsetLeft - w - 2 : innerWidth - w - 4;
+    }
+    p.style.left = Math.max(4, left) + "px";
+    p.style.top = Math.max(0, y) + "px";
+    sendHeight();
+  }
+  $("bmmore").onclick = (e) => toggleBmMenu(e.currentTarget, overflowEntries);
+  $("bmother").onclick = (e) => toggleBmMenu(e.currentTarget, () => folderEntries("@other"));
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && bmOpenBtn) closeBm(); });
+  document.addEventListener("mousedown", (e) => {
+    if (bmOpenBtn && !e.target.closest(".bmm") && !e.target.closest("#bmbar")) closeBm();
+  }, true);
   window.addEventListener("resize", () => fitBookmarks());
 
   window.ovner = {
@@ -618,10 +705,12 @@
     const om = $("omni").classList.contains("show") ? $("omni").offsetHeight : 0;
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
     const dp = $("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0;
-    send({ cmd: "height", h: base, over: Math.max(om, bu, dp) });
+    let bm = 0;
+    for (const p of document.querySelectorAll("#bmmenus .bmm")) bm = Math.max(bm, p.offsetTop + p.offsetHeight + 12);
+    send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm) });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov") { hideOmni(); closeDark(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeBm(); send({ cmd: "bubble-close" }); } });
   // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
   let darkOpen = false, darkKey = "";
   function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }

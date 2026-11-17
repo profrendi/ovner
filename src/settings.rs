@@ -77,6 +77,9 @@ pub struct Settings {
 
     // ---------- Shields ----------
     pub block_ads: bool,
+    /// "standard" (seperti Brave Standar: permintaan ke situs itu sendiri tidak diblokir, hanya
+    /// iklan/pelacak pihak ketiga) atau "aggressive" (semua permintaan diperiksa).
+    pub blocking_mode: String,
     pub cosmetic_filtering: bool,
     /// Daftar filter popup persetujuan cookie.
     pub block_cookie_notices: bool,
@@ -300,6 +303,7 @@ impl Default for Settings {
             address_suggestions: true,
             no_search: false,
             block_ads: true,
+            blocking_mode: "standard".into(),
             cosmetic_filtering: true,
             block_cookie_notices: true,
             farbling: "standard".into(),
@@ -369,6 +373,7 @@ impl Default for Settings {
 /// Isi preset perlindungan: (kunci, Seimbang, Ketat, Maksimal). Setelan lain tidak disentuh.
 pub const PRESETS: &[(&str, &str, &str, &str)] = &[
     ("block_ads", "true", "true", "true"),
+    ("blocking_mode", "\"standard\"", "\"aggressive\"", "\"aggressive\""),
     ("cosmetic_filtering", "true", "true", "true"),
     ("block_cookie_notices", "true", "true", "true"),
     ("block_annoyances", "false", "true", "true"),
@@ -528,6 +533,7 @@ impl Settings {
         pick(&mut self.gpu_mode, &["full", "lite", "off"], "full");
         pick(&mut self.background_media, &["pause", "keep", "timer"], "keep");
         pick(&mut self.dark_mode, &["off", "on", "system"], "off");
+        pick(&mut self.blocking_mode, &["standard", "aggressive"], "standard");
         pick(&mut self.dark_engine, &["dynamic", "filter", "chromium"], "dynamic");
         self.dark_brightness = self.dark_brightness.clamp(30, 150);
         self.dark_contrast = self.dark_contrast.clamp(30, 150);

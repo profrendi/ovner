@@ -63,6 +63,16 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.3
+
+- **Tingkat pemblokiran Standar seperti Brave** (bawaan): iklan dan pelacak pihak ketiga
+  diblokir, tetapi sumber daya dari situs itu sendiri dibiarkan. Sebelumnya Ovner bekerja
+  seperti mode Agresif Brave, sehingga skrip/API milik aplikasi kantor yang namanya mirip
+  pelacak ikut diblokir dan halaman berputar terus (SIPP BPJS Ketenagakerjaan "Processing...",
+  Infor Ming.le). Mode Agresif tetap ada di Pengaturan → Shields dan di preset Ketat/Maksimal.
+- **Menu folder bookmark seperti Brave**: ikon situs di tiap baris, baris lebih lega, subfolder
+  terbuka ke samping saat disorot, klik tengah membuka tab baru.
+
 ## Perbaikan 0.7.2
 
 - **Startpage sebagai mesin pencari**: pemecah Anubis Ovner tidak lagi berlomba dengan skrip

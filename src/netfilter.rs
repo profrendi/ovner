@@ -114,10 +114,11 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 }
                 let page = ctx.page.borrow().clone();
                 let page_host = url::Url::parse(&page).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
-                let (block_ads, gpc, block_telemetry, exception, cname_on, local_block, referrer) = {
+                let (block_ads, aggressive, gpc, block_telemetry, exception, cname_on, local_block, referrer) = {
                     let s = ctx.settings.borrow();
                     (
                         s.block_ads,
+                        s.blocking_mode == "aggressive",
                         s.gpc,
                         s.block_telemetry,
                         !page_host.is_empty() && s.is_exception(&page_host),
@@ -160,10 +161,18 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                     args.ResourceContext(&mut kind)?;
                     let is_main = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (uri == page || page.is_empty());
                     let rtype = blocker::request_type_from_webview2(kind.0, is_main);
-                    let v = ctx.blocker.borrow().check(&uri, &page, rtype);
-                    block = v.block;
-                    redirect = v.redirect;
-                    rewritten = v.rewritten.filter(|_| !is_main);
+                    // Mode Standar (seperti Brave): sumber daya dari situs itu sendiri (pihak
+                    // pertama) tidak diblokir. Aplikasi kantor (SIPP BPJS, Infor) memuat skrip dan
+                    // API dari domainnya sendiri yang namanya mirip pelacak (/analytics, /track);
+                    // memblokirnya membuat halaman berputar "Processing..." selamanya.
+                    let first_party = !page_host.is_empty() && base_domain(&host) == base_domain(&page_host);
+                    let document = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+                    if aggressive || !first_party || document {
+                        let v = ctx.blocker.borrow().check(&uri, &page, rtype);
+                        block = v.block;
+                        redirect = v.redirect;
+                        rewritten = v.rewritten.filter(|_| !is_main);
+                    }
                     if !block && cname_on {
                         block = cname_blocked(&ctx, &uri, &host, &page, rtype);
                     }
