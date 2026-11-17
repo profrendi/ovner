@@ -2082,11 +2082,11 @@ impl App {
                 }
                 let (url, err) = (d.url.clone(), error.unwrap_or_default());
                 let job = self.dl_jobs.remove(&id);
-                self.trim_after_download();
                 if err == "dibatalkan" {
                     // Pegangan berkas dilepas bersama job; pastikan sisa .ovnerpart hilang.
                     drop(job);
                     delete_download_files(&d.path);
+                    self.trim_after_download();
                     self.save_downloads();
                     self.last_render_key.clear();
                     self.render();
@@ -2102,6 +2102,7 @@ impl App {
                         let _ = wv.load_url(&url);
                     }
                 }
+                self.trim_after_download();
                 self.save_downloads();
                 self.last_render_key.clear();
                 self.render();
