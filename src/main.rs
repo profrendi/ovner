@@ -239,6 +239,8 @@ enum UserEvent {
     RendererFrames(Vec<(u32, Vec<u32>)>),
     /// Jawaban tantangan Anubis (anti-bot Startpage dan situs lain) dari pemecah native.
     Anubis(u64, String),
+    /// Daftar cookie situs (Network.getCookies) yang harus dihapus: (domain dasar, JSON).
+    DeleteCookies(String, String),
     /// Pop-up window.open sudah dibuat sebagai WebView: jadikan tab.
     PopupReady,
     /// Halaman meminta jendelanya ditutup (window.close).
@@ -416,6 +418,8 @@ struct App {
     proxy: EventLoopProxy<UserEvent>,
     browser_args: String,
     update_ready: Option<String>,
+    /// Pengguna meminta periksa update sendiri: begitu siap, langsung tawarkan pasang.
+    update_prompt: bool,
     last_sleep_check: Instant,
     last_diag: Instant,
     last_render_key: String,
@@ -702,6 +706,17 @@ fn make_popup(tenv: &TabEnv, opener: u64, private: bool, url: &str) -> Option<we
     }
 }
 
+/// Domain dasar (kompas.com, bpjsketenagakerjaan.go.id) untuk mengelompokkan subdomain.
+fn netfilter_base_domain(host: &str) -> String {
+    let parts: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    if parts.len() <= 2 {
+        return host.to_string();
+    }
+    let n = parts.len();
+    let take = if parts[n - 2].len() <= 3 && parts[n - 1].len() == 2 { 3 } else { 2 };
+    parts[n.saturating_sub(take)..].join(".")
+}
+
 fn send(proxy: &EventLoopProxy<UserEvent>, e: UserEvent) {
     let _ = proxy.send_event(e);
 }
@@ -829,6 +844,7 @@ fn build_menus(lang: Lang) -> Menus {
         &tools,
         &PredefinedMenuItem::separator(),
         &item("settings", "m.settings"),
+        &item("check-update", "m.check_update"),
         &item("about", "m.about"),
         &item("hide", "m.hide"),
         &item("quit", "m.quit"),
@@ -2474,6 +2490,53 @@ impl App {
         }
     }
 
+    /// Hapus cookie, sesi, cache, dan penyimpanan situs ini (semua subdomainnya), lalu muat
+    /// ulang tab yang membukanya. Untuk aplikasi yang macet karena sesi lama rusak.
+    fn clear_site_data(&mut self, host: &str) {
+        let base = netfilter_base_domain(host);
+        let mut origins: Vec<String> = Vec::new();
+        for t in &self.tabs {
+            if let Some(h) = host_of(&t.url) {
+                if netfilter_base_domain(&h) == base {
+                    for scheme in ["https", "http"] {
+                        let o = format!("{scheme}://{h}");
+                        if !origins.contains(&o) {
+                            origins.push(o);
+                        }
+                    }
+                }
+            }
+        }
+        for o in [format!("https://{base}"), format!("https://www.{base}"), format!("https://{host}")] {
+            if !origins.contains(&o) {
+                origins.push(o);
+            }
+        }
+        let Some(wv) = self.tabs.iter().find_map(|t| t.webview.as_ref()) else { return };
+        for o in &origins {
+            let p = json!({"origin": o, "storageTypes": "all"}).to_string();
+            win::cdp(wv, "Storage.clearDataForOrigin", &p);
+        }
+        // Cookie domain induk (.bpjsketenagakerjaan.go.id) ikut terhapus lewat daftar cookie.
+        let p = json!({"urls": origins}).to_string();
+        let proxy = self.proxy.clone();
+        let b2 = base.clone();
+        win::cdp_call(wv, "Network.getCookies", &p, move |r| send(&proxy, UserEvent::DeleteCookies(b2, r)));
+        log(&format!("data situs dihapus: {base} ({} origin)", origins.len()));
+        #[cfg(not(windows))]
+        self.reload_site(&base);
+    }
+
+    fn reload_site(&self, base: &str) {
+        for t in &self.tabs {
+            if let (Some(w), Some(h)) = (&t.webview, host_of(&t.url)) {
+                if netfilter_base_domain(&h) == base {
+                    let _ = w.reload();
+                }
+            }
+        }
+    }
+
     /// Tutup tab yang alamatnya sama (seperti Duplicate Cleaner TabWars): yang aktif tetap.
     fn close_duplicates(&mut self) {
         let mut seen: HashSet<String> = HashSet::new();
@@ -3261,7 +3324,8 @@ impl App {
         if level != "standard" {
             let _ = m.append(&allow_js);
         }
-        let _ = m.append_items(&[&PredefinedMenuItem::separator(), &dark, &copy, &nosleep]);
+        let clear = MenuItem::with_id("shield-clear-site", t(lang, "sh.clear_site"), true, None);
+        let _ = m.append_items(&[&PredefinedMenuItem::separator(), &dark, &copy, &nosleep, &clear]);
         let _ = m.append_items(&[&PredefinedMenuItem::separator(), &pick, &more]);
         #[cfg(windows)]
         {
@@ -3639,11 +3703,32 @@ impl App {
                 let engine = wry::webview_version().unwrap_or_else(|_| "?".into());
                 let lists = t(self.lang, if self.blocker.borrow().full { "d.lists_full" } else { "d.lists_builtin" });
                 let data = data_dir().display().to_string();
-                win::info(&tf(
+                let text = tf(
                     self.lang,
                     "d.about",
                     &[("v", &update::display_version()), ("e", &engine), ("l", lists), ("d", &data), ("r", update::REPO)],
-                ));
+                );
+                // Tentang Ovner: sekaligus tawarkan periksa dan pasang update.
+                if win::confirm(&format!("{text}{}", t(self.lang, "d.about_check"))) {
+                    self.update_prompt = true;
+                    self.check_update_now();
+                }
+            }
+            "check-update" => {
+                self.update_prompt = true;
+                if let Some(v) = self.update_ready.clone() {
+                    // Sudah diunduh sebelumnya: langsung tawarkan pasang.
+                    send(&self.proxy, UserEvent::UpdateReady(v));
+                } else {
+                    self.check_update_now();
+                }
+            }
+            "shield-clear-site" => {
+                if let Some(h) = self.active_site() {
+                    if win::confirm(&tf(self.lang, "d.clear_site", &[("h", &h)])) {
+                        self.clear_site_data(&h);
+                    }
+                }
             }
             "tab-reload" => {
                 if let Some(wv) = tab_target.and_then(|j| self.tabs[j].webview.as_ref()) {
@@ -4129,6 +4214,7 @@ fn main() {
         proxy,
         browser_args: args_str,
         update_ready: None,
+        update_prompt: false,
         last_sleep_check: Instant::now(),
         last_diag: Instant::now(),
         last_render_key: String::new(),
@@ -4411,6 +4497,22 @@ fn main() {
                     app.assign_tab_procs();
                 }
                 UserEvent::PopupReady => app.adopt_popups(),
+                UserEvent::DeleteCookies(base, json_text) => {
+                    let v: Value = serde_json::from_str(&json_text).unwrap_or_default();
+                    if let Some(wv) = app.tabs.iter().find_map(|t| t.webview.as_ref()) {
+                        let mut n = 0;
+                        for c in v["cookies"].as_array().into_iter().flatten() {
+                            let domain = c["domain"].as_str().unwrap_or("").trim_start_matches('.');
+                            if netfilter_base_domain(domain) == base {
+                                let p = json!({"name": c["name"], "domain": c["domain"], "path": c["path"]}).to_string();
+                                win::cdp(wv, "Network.deleteCookies", &p);
+                                n += 1;
+                            }
+                        }
+                        log(&format!("cookie dihapus: {base} ({n})"));
+                    }
+                    app.reload_site(&base);
+                }
                 UserEvent::ScriptClose(id) => {
                     if let Some(i) = app.tab_index(id).filter(|&i| app.tabs[i].popup) {
                         app.close_tab(i);
@@ -4497,10 +4599,19 @@ fn main() {
                     }
                 }
                 UserEvent::UpdateReady(v) => {
-                    app.update_ready = Some(v);
+                    app.update_ready = Some(v.clone());
                     app.render();
+                    // Diminta lewat menu/Tentang: langsung tawarkan pasang dan buka ulang.
+                    if std::mem::take(&mut app.update_prompt) && win::confirm(&tf(app.lang, "d.update_now", &[("v", &v)])) {
+                        app.save_session();
+                        restart = true;
+                    }
                 }
-                UserEvent::UpdateInfo(msg) => win::info(&msg),
+                UserEvent::UpdateInfo(msg) if app.update_prompt || !msg.is_empty() => {
+                    app.update_prompt = false;
+                    win::info(&msg);
+                }
+                UserEvent::UpdateInfo(_) => {}
                 UserEvent::Menu(id) => quit = app.on_menu(&id),
                 UserEvent::TrayClick => {
                     if app.in_tray {

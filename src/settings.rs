@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 6;
+pub const SCHEMA: u32 = 7;
 
 fn zero() -> u32 {
     0
@@ -261,7 +261,7 @@ impl Default for Settings {
             letterboxing: false,
             uniform_fingerprint: false,
             uniform_utc: false,
-            hide_webview2: true,
+            hide_webview2: false,
             always_private: false,
             security_level: "standard".into(),
             script_allowed: Vec::new(),
@@ -393,7 +393,7 @@ pub const PRESETS: &[(&str, &str, &str, &str)] = &[
     ("deny_sensitive_permissions", "false", "false", "true"),
     ("letterboxing", "false", "false", "true"),
     ("uniform_fingerprint", "false", "false", "true"),
-    ("hide_webview2", "true", "true", "true"),
+    ("hide_webview2", "false", "false", "true"),
     ("security_level", "\"standard\"", "\"standard\"", "\"safer\""),
     ("disable_webgl", "false", "false", "true"),
     ("save_history", "true", "true", "false"),
@@ -489,6 +489,13 @@ impl Settings {
             // dikembalikan ke DNS Windows, karena sebagian jaringan (kantor, ISP) memaksa
             // YouTube Restricted Mode (error 151) atau memblokir DNS aman.
             self.secure_dns = "off".into();
+        }
+        if self.schema < 7 && !self.uniform_fingerprint {
+            // 0.7.5: samaran "Microsoft Edge" lewat DevTools hanya berlaku di halaman, tidak di
+            // service worker/worker, sehingga satu situs menerima dua user agent berbeda dan
+            // sesi yang terikat user agent rusak (SIPP BPJS, Infor). Identitas asli WebView2
+            // (Edge) kini dipakai; samaran hanya di mode seragam/preset Maksimal.
+            self.hide_webview2 = false;
         }
         if self.schema < 6 {
             // 0.7.1: daftar opsional seperti Brave; yang bawaan Brave ikut dinyalakan.

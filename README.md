@@ -63,6 +63,20 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.5
+
+- **SIPP BPJS dan Infor berputar terus**: dua penyebab yang dibuang.
+  - Samaran "Microsoft Edge" lewat DevTools hanya berlaku di halaman, tidak di service
+    worker/worker, sehingga satu situs menerima dua user agent dan sesi yang terikat user agent
+    rusak. Kini Ovner memakai identitas asli WebView2 (mesin Edge); samaran hanya di mode
+    seragam/preset Maksimal.
+  - Tajuk GPC/DNT tidak lagi ditambahkan ke permintaan API (fetch/XHR) lintas situs, yang bisa
+    membuat preflight CORS ditolak; kini hanya pada navigasi halaman.
+- **Hapus cookie dan data situs ini** di menu tameng: keluar dari sesi lama yang rusak lalu
+  muat ulang (semua subdomain situs itu).
+- **☰ → Periksa dan pasang update**, dan **Tentang Ovner** menawarkan periksa update: begitu
+  versi baru terunduh, Ovner menawarkan pasang sekarang lalu dibuka ulang dengan tab pulih.
+
 ## Perbaikan 0.7.4
 
 - **Startpage/Anubis "Something went wrong during verification"**: identitas tab (user agent

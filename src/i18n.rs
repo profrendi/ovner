@@ -119,6 +119,18 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         "m.devtools" => ("DevTools\tF12", "DevTools\tF12"),
         "m.settings" => ("Pengaturan", "Settings"),
         "m.about" => ("Tentang Ovner", "About Ovner"),
+        "m.check_update" => ("Periksa dan pasang update", "Check for updates and install"),
+        "d.update_now" => (
+            "Ovner {v} sudah diunduh. Pasang sekarang? Ovner dibuka ulang dan tab dipulihkan.",
+            "Ovner {v} has been downloaded. Install now? Ovner restarts and your tabs are restored."
+        ),
+        "d.about_check" => ("\n\nPeriksa update sekarang?", "\n\nCheck for updates now?"),
+        "d.checking" => ("Memeriksa update…", "Checking for updates…"),
+        "sh.clear_site" => ("Hapus cookie dan data situs ini (keluar dari situs)", "Clear cookies and data for this site (signs you out)"),
+        "d.clear_site" => (
+            "Hapus cookie, sesi login, dan data tersimpan {h}? Anda perlu masuk lagi ke situs ini.",
+            "Clear cookies, login session and stored data for {h}? You will need to sign in again."
+        ),
         "m.hide" => ("Sembunyikan ke tray", "Hide to tray"),
         "m.quit" => ("Keluar", "Exit"),
         // Menu tab

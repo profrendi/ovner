@@ -129,16 +129,19 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 };
                 let host = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
                 if let Ok(h) = req.Headers() {
-                    if gpc {
-                        let _ = h.SetHeader(&HSTRING::from("Sec-GPC"), &HSTRING::from("1"));
-                        let _ = h.SetHeader(&HSTRING::from("DNT"), &HSTRING::from("1"));
-                    }
                     // Referrer ke situs lain dipangkas (seperti LibreWolf/Waterfox), hanya untuk
                     // navigasi dan iframe: permintaan video/API (googlevideo.com dari YouTube)
                     // butuh referrer asal situs agar tetap diputar.
                     let mut kind = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
                     let _ = args.ResourceContext(&mut kind);
                     let navigation = kind == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+                    // GPC/DNT hanya pada navigasi halaman. Tajuk tambahan pada permintaan API
+                    // lintas situs (fetch/XHR) membuat preflight CORS ditolak server, sehingga
+                    // aplikasi seperti Infor dan SIPP BPJS menunggu jawaban selamanya.
+                    if gpc && navigation {
+                        let _ = h.SetHeader(&HSTRING::from("Sec-GPC"), &HSTRING::from("1"));
+                        let _ = h.SetHeader(&HSTRING::from("DNT"), &HSTRING::from("1"));
+                    }
                     if navigation && referrer != "default" && !page_host.is_empty() && base_domain(&host) != base_domain(&page_host) {
                         let name = HSTRING::from("Referer");
                         let mut has = BOOL(0);

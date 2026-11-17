@@ -444,7 +444,9 @@ mod tests {
     #[test]
     fn identity_and_letterbox() {
         let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.3595.65";
-        let s = Settings::default();
+        // Bawaan: identitas asli WebView2 (tanpa samaran yang tidak berlaku di worker).
+        assert!(identity_overrides(&Settings::default(), ua).is_empty());
+        let s = Settings { hide_webview2: true, ..Settings::default() };
         let o = identity_overrides(&s, ua);
         assert_eq!(o.len(), 1);
         assert!(o[0].1.contains("\"Microsoft Edge\"") && o[0].1.contains("142.0.3595.65") && !o[0].1.contains("WebView2"));
