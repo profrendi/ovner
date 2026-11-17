@@ -49,7 +49,9 @@
     let h = "";
     h += card(T("Ringkasan", "Summary"), [
       [T("Versi Ovner", "Ovner version"), `${esc(r.version)} (${esc(r.channel)})`],
-      ["Microsoft Edge WebView2", esc(r.engine)],
+      ["Microsoft Edge WebView2", esc(r.engine) + (r.engineLatest ? ` · ${T("terbaru dari Microsoft", "latest from Microsoft")}: ${esc(r.engineLatest)}` : "")],
+      test("webview2", T("Cek WebView2 terbaru (Microsoft)", "Latest WebView2 check (Microsoft)")),
+      [T("Komponen", "Components"), esc(r.components || "")],
       ["Windows", esc(r.os)],
       [T("Program", "Program"), esc(r.exe)],
       [T("Folder data", "Data folder"), esc(r.data)],
@@ -78,6 +80,7 @@
       [T("Brankas sandi (DPAPI)", "Password vault (DPAPI)"), `${mark(r.vault)} ${r.vault ? T("enkripsi dan buka berhasil", "encrypt and decrypt ok") : T("gagal", "failed")}`],
       [T("Bookmark / ikon situs", "Bookmarks / site icons"), `${r.bookmarks} / ${r.icons}`],
       [T("Tab (hidup)", "Tabs (live)"), `${r.tabs} (${r.tabsLive})`],
+      [T("Jendela", "Windows"), `${r.windows || 1}`],
     ]);
     h += card(T("Proses", "Processes"), [
       [T("Jumlah", "Count"), `${mark(r.procs > 1, true)} ${r.procs} ${r.procs > 1 ? "" : T("(proses WebView2 belum terlihat)", "(WebView2 processes not seen yet)")}`],

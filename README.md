@@ -71,6 +71,32 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.13
+
+- **Banyak jendela (side by side).** Ovner kini bisa dibuka di beberapa jendela sekaligus:
+  - ☰ → *Jendela baru* (Ctrl+N) atau *Jendela privat baru*; menu tray → *Jendela baru*.
+  - Membuka Ovner lagi dari ikon/menu Start membuka jendela baru (bila Ovner di tray, jendelanya
+    ditampilkan lagi). `ovner.exe --new-window` juga membuka jendela baru.
+  - Klik kanan tab → *Pindahkan ke jendela baru*, atau seret tab keluar dari baris tab (ke bawah
+    halaman) / dari tab vertikal (ke samping). Halaman tetap hidup, tidak dimuat ulang.
+  - ☰ → *Gabungkan semua jendela ke sini* mengembalikan semua tab ke satu jendela.
+  - Semua jendela memakai satu proses dan mesin WebView2 yang sama (hemat RAM), dan dipulihkan
+    saat Ovner dibuka lagi. Task Manager Ovner menampilkan tab dari semua jendela. Menutup jendela
+    (X) hanya menutup jendela itu; jendela terakhir mengikuti setelan tray seperti biasa.
+  - Ctrl+N kini membuka jendela baru (dulu tab baru; tab baru tetap Ctrl+T).
+- **Update bertanda tangan (Ed25519).** Berkas `ovner-latest.json` ditandatangani CI dengan kunci
+  privat yang hanya ada di secret GitHub `OVNER_SIGN_KEY`; Ovner memeriksanya dengan kunci publik
+  di dalam programnya sebelum mengunduh. Sejak update bertanda tangan pertama diterima, update
+  tanpa tanda tangan atau dengan tanda tangan salah ditolak, walaupun rilis GitHub diubah orang lain.
+- **Cek WebView2 terbaru dari Microsoft.** Ovner membaca versi Edge/WebView2 Stable terbaru dari
+  API resmi Microsoft (`edgeupdates.microsoft.com`, paling sering sehari sekali) dan
+  membandingkannya dengan WebView2 yang terpasang: terlihat di *Tentang Ovner*, Diagnostik (uji
+  baru *Cek WebView2 terbaru*), dan log. Diagnostik dan *Tentang* juga menampilkan versi komponen
+  (wry, tao, webview2-com, windows, adblock, tray-icon, ed25519-dalek).
+- **Lebih hemat saat tidak dipakai:** bila semua jendela diminimalkan/di tray dan tidak ada unduhan,
+  pekerjaan berkala Ovner berjalan tiap 5 detik (bukan tiap detik) dan pemantau proses berhenti;
+  tab di jendela yang diminimalkan tidak diukur. Komponen diperbarui (base64 0.23, psl terbaru).
+
 ## Perbaikan 0.8.12
 
 - **Tab bisa diseret** untuk memindah urutannya, di baris tab atas maupun di tab vertikal (bilah
@@ -467,6 +493,7 @@ sudah diekstrak (misalnya uBlock Origin Lite). Hanya ekstensi yang didukung WebV
 |---|---|
 | Ctrl+T / Ctrl+W | Tab baru / tutup tab |
 | Ctrl+Shift+N | Tab privat |
+| Ctrl+N | Jendela baru |
 | Ctrl+Shift+T | Buka lagi tab yang ditutup |
 | Ctrl+Tab, Ctrl+Shift+Tab | Tab berikut / sebelumnya |
 | Ctrl+1 … Ctrl+8, Ctrl+9 | Pindah ke tab ke-N / tab terakhir |

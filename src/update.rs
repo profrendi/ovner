@@ -41,6 +41,49 @@ struct Latest {
     sha256: String,
     #[serde(default)]
     build: u64,
+    /// Tanda tangan Ed25519 (base64) atas [`signed_message`], dibuat CI dengan kunci privat
+    /// yang hanya ada di secret GitHub `OVNER_SIGN_KEY`.
+    #[serde(default)]
+    sig: String,
+}
+
+/// Kunci publik penanda tangan update Ovner (Ed25519). Pasangannya (kunci privat) hanya ada di
+/// secret GitHub `OVNER_SIGN_KEY`; berkas update yang tidak ditandatangani kunci itu ditolak,
+/// walaupun rilis GitHub atau unduhannya diubah orang lain.
+pub const UPDATE_PUBLIC_KEY: &str = "bxLf9EtUrIzzyww9yT9aOXceX0ygJwHXCTCIvgA0FXI=";
+
+/// Pesan yang ditandatangani untuk satu update.
+pub fn signed_message(version: &str, build: u64, sha256: &str) -> String {
+    format!("ovner-update\n{version}\n{build}\n{}", sha256.trim().to_ascii_lowercase())
+}
+
+/// Periksa tanda tangan update. Ok(true) = sah, Ok(false) = tidak ada tanda tangan, Err = salah.
+pub fn verify_signature(version: &str, build: u64, sha256: &str, sig_b64: &str) -> Result<bool, String> {
+    use base64::Engine as _;
+    let sig_b64 = sig_b64.trim();
+    if sig_b64.is_empty() {
+        return Ok(false);
+    }
+    let key: [u8; 32] = base64::prelude::BASE64_STANDARD.decode(UPDATE_PUBLIC_KEY).ok().and_then(|k| k.try_into().ok()).ok_or("kunci publik rusak")?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&key).map_err(|e| e.to_string())?;
+    let sig = base64::prelude::BASE64_STANDARD.decode(sig_b64).map_err(|_| "tanda tangan bukan base64".to_string())?;
+    let sig = ed25519_dalek::Signature::from_slice(&sig).map_err(|_| "tanda tangan rusak".to_string())?;
+    key.verify_strict(signed_message(version, build, sha256).as_bytes(), &sig).map_err(|_| "tanda tangan update tidak sah".to_string())?;
+    Ok(true)
+}
+
+/// Sejak update bertanda tangan pertama kali terlihat, update tanpa tanda tangan ditolak
+/// (menghapus tanda tangan dari ovner-latest.json tidak bisa dipakai untuk menurunkan keamanan).
+fn check_signed(data_dir: &Path, version: &str, build: u64, sha256: &str, sig: &str) -> Result<(), String> {
+    let flag = data_dir.join("update-signed.flag");
+    match verify_signature(version, build, sha256, sig)? {
+        true => {
+            let _ = std::fs::write(&flag, version);
+            Ok(())
+        }
+        false if flag.exists() => Err("update tidak bertanda tangan, dibatalkan".into()),
+        false => Ok(()),
+    }
 }
 
 pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
@@ -102,6 +145,8 @@ pub fn check_and_stage(data_dir: &Path, channel: &str) -> Result<Option<String>,
     if !latest.url.starts_with(&format!("https://github.com/{REPO}/releases/download/")) {
         return Err("URL update tidak dikenal, dibatalkan".into());
     }
+    // Tanda tangan diperiksa sebelum mengunduh: sha256 yang dicocokkan nanti ikut ditandatangani.
+    check_signed(data_dir, &latest.version, latest.build, &latest.sha256, &latest.sig)?;
     // Instalasi Program Files: folder exe tidak bisa ditulis tanpa admin. Simpan update di
     // folder data; dipasang dengan izin admin saat Ovner dibuka ulang (apply_machine_update).
     let machine = crate::install::is_machine_copy(&exe);
@@ -157,6 +202,22 @@ pub fn check_and_stage(_data_dir: &Path, channel: &str) -> Result<Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_signature() {
+        // Dibuat dengan tools/sign_update.py dan kunci privat pasangan UPDATE_PUBLIC_KEY.
+        let sig = "rmGmg/mpzZ48Xux4FuHtIWo0v+CZ065+dUYOkGSxriwUQrj6K7AIHcAoFmN/lPKknMpkWDY9GoJpXFYRYi5qBQ==";
+        assert_eq!(verify_signature("0.8.13", 99, "ABCDEF0123", sig), Ok(true));
+        assert!(verify_signature("0.8.14", 99, "abcdef0123", sig).is_err(), "versi lain");
+        assert!(verify_signature("0.8.13", 99, "abcdef0124", sig).is_err(), "sha256 lain");
+        assert_eq!(verify_signature("0.8.13", 99, "abcdef0123", ""), Ok(false));
+        let dir = std::env::temp_dir().join(format!("ovner-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(check_signed(&dir, "0.8.13", 99, "abcdef0123", "").is_ok(), "belum pernah bertanda tangan");
+        assert!(check_signed(&dir, "0.8.13", 99, "abcdef0123", sig).is_ok());
+        assert!(check_signed(&dir, "0.8.14", 100, "ff", "").is_err(), "setelah bertanda tangan, wajib");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn versions() {

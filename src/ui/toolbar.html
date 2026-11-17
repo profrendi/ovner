@@ -25,6 +25,7 @@
     gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; cursor: default; }
   .tab:hover { background: var(--tab-hover); }
   .tab.active { background: var(--tab-active); }
+  .tab.out { opacity: .45; outline: 2px dashed currentColor; }
   .tab.dragging { opacity: .7; box-shadow: 0 2px 8px rgba(0,0,0,.35); z-index: 2; }
   .tab .ic { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
     font-size: 10px; font-weight: 700; color: #fff; background: var(--accent); }
@@ -316,6 +317,8 @@
           moved = true; tabDragging = true; el.classList.add("dragging");
           try { el.setPointerCapture(e.pointerId); } catch (x) {}
         }
+        // Ditarik jauh keluar dari daftar tab: lepas ke jendela baru.
+        el.classList.toggle("out", outside(ev));
         for (const s of box.querySelectorAll(".tab")) {
           if (s === el) continue;
           const r = s.getBoundingClientRect();
@@ -326,13 +329,22 @@
           break;
         }
       };
-      const up = () => {
+      const outside = (ev) => {
+        const r = box.getBoundingClientRect();
+        if (box.querySelectorAll(".tab").length < 2) return false;
+        return axis === "x" ? ev.clientY > r.bottom + 48 || ev.clientY < r.top - 48 : ev.clientX > r.right + 64 || ev.clientX < r.left - 64;
+      };
+      const up = (ev) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         if (!moved) return;
-        el.classList.remove("dragging");
+        el.classList.remove("dragging", "out");
         tabDragging = false;
+        if (ev.type === "pointerup" && outside(ev)) {
+          send({ cmd: "tab-detach", id, x: ev.screenX, y: ev.screenY });
+          return;
+        }
         const order = [...box.querySelectorAll(".tab")].map((x) => +x.dataset.id);
         send({ cmd: "tab-move", id, to: order.indexOf(id) });
       };
@@ -1238,7 +1250,7 @@
     let c = null;
     if (e.ctrlKey && !e.altKey) {
       if (k === "t") c = e.shiftKey ? "reopen" : "newtab";
-      else if (k === "n") c = e.shiftKey ? "private" : "newtab";
+      else if (k === "n") c = e.shiftKey ? "private" : "newwindow";
       else if (k === "w" || k === "f4") c = "close";
       else if (k === "l") { e.preventDefault(); window.ovner.focusAddress(); return; }
       else if (k === "f") c = "findbar";

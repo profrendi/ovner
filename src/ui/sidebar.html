@@ -15,6 +15,7 @@
   #new { margin: 8px; height: 32px; border: 1px dashed var(--line); border-radius: 8px; background: none; color: var(--text); font: inherit; cursor: pointer; text-align: left; padding: 0 12px; }
   #new:hover { background: var(--hover); }
   #list { flex: 1; overflow-y: auto; padding: 0 6px 8px; }
+  .tab.out { opacity: .45; outline: 2px dashed currentColor; }
   .tab.dragging { opacity: .7; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .tab { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 10px; border-radius: 8px; cursor: default; }
   .tab:hover { background: var(--hover); }
@@ -57,6 +58,8 @@
           moved = true; tabDragging = true; el.classList.add("dragging");
           try { el.setPointerCapture(e.pointerId); } catch (x) {}
         }
+        // Ditarik jauh keluar dari daftar tab: lepas ke jendela baru.
+        el.classList.toggle("out", outside(ev));
         for (const s of box.querySelectorAll(".tab")) {
           if (s === el) continue;
           const r = s.getBoundingClientRect();
@@ -67,13 +70,22 @@
           break;
         }
       };
-      const up = () => {
+      const outside = (ev) => {
+        const r = box.getBoundingClientRect();
+        if (box.querySelectorAll(".tab").length < 2) return false;
+        return axis === "x" ? ev.clientY > r.bottom + 48 || ev.clientY < r.top - 48 : ev.clientX > r.right + 64 || ev.clientX < r.left - 64;
+      };
+      const up = (ev) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
         if (!moved) return;
-        el.classList.remove("dragging");
+        el.classList.remove("dragging", "out");
         tabDragging = false;
+        if (ev.type === "pointerup" && outside(ev)) {
+          send({ cmd: "tab-detach", id, x: ev.screenX, y: ev.screenY });
+          return;
+        }
         const order = [...box.querySelectorAll(".tab")].map((x) => +x.dataset.id);
         send({ cmd: "tab-move", id, to: order.indexOf(id) });
       };

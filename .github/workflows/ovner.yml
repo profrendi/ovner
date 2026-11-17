@@ -97,7 +97,11 @@ jobs:
 
       - name: Kemas (stabil)
         shell: pwsh
+        env:
+          # Kunci privat Ed25519 penanda tangan update (lihat tools/sign_update.py).
+          OVNER_SIGN_KEY: ${{ secrets.OVNER_SIGN_KEY }}
         run: |
+          python -m pip install --quiet cryptography
           $ver = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           "OVNER_VERSION=$ver" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           @'
@@ -113,7 +117,9 @@ jobs:
           Remove-Item -Recurse "$dir/Ovner"
           $hash = (Get-FileHash "$dir/Ovner-Setup.exe" -Algorithm SHA256).Hash.ToLower()
           $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/Ovner-Setup.exe"
-          [ordered]@{ version = $ver; url = $url; sha256 = $hash; build = [int]$build } |
+          $sig = (python tools/sign_update.py $ver $build $hash | Out-String).Trim()
+          if (-not $sig) { "PERINGATAN: OVNER_SIGN_KEY belum diatur, update tidak ditandatangani." }
+          [ordered]@{ version = $ver; url = $url; sha256 = $hash; build = [int]$build; sig = $sig } |
             ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$dir/ovner-latest.json"
           Get-Content "$dir/ovner-latest.json"
           Get-ChildItem $dir | ForEach-Object { "{0,-24} {1,10:N0} KB" -f $_.Name, ($_.Length / 1KB) }
@@ -126,6 +132,7 @@ jobs:
         env:
           OVNER_BUILD: ${{ github.run_number }}
           OVNER_CHANNEL: nightly
+          OVNER_SIGN_KEY: ${{ secrets.OVNER_SIGN_KEY }}
         run: |
           cargo build --release
           if ($LASTEXITCODE -ne 0) { throw "Build nightly gagal" }

@@ -55,6 +55,9 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         // Menu utama
         "m.newtab" => ("Tab baru\tCtrl+T", "New tab\tCtrl+T"),
         "m.private" => ("Tab privat baru\tCtrl+Shift+N", "New private tab\tCtrl+Shift+N"),
+        "m.new_window" => ("Jendela baru\tCtrl+N", "New window\tCtrl+N"),
+        "m.new_private_window" => ("Jendela privat baru", "New private window"),
+        "m.merge_windows" => ("Gabungkan semua jendela ke sini", "Merge all windows here"),
         "m.reopen" => ("Buka lagi tab yang ditutup\tCtrl+Shift+T", "Reopen closed tab\tCtrl+Shift+T"),
         "m.bookmarks_menu" => ("Bookmark", "Bookmarks"),
         "m.bookmark" => ("Bookmark halaman ini\tCtrl+D", "Bookmark this page\tCtrl+D"),
@@ -148,11 +151,13 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         "tm.duplicate" => ("Duplikat tab", "Duplicate tab"),
         "tm.sleep" => ("Tidurkan tab", "Sleep tab"),
         "tm.split" => ("Bagi layar dengan tab ini", "Split view with this tab"),
+        "tm.new_window" => ("Pindahkan ke jendela baru", "Move to new window"),
         "tm.close" => ("Tutup tab", "Close tab"),
         "tm.close_others" => ("Tutup tab lain", "Close other tabs"),
         // Tray
         "tray.show" => ("Buka Ovner", "Open Ovner"),
         "tray.newtab" => ("Tab baru", "New tab"),
+        "tray.new_window" => ("Jendela baru", "New window"),
         // Judul halaman
         "p.newtab" => ("Tab baru", "New tab"),
         "p.settings" => ("Pengaturan", "Settings"),
@@ -202,8 +207,12 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
             "DevTools are turned off. Turn them on in Settings → System.",
         ),
         "d.about" => (
-            "Ovner {v}\n\nMesin: Microsoft Edge WebView2 {e}\nPemblokir iklan: adblock-rust (Brave), {l}\nData: {d}\n\nhttps://github.com/{r}",
-            "Ovner {v}\n\nEngine: Microsoft Edge WebView2 {e}\nAd blocker: adblock-rust (Brave), {l}\nData: {d}\n\nhttps://github.com/{r}",
+            "Ovner {v}\n\nMesin: Microsoft Edge WebView2 {e}\nPemblokir iklan: adblock-rust (Brave), {l}\nKomponen: {c}\nData: {d}\n\nhttps://github.com/{r}",
+            "Ovner {v}\n\nEngine: Microsoft Edge WebView2 {e}\nAd blocker: adblock-rust (Brave), {l}\nComponents: {c}\nData: {d}\n\nhttps://github.com/{r}",
+        ),
+        "d.close_window_dl" => (
+            "{n} unduhan masih berjalan di jendela ini dan akan terhenti. Tutup jendela?",
+            "{n} downloads are still running in this window and will stop. Close the window?",
         ),
         "d.lists_full" => ("daftar lengkap", "full lists"),
         "d.lists_builtin" => ("daftar bawaan (daftar lengkap sedang diunduh)", "built-in list (full lists downloading)"),

@@ -107,7 +107,7 @@
     let c = null;
     if (e.ctrlKey && !e.altKey && !e.metaKey) {
       if (k === "t") c = e.shiftKey ? "reopen" : "newtab";
-      else if (k === "n") c = e.shiftKey ? "private" : "newtab";
+      else if (k === "n") c = e.shiftKey ? "private" : "newwindow";
       else if (k === "w" || k === "f4") c = "close";
       else if (k === "l") c = "address";
       else if (k === "f") c = "findbar";
