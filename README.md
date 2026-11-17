@@ -63,6 +63,28 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.8
+
+- **Download box v2** (Setelan → Unduhan, bisa dimatikan): kotak unduhan terpisah dihapus dan
+  digabung ke gelembung unduhan bawaan yang lebih besar: kecepatan, sisa waktu, lama berjalan,
+  koneksi, peta bagian, server (negara, kota, **jarak**, penyedia, IP). Berkas otomatis masuk
+  folder sesuai jenisnya: Compressed, Documents, Music, Programs, Video, Pictures, Torrents.
+- **Unduhan mulai instan**: langsung tampil di gelembung (Menghubungkan…) dan satu sesi WinHTTP
+  dipakai bersama, jadi deteksi proxy otomatis tidak diulang tiap koneksi.
+- **"Tampilkan di folder" membuka folder yang benar** (dulu ke Documents karena tanda kutip
+  perintah Explorer salah).
+- **Pengelola sandi**: hanya satu daftar (daftar "Saved info" WebView2 tidak lagi menumpuk),
+  daftar langsung tersaring saat mengetik, panah atas/bawah + Enter untuk memilih.
+- **Task manager seperti Task Manager Windows**: nama proses yang sama (WebView2 Manager,
+  WebView2: judul tab, GPU Process, Utility: Network/Storage/Audio Service, Crashpad), grup
+  "WebView2 Manager (N)", kolom nama proses, memori satu desimal, dan warna sesuai beban.
+- **Bookmark**: kotak "Bookmark ditambahkan" untuk ganti nama, pilih folder, atau hapus; bookmark
+  dan folder di bilah, menu folder, dan halaman Bookmark bisa diseret untuk diurutkan dan
+  dimasukkan/dikeluarkan dari folder.
+- **Rekam masalah**: menu jelas "● Mulai rekam" / "■ Selesai rekam dan salin laporan", merekam
+  terus sepanjang waktu (juga saat pindah halaman), dengan waktu tiap kejadian dan tanpa isu
+  DevTools yang tidak penting.
+
 ## Perbaikan 0.7.7
 
 - **Infor (LN) hitam — penyebab ditemukan lewat Rekam masalah halaman**: wry memasang

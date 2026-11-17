@@ -427,6 +427,82 @@ impl Store {
         self.save_bookmarks();
     }
 
+    /// Pindahkan bookmark (`url`) atau folder (`folder`) ke folder `dest` ("" = bilah bookmark),
+    /// tepat sebelum bookmark `before_url` atau folder `before_folder` di sana; tanpa keduanya
+    /// diletakkan di akhir folder itu. Dipakai untuk seret-dan-lepas seperti di Chrome/Brave.
+    pub fn move_item(&mut self, url: Option<&str>, folder: Option<&str>, dest: &str, before_url: Option<&str>, before_folder: Option<&str>) {
+        let dest = dest.trim_matches('/');
+        let inside = |f: &str, p: &str| f == p || f.starts_with(&format!("{p}/"));
+        // Ambil yang dipindah (urutan relatifnya tetap) dan tentukan foldernya yang baru.
+        let mut moving: Vec<Bookmark> = Vec::new();
+        match (url, folder) {
+            (Some(u), _) => {
+                let Some(i) = self.bookmarks.iter().position(|b| b.url == u) else { return };
+                let mut b = self.bookmarks.remove(i);
+                b.folder = dest.to_string();
+                moving.push(b);
+            }
+            (None, Some(p)) => {
+                let p = p.trim_matches('/');
+                if p.is_empty() || p == "@other" || inside(dest, p) {
+                    return; // tidak bisa masuk ke dirinya sendiri
+                }
+                let name = p.rsplit('/').next().unwrap_or(p);
+                let new = if dest.is_empty() { name.to_string() } else { format!("{dest}/{name}") };
+                let re = |f: &str| -> String { format!("{new}{}", &f[p.len()..]) };
+                let mut keep = Vec::new();
+                for b in std::mem::take(&mut self.bookmarks) {
+                    if inside(&b.folder, p) {
+                        let mut b = b;
+                        b.folder = re(&b.folder);
+                        moving.push(b);
+                    } else {
+                        keep.push(b);
+                    }
+                }
+                self.bookmarks = keep;
+                let mut fs = Vec::new();
+                for f in std::mem::take(&mut self.folders) {
+                    if inside(&f, p) {
+                        fs.push(re(&f));
+                    } else {
+                        self.folders.push(f);
+                    }
+                }
+                // Folder (kosong) tetap tercatat di tempat barunya.
+                for f in fs {
+                    if !self.folders.contains(&f) {
+                        self.folders.push(f);
+                    }
+                }
+                if moving.is_empty() {
+                    self.save_bookmarks();
+                    return;
+                }
+            }
+            _ => return,
+        }
+        let at = if let Some(bu) = before_url {
+            self.bookmarks.iter().position(|b| b.url == bu)
+        } else if let Some(bf) = before_folder {
+            self.bookmarks.iter().position(|b| inside(&b.folder, bf))
+        } else {
+            None
+        };
+        let at = at.unwrap_or_else(|| {
+            // Akhir folder tujuan (setelah isi terakhirnya), atau akhir daftar.
+            self.bookmarks
+                .iter()
+                .rposition(|b| if dest.is_empty() { !b.folder.starts_with("@other") } else { inside(&b.folder, dest) })
+                .map(|i| i + 1)
+                .unwrap_or(self.bookmarks.len())
+        });
+        for (k, b) in moving.into_iter().enumerate() {
+            self.bookmarks.insert(at + k, b);
+        }
+        self.save_bookmarks();
+    }
+
     /// Urutkan isi satu folder berdasarkan nama (seperti "Sort by name" Brave).
     pub fn sort_folder(&mut self, folder: &str) {
         let mut idx: Vec<usize> = (0..self.bookmarks.len()).filter(|&i| self.bookmarks[i].folder == folder).collect();
@@ -615,5 +691,31 @@ mod tests {
         again.remove_visits("https://a.id/");
         assert_eq!(again.history.len(), 1);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn drag_and_drop_moves() {
+        let d = tmp();
+        let mut s = Store::load(&d);
+        for (t, f) in [("a", ""), ("b", ""), ("k1", "Kerja"), ("k2", "Kerja/HR"), ("c", "")] {
+            s.add_bookmark(t, &format!("https://{t}.id/"), f);
+        }
+        let order = |s: &Store| s.bookmarks.iter().map(|b| format!("{}@{}", b.title, b.folder)).collect::<Vec<_>>().join(",");
+        // c ke depan bilah.
+        s.move_item(Some("https://c.id/"), None, "", Some("https://a.id/"), None);
+        assert_eq!(order(&s), "c@,a@,b@,k1@Kerja,k2@Kerja/HR");
+        // a masuk folder Kerja (di akhir isinya).
+        s.move_item(Some("https://a.id/"), None, "Kerja", None, None);
+        assert_eq!(order(&s), "c@,b@,k1@Kerja,k2@Kerja/HR,a@Kerja");
+        // Folder Kerja/HR keluar ke bilah, sebelum b.
+        s.move_item(None, Some("Kerja/HR"), "", Some("https://b.id/"), None);
+        assert_eq!(order(&s), "c@,k2@HR,b@,k1@Kerja,a@Kerja");
+        // Folder tidak bisa masuk ke dirinya sendiri.
+        s.move_item(None, Some("Kerja"), "Kerja", None, None);
+        assert_eq!(order(&s), "c@,k2@HR,b@,k1@Kerja,a@Kerja");
+        // Folder Kerja ke depan, sebelum folder HR.
+        s.move_item(None, Some("Kerja"), "", None, Some("HR"));
+        assert_eq!(order(&s), "c@,k1@Kerja,a@Kerja,k2@HR,b@");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

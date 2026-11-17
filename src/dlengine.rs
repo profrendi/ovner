@@ -158,6 +158,42 @@ pub fn get_text(url: &str) -> Option<String> {
 }
 
 /// Nama berkas yang belum dipakai: "laporan.pdf" → "laporan (1).pdf".
+/// Folder kategori untuk berkas, seperti Internet Download Manager / Mister Download Manager.
+pub fn category(name: &str) -> Option<&'static str> {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    Some(match ext.as_str() {
+        "zip" | "rar" | "7z" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "cab" | "arj" | "lz" | "lzh" | "iso" | "img" => "Compressed",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "xlsm" | "csv" | "ppt" | "pptx" | "txt" | "rtf" | "odt" | "ods" | "odp" | "epub" | "md" | "xml" | "json" => "Documents",
+        "mp3" | "m4a" | "wav" | "flac" | "aac" | "ogg" | "opus" | "wma" | "mid" | "midi" => "Music",
+        "exe" | "msi" | "msix" | "msixbundle" | "appx" | "appxbundle" | "apk" | "xapk" | "bat" | "cmd" | "ps1" | "jar" | "dmg" | "deb" | "rpm" => "Programs",
+        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "flv" | "webm" | "m4v" | "3gp" | "mpeg" | "mpg" | "ts" => "Video",
+        "torrent" => "Torrents",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "svg" | "heic" | "avif" | "tif" | "tiff" | "ico" => "Pictures",
+        _ => return None,
+    })
+}
+
+/// `path` dipindah ke subfolder kategorinya (dibuat bila perlu), mis. Downloads\Video\a.mp4.
+pub fn categorized(path: &Path) -> PathBuf {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return path.to_path_buf() };
+    let name = name.to_string_lossy();
+    // Sudah di folder kategori (mis. pengguna memilih sendiri): biarkan.
+    if dir.file_name().is_some_and(|d| ["Compressed", "Documents", "Music", "Programs", "Video", "Torrents", "Pictures"].iter().any(|c| d.eq_ignore_ascii_case(c))) {
+        return path.to_path_buf();
+    }
+    match category(&name) {
+        Some(c) => {
+            let d = dir.join(c);
+            if std::fs::create_dir_all(&d).is_ok() {
+                d.join(name.as_ref())
+            } else {
+                path.to_path_buf()
+            }
+        }
+        None => path.to_path_buf(),
+    }
+}
+
 pub fn unique_path(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
@@ -390,26 +426,40 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
     }
     let agent = if req.user_agent.is_empty() { "Ovner".to_string() } else { req.user_agent.clone() };
     unsafe {
-        let session = WinHttpOpen(&HSTRING::from(agent), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0);
-        if session.is_null() {
-            return Err("WinHttpOpen gagal".into());
-        }
-        let _ = WinHttpSetTimeouts(session, 15_000, 15_000, 15_000, 30_000);
-        // Cookie diambil dari WebView2 dan dikirim sendiri; WinHTTP tidak perlu menyimpannya.
-        let _ = WinHttpSetOption(Some(session as *const _), WINHTTP_OPTION_DISABLE_FEATURE, Some(&WINHTTP_DISABLE_COOKIES.to_le_bytes()[..]));
+        // Satu sesi WinHTTP dipakai bersama (per user agent): deteksi proxy otomatis (WPAD) yang
+        // bisa makan beberapa detik di jaringan kantor hanya terjadi sekali, dan koneksi TLS ke
+        // server yang sama dipakai ulang oleh semua bagian unduhan. Dulu tiap permintaan membuka
+        // sesi baru sehingga unduhan besar lama baru mulai.
+        static SESSIONS: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+        let session = {
+            let mut list = SESSIONS.lock().unwrap();
+            match list.iter().find(|(a, _)| *a == agent) {
+                Some((_, h)) => *h as *mut core::ffi::c_void,
+                None => {
+                    let h = WinHttpOpen(&HSTRING::from(agent.as_str()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0);
+                    if h.is_null() {
+                        return Err("WinHttpOpen gagal".into());
+                    }
+                    let _ = WinHttpSetTimeouts(h, 8_000, 8_000, 15_000, 30_000);
+                    // Cookie diambil dari WebView2 dan dikirim sendiri; WinHTTP tidak perlu menyimpannya.
+                    let _ = WinHttpSetOption(Some(h as *const _), WINHTTP_OPTION_DISABLE_FEATURE, Some(&WINHTTP_DISABLE_COOKIES.to_le_bytes()[..]));
+                    let _ = WinHttpSetOption(Some(h as *const _), WINHTTP_OPTION_MAX_CONNS_PER_SERVER, Some(&32u32.to_le_bytes()[..]));
+                    list.push((agent.clone(), h as usize));
+                    h
+                }
+            }
+        };
         let close = |h: *mut core::ffi::c_void| {
             let _ = WinHttpCloseHandle(h);
         };
         let conn = WinHttpConnect(session, &HSTRING::from(host), port, 0);
         if conn.is_null() {
-            close(session);
             return Err("tidak bisa terhubung".into());
         }
         let flags = if secure { WINHTTP_FLAG_SECURE } else { WINHTTP_OPEN_REQUEST_FLAGS(0) };
         let hreq = WinHttpOpenRequest(conn, &HSTRING::from("GET"), &HSTRING::from(object), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), flags);
         if hreq.is_null() {
             close(conn);
-            close(session);
             return Err("WinHttpOpenRequest gagal".into());
         }
         let mut headers = String::new();
@@ -451,7 +501,6 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
         })();
         close(hreq);
         close(conn);
-        close(session);
         result
     }
 }

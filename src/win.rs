@@ -370,7 +370,12 @@ mod imp {
     /// `offer(alamat, total)` = true bila mesin unduh Ovner ingin mencoba mengambil alih:
     /// unduhan ditahan, cookie situs diambil, lalu `DlEvent::Offer` dikirim; Ovner menjawab
     /// lewat [`resolve_download`].
-    pub fn on_download(webview: &wry::WebView, cb: impl Fn(DlEvent) + 'static, offer: impl Fn(&str, i64) -> bool + 'static) {
+    pub fn on_download(
+        webview: &wry::WebView,
+        cb: impl Fn(DlEvent) + 'static,
+        offer: impl Fn(&str, i64) -> bool + 'static,
+        place: impl Fn(&str) -> String + 'static,
+    ) {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
         use webview2_com::{take_pwstr, DownloadStartingEventHandler, GetCookiesCompletedHandler};
         use wry::WebViewExtWindows;
@@ -385,7 +390,14 @@ mod imp {
                 let mut p = windows::core::PWSTR::null();
                 let url = if op.Uri(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
                 let mut p = windows::core::PWSTR::null();
-                let path = if args.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                let mut path = if args.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                // Folder kategori (Download box v2): mis. Downloads\Video\a.mp4.
+                if !path.is_empty() {
+                    let placed = place(&path);
+                    if placed != path && args.SetResultFilePath(&HSTRING::from(placed.as_str())).is_ok() {
+                        path = placed;
+                    }
+                }
                 let mut total = 0i64;
                 let _ = op.TotalBytesToReceive(&mut total);
                 let cookies = sender.as_ref().and_then(|s| s.cast::<ICoreWebView2_2>().ok()).and_then(|w2| w2.CookieManager().ok());
@@ -471,11 +483,25 @@ mod imp {
 
     /// Buka berkas dengan aplikasinya, atau tampilkan di Explorer.
     pub fn open_path(path: &str, reveal: bool) {
+        use std::os::windows::process::CommandExt;
+        let p = Path::new(path);
         let mut c = std::process::Command::new("explorer.exe");
-        if reveal {
-            c.arg(format!("/select,{path}"));
+        if reveal && p.is_file() {
+            // Harus persis `/select,"C:\a b\x.zip"`. Dengan .arg() Rust membungkus seluruhnya
+            // jadi `"/select,C:\a b\x.zip"`, yang tidak dikenali Explorer sehingga ia membuka
+            // folder Documents.
+            c.raw_arg(format!("/select,\"{path}\""));
+        } else if reveal {
+            // Berkas sudah dipindah/dihapus: buka foldernya saja.
+            let dir = p.parent().filter(|d| d.is_dir()).map(Path::to_path_buf).or_else(|| std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join("Downloads")));
+            match dir {
+                Some(d) => {
+                    c.raw_arg(format!("\"{}\"", d.display()));
+                }
+                None => return,
+            }
         } else {
-            c.arg(path);
+            c.raw_arg(format!("\"{path}\""));
         }
         let _ = c.spawn();
     }
@@ -1140,7 +1166,13 @@ mod imp {
             .unwrap_or_else(|| "Linux".into())
     }
     pub fn set_clipboard(_text: &str) {}
-    pub fn on_download(_webview: &wry::WebView, _cb: impl Fn(DlEvent) + 'static, _offer: impl Fn(&str, i64) -> bool + 'static) {}
+    pub fn on_download(
+        _webview: &wry::WebView,
+        _cb: impl Fn(DlEvent) + 'static,
+        _offer: impl Fn(&str, i64) -> bool + 'static,
+        _place: impl Fn(&str) -> String + 'static,
+    ) {
+    }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn next_download_id() -> u64 {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);

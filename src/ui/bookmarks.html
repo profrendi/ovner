@@ -40,6 +40,11 @@
   dialog .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .empty { padding: 26px; color: var(--muted); text-align: center; }
   @media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .side { flex-direction: row; flex-wrap: wrap; } }
+  .dropT { box-shadow: inset 0 2px 0 var(--accent); }
+  .dropB { box-shadow: inset 0 -2px 0 var(--accent); }
+  .dropIn { background: color-mix(in srgb, var(--accent) 22%, transparent) !important; }
+  .dragging { opacity: .45; }
+  .row[draggable="true"], .node[draggable="true"] { cursor: grab; }
 </style>
 </head>
 <body>
@@ -99,6 +104,8 @@
       n.innerHTML = folderSvg;
       n.append(h("span", { textContent: label(path) }));
       n.onclick = () => { cur = path; $("q").value = ""; render(); };
+      if (path && path !== "@other") draggable(n, { folder: path });
+      droppable(n, () => ({ dest: path, cls: "dropIn" }));
       t.append(n);
       for (const k of kids(path)) add(k, depth + 1);
     };
@@ -106,6 +113,31 @@
     if (S.folders.includes("@other") || S.bookmarks.some((b) => b.folder === "@other")) {
       add("@other", 0);
     }
+  }
+
+  // ---- Seret-dan-lepas: urutkan, masukkan ke folder, atau keluarkan dari folder ----
+  let drag = null;
+  const clearDrop = () => document.querySelectorAll(".dropT,.dropB,.dropIn").forEach((x) => x.classList.remove("dropT", "dropB", "dropIn"));
+  function draggable(el, item) {
+    el.draggable = true;
+    el.addEventListener("dragstart", (ev) => { drag = item; el.classList.add("dragging"); ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", item.url || item.folder); });
+    el.addEventListener("dragend", () => { el.classList.remove("dragging"); drag = null; clearDrop(); });
+  }
+  function droppable(el, info) {
+    el.addEventListener("dragover", (ev) => {
+      if (!drag) return;
+      const z = info(ev); if (!z) return;
+      ev.preventDefault(); ev.stopPropagation(); clearDrop(); el.classList.add(z.cls);
+    });
+    el.addEventListener("dragleave", () => el.classList.remove("dropT", "dropB", "dropIn"));
+    el.addEventListener("drop", (ev) => {
+      if (!drag) return;
+      const z = info(ev); ev.preventDefault(); ev.stopPropagation(); clearDrop();
+      const it = drag; drag = null;
+      if (!z || (it.url && it.url === z.beforeUrl)) return;
+      if (it.folder && (it.folder === z.beforeFolder || z.dest === it.folder || z.dest.startsWith(it.folder + "/"))) return;
+      post({ t: "bm-move", url: it.url || "", folder: it.folder || "", dest: z.dest, beforeUrl: z.beforeUrl || "", beforeFolder: z.beforeFolder || "" });
+    });
   }
 
   function closeMenu() { document.querySelectorAll(".menu").forEach((m) => m.remove()); }
@@ -208,7 +240,24 @@
       for (const f of kids(cur)) if (!seen.has(f)) items.push({ folder: f });
     }
     if (!items.length) { list.append(h("div", { className: "empty", textContent: q ? w.noResult : w.empty })); return; }
-    for (const it of items) list.append(row(it));
+    items.forEach((it, i) => {
+      const r = row(it);
+      const isF = it.folder !== undefined && it.url === undefined;
+      const me = isF ? { folder: it.folder } : { url: it.url };
+      if (!q) {
+        draggable(r, me);
+        droppable(r, (ev) => {
+          const rc = r.getBoundingClientRect(), y = (ev.clientY - rc.top) / rc.height;
+          if (isF && y > 0.25 && y < 0.75) return { dest: it.folder, cls: "dropIn" };
+          if (y < 0.5) return { dest: cur, beforeUrl: isF ? "" : it.url, beforeFolder: isF ? it.folder : "", cls: "dropT" };
+          const n = items[i + 1];
+          if (!n) return { dest: cur, cls: "dropB" };
+          const nF = n.folder !== undefined && n.url === undefined;
+          return { dest: cur, beforeUrl: nF ? "" : n.url, beforeFolder: nF ? n.folder : "", cls: "dropB" };
+        });
+      }
+      list.append(r);
+    });
   }
 
   function renderSide() {

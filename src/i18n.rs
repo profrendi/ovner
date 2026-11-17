@@ -127,11 +127,12 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         "d.about_check" => ("\n\nPeriksa update sekarang?", "\n\nCheck for updates now?"),
         "d.checking" => ("Memeriksa update…", "Checking for updates…"),
         "d.video_tools" => ("Menyiapkan komponen {t} (sekali saja)…", "Preparing component {t} (one time)…"),
-        "sh.record" => ("Rekam masalah halaman ini (untuk laporan)", "Record problems on this page (for a report)"),
+        "sh.record" => ("● Mulai rekam masalah halaman ini", "● Start recording problems on this page"),
+        "sh.record_stop" => ("■ Selesai rekam dan salin laporan ({n} kejadian)", "■ Finish recording and copy report ({n} events)"),
         "sh.record_copy" => ("Salin laporan masalah halaman", "Copy page problem report"),
         "d.record_started" => (
-            "Perekaman dimulai dan halaman dimuat ulang. Tunggu sampai halaman macet/berputar (±20 detik), lalu buka menu tameng → Salin laporan masalah halaman, dan tempel hasilnya ke chat.",
-            "Recording started and the page reloaded. Wait until the page hangs (about 20 seconds), then open the shield menu → Copy page problem report and paste it."
+            "Perekaman dimulai dan halaman dimuat ulang. Ovner merekam terus (juga saat pindah halaman) sampai Anda membuka menu tameng → Selesai rekam dan salin laporan, lalu tempel hasilnya ke chat.",
+            "Recording started and the page reloaded. Ovner keeps recording (also across page changes) until you open the shield menu → Finish recording and copy report, then paste it."
         ),
         "d.record_copied" => ("Laporan masalah halaman ({n} catatan) disalin ke clipboard.", "Page problem report ({n} entries) copied to the clipboard."),
         "sh.clear_site" => ("Hapus cookie dan data situs ini (keluar dari situs)", "Clear cookies and data for this site (signs you out)"),

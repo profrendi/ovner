@@ -11,6 +11,14 @@
   .sum span { color: var(--muted); font-size: 12px; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.pg { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  /* Seperti Task Manager Windows: kolom berwarna makin pekat makin besar pemakaiannya. */
+  .tm td, .tm th { padding-top: 5px; padding-bottom: 5px; }
+  .tm tr.grp td { font-weight: 600; cursor: pointer; }
+  .tm tr.grp td:first-child::before { content: "\25BE"; display: inline-block; width: 16px; color: var(--muted); }
+  .tm tr.grp.shut td:first-child::before { content: "\25B8"; }
+  .tm tr.kid td:first-child { padding-left: 34px; }
+  .tm td.exe { color: var(--muted); }
+  .tm td.h { background: rgba(255, 196, 0, var(--a, 0)); }
   @media (max-width: 700px) { .sum { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
@@ -24,11 +32,11 @@
   <div><b id="sProc">—</b><span id="lProc"></span></div>
 </div>
 <div class="bar"><span id="note2" class="muted"></span><span style="flex:1"></span><button id="trim"></button><button id="sleepall"></button></div>
+<h2 id="hProcs"></h2>
+<div class="card tm"><table id="procs"><thead><tr><th data-k="name"></th><th data-k="exe"></th><th class="num">PID</th><th class="num">CPU</th><th class="num" data-k="mem"></th><th class="num">GPU</th></tr></thead><tbody></tbody></table></div>
 <h2 id="hTabs"></h2>
 <div class="card"><table id="tabs"><thead><tr><th data-k="title"></th><th data-k="state"></th><th class="num" data-k="ws"></th><th class="num">CPU</th><th class="num" data-k="js"></th><th class="num">PID</th><th class="num" data-k="blocked"></th><th></th></tr></thead><tbody></tbody></table></div>
 <p class="muted" id="statsline"></p>
-<h2 id="hProcs"></h2>
-<div class="card"><table id="procs"><thead><tr><th>PID</th><th data-k="kind"></th><th data-k="page"></th><th class="num" data-k="ws"></th><th class="num">CPU</th><th class="num">GPU</th><th class="num" data-k="gmem"></th></tr></thead><tbody></tbody></table></div>
 <p class="muted" id="note"></p>
 </div>
 <script>
@@ -36,8 +44,13 @@
   const post = (o) => window.ipc.postMessage(JSON.stringify(o));
   const mb = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : (b / 1048576).toFixed(0) + " MB");
   const pct = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + "%";
+  // Format Task Manager: satu angka desimal ("74,5 MB"), koma desimal untuk bahasa Indonesia.
+  let LOC = "id-ID";
+  const mb1 = (b) => (b / 1048576).toLocaleString(LOC, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " MB";
+  const pc1 = (v) => v.toLocaleString(LOC, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  let shut = false;
   const W = {
-    id: { h1: "Task manager Ovner", trim: "Rapikan RAM sekarang", sleepall: "Tidurkan semua tab lain", tabs: "Tab", procs: "Proses (Ovner + WebView2)",
+    id: { h1: "Task manager Ovner", trim: "Rapikan RAM sekarang", sleepall: "Tidurkan semua tab lain", tabs: "Tab", procs: "Proses", name: "Nama", exe: "Nama proses", mem: "Memori",
       title: "Judul", state: "Keadaan", js: "RAM JS", page: "Tab", blocked: "Diblokir", kind: "Jenis", ws: "RAM", gmem: "Memori GPU",
       lRam: "RAM total (seperti kolom Memory Task Manager)", lProc: "proses",
       active: "aktif", sleep: "tidur", susp: "ditangguhkan", bg: "latar", priv: "privat", media: "memutar media", close: "Tutup", doSleep: "Tidurkan",
@@ -45,7 +58,7 @@
       note2: "Diperbarui tiap detik.", shared: "berbagi proses dengan {n} tab", mapOff: "RAM per tab dimatikan otomatis karena Ovner pernah tertutup saat mengukurnya; hapus berkas .proses-tab-mati di folder data untuk mencoba lagi.",
       stats: "Sejak dipasang: {s} tab ditidurkan, sekitar {r} RAM dibebaskan, {d} tab duplikat ditutup, {sv} sesi disimpan.",
       note: "RAM dan CPU per tab = proses halaman (renderer) tab itu, sama dengan baris \"WebView2: judul\" di Task Manager Windows (private working set). Tab dari situs yang sama bisa berbagi satu proses. RAM JS = memori JavaScript halaman. GPU hanya bisa diukur per proses karena Chromium memakai satu proses GPU untuk semua tab. Tab yang tidur tidak memakai proses." },
-    en: { h1: "Ovner task manager", trim: "Trim memory now", sleepall: "Sleep all other tabs", tabs: "Tabs", procs: "Processes (Ovner + WebView2)",
+    en: { h1: "Ovner task manager", trim: "Trim memory now", sleepall: "Sleep all other tabs", tabs: "Tabs", procs: "Processes", name: "Name", exe: "Process name", mem: "Memory",
       title: "Title", state: "State", js: "JS RAM", page: "Tab", blocked: "Blocked", kind: "Type", ws: "RAM", gmem: "GPU memory",
       lRam: "Total RAM (like Task Manager's Memory column)", lProc: "processes",
       active: "active", sleep: "sleeping", susp: "suspended", bg: "background", priv: "private", media: "playing media", close: "Close", doSleep: "Sleep",
@@ -67,9 +80,9 @@
       const tr = document.createElement("tr");
       const st = t.active ? tag(w.active, true) : t.sleeping ? tag(w.sleep) : t.suspended ? tag(w.susp) : tag(w.bg);
       const live = !t.sleeping && !t.suspended;
-      const ram = t.pid ? mb(t.ram) + (t.shared > 1 ? " *" : "") : t.sleeping ? "0 MB" : "—";
+      const ram = t.pid ? mb1(t.ram) + (t.shared > 1 ? " *" : "") : t.sleeping ? "0 MB" : "—";
       tr.innerHTML = `<td></td><td>${st}${t.private ? " " + tag(w.priv) : ""}${t.media ? " " + tag(w.media, true) : ""}</td>` +
-        `<td class="num">${ram}</td><td class="num">${t.pid ? pct(t.pcpu) : live && t.js ? pct(t.cpu) : "—"}</td>` +
+        `<td class="num">${ram}</td><td class="num">${t.pid ? pc1(t.pcpu) : live && t.js ? pct(t.cpu) : "—"}</td>` +
         `<td class="num">${live && t.js ? mb(t.js) : "—"}</td><td class="num">${t.pid || "—"}</td><td class="num">${t.blocked}</td><td></td>`;
       tr.children[0].textContent = t.title || t.url;
       tr.children[0].title = t.url;
@@ -81,21 +94,39 @@
       }
       tb.append(tr);
     }
+    LOC = s.lang === "en" ? "en-US" : "id-ID";
     const pb = document.querySelector("#procs tbody"); pb.textContent = "";
     let ram = 0, cpu = 0, gpu = 0;
-    const procs = [...s.procs].sort((a, b) => b.working - a.working);
-    for (const p of procs) {
-      ram += p.working; cpu += p.cpu; gpu += p.gpu;
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${p.pid}</td><td>${w.kinds[p.kind] || p.kind}</td><td class="pg"></td><td class="num">${mb(p.working)}</td>` +
-        `<td class="num">${pct(p.cpu)}</td><td class="num">${pct(p.gpu)}</td><td class="num">${p.gpuMem ? mb(p.gpuMem) : "—"}</td>`;
-      tr.children[2].textContent = (p.tabs || []).join(", ");
+    const procs = [...s.procs];
+    for (const p of procs) { ram += p.working; cpu += p.cpu; gpu += p.gpu; }
+    // Nama baris sama dengan Task Manager Windows.
+    const util = { network: "WebView2 Utility: Network Service", storage: "WebView2 Utility: Storage Service", audio: "WebView2 Utility: Audio Service" };
+    const nameOf = (p) => p.kind === "browser" ? "WebView2 Manager"
+      : p.kind === "renderer" ? ((p.tabs || []).length ? "WebView2: " + p.tabs.join(", ") : "WebView2 Subframe")
+      : p.kind === "gpu" ? "WebView2 GPU Process" : util[p.kind] || (p.kind === "crashpad" ? "Crashpad" : p.kind === "utility" ? "WebView2 Utility" : "WebView2 " + (w.kinds[p.kind] || p.kind));
+    const total = ram || 1;
+    const row = (cls, name, exe, pid, c, m, g) => {
+      const tr = document.createElement("tr"); tr.className = cls;
+      tr.innerHTML = `<td></td><td class="exe"></td><td class="num">${pid}</td><td class="num h">${pc1(c)}</td><td class="num h">${mb1(m)}</td><td class="num h">${pc1(g)}</td>`;
+      tr.children[0].textContent = name; tr.children[0].title = name; tr.children[1].textContent = exe;
+      tr.children[3].style.setProperty("--a", Math.min(0.55, c / 25).toFixed(2));
+      tr.children[4].style.setProperty("--a", Math.min(0.55, m / total * 0.9).toFixed(2));
+      tr.children[5].style.setProperty("--a", Math.min(0.55, g / 25).toFixed(2));
       pb.append(tr);
+      return tr;
+    };
+    const self = procs.filter((p) => p.kind === "ovner"), wv = procs.filter((p) => p.kind !== "ovner").sort((a, b) => b.working - a.working);
+    for (const p of self) row("", "Ovner", "ovner.exe", p.pid, p.cpu, p.working, p.gpu);
+    if (wv.length) {
+      const sum = (k) => wv.reduce((x, p) => x + (p[k] || 0), 0);
+      const g = row("grp" + (shut ? " shut" : ""), `WebView2 Manager (${wv.length})`, "", "", sum("cpu"), sum("working"), sum("gpu"));
+      g.onclick = () => { shut = !shut; window.ovnerPage(s); };
+      if (!shut) for (const p of wv) row("kid", nameOf(p), "msedgewebview2.exe", p.pid, p.cpu, p.working, p.gpu);
     }
     const st = s.stats || {};
     document.getElementById("statsline").textContent = (s.mapOff ? w.mapOff + " " : "") +
       fill(w.stats, { s: st.slept || 0, r: mb(st.ram_freed || 0), d: st.duplicates || 0, sv: st.sessions_saved || 0 });
-    document.getElementById("sRam").textContent = procs.length ? mb(ram) : "—";
+    document.getElementById("sRam").textContent = procs.length ? mb1(ram) : "—";
     document.getElementById("sCpu").textContent = procs.length ? pct(Math.min(cpu, 100)) : "—";
     document.getElementById("sGpu").textContent = procs.length ? pct(Math.min(gpu, 100)) : "—";
     document.getElementById("sProc").textContent = procs.length || "—";

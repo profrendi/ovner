@@ -355,13 +355,37 @@
       return best || cands.find((c) => /user|email|login|akun|nama|nik|npp|nip|id/i.test(c.name + c.id + c.placeholder)) || null;
     }
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    function hide() { if (box) { box.remove(); box = null; } }
+    let rows = [], sel = -1, anchorEl = null;
+    function hide() { if (box) { box.remove(); box = null; } rows = []; sel = -1; anchorEl = null; }
+    // Daftar Ovner saja: daftar "Saved info" bawaan WebView2 dimatikan pada kolom ini supaya tidak
+    // ada dua kotak bertumpuk.
+    function quiet(el) { try { if (el && el.getAttribute("autocomplete") !== "off") el.setAttribute("autocomplete", "off"); } catch (e) {} }
+    // Saran yang cocok dengan yang sudah diketik (awalan dulu, lalu yang memuat teksnya).
+    function matching(anchor) {
+      const q = anchor && anchor.type !== "password" ? anchor.value.trim().toLowerCase() : "";
+      if (!q) return offers;
+      const pre = [], mid = [];
+      for (const o of offers) {
+        const u = (o.user || "").toLowerCase();
+        if (u.startsWith(q)) pre.push(o); else if (u.includes(q)) mid.push(o);
+      }
+      return pre.concat(mid);
+    }
+    function choose(o) { hide(); post({ t: "pw-fill", id: o.id, url: location.href }); }
+    function mark(i) {
+      sel = i;
+      rows.forEach((r, j) => r.classList.toggle("on", j === i));
+      if (rows[i]) rows[i].scrollIntoView({ block: "nearest" });
+    }
     // Kotak saran dibuat dengan elemen sendiri + shadow DOM + stylesheet buatan (adoptedStyleSheets):
     // tidak terpengaruh CSS situs dan tetap tampil di situs dengan CSP ketat (mis. login Infor),
     // yang memblokir <style> biasa sehingga dulu ikon kunci tampil raksasa di bawah halaman.
     function show(anchor) {
+      const list = matching(anchor);
       hide();
-      if (!offers.length || !anchor) return;
+      if (!list.length || !anchor) return;
+      quiet(anchor);
+      anchorEl = anchor;
       const host = document.createElement("ovner-pw");
       const root = host.attachShadow({ mode: "closed" });
       const r = anchor.getBoundingClientRect();
@@ -369,7 +393,7 @@
       const below = innerHeight - r.bottom - 8, above = r.top - 8;
       const up = below < 180 && above > below;
       const maxH = Math.max(120, Math.min(320, up ? above : below));
-      const rowH = 46, want = Math.min(maxH, offers.length * rowH + 10);
+      const rowH = 46, want = Math.min(maxH, list.length * rowH + 10);
       const top = up ? Math.max(4, r.top - 2 - want) : r.bottom + 2;
       const pos = { position: "fixed", "z-index": "2147483647", left: r.left + "px", top: top + "px",
         "min-width": Math.max(220, r.width) + "px", display: "block", margin: "0", padding: "0", border: "0",
@@ -380,9 +404,9 @@
           border:1px solid ${dark ? "#454b53" : "#c9cfd6"};border-radius:8px;box-shadow:0 6px 20px #0004;padding:4px;text-align:left;line-height:1.35;
           max-height:${maxH}px;overflow-y:auto;overscroll-behavior:contain}
         .i{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer}
-        .i:hover{background:${dark ? "#3a4048" : "#eef1f4"}}
+        .i:hover,.i.on{background:${dark ? "#3a4048" : "#e6ecf5"}}
         .k{width:16px;height:16px;flex:none;opacity:.7}
-        .u{font-weight:600}.s{font-size:11px;opacity:.65}`;
+        .u{font-weight:600}.u b{color:${dark ? "#8ab4f8" : "#1a62d6"}}.s{font-size:11px;opacity:.65}`;
       try {
         const sheet = new CSSStyleSheet();
         sheet.replaceSync(css);
@@ -392,16 +416,39 @@
       }
       const b = document.createElement("div"); b.className = "b";
       root.append(b);
-      for (const o of offers) {
+      const q = anchor.type !== "password" ? anchor.value.trim() : "";
+      for (const o of list) {
         const it = document.createElement("div"); it.className = "i";
         it.innerHTML = '<svg class="k" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><div><div class="u"></div><div class="s">••••••••</div></div>';
-        it.querySelector(".u").textContent = o.user || "(tanpa nama)";
-        it.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); hide(); post({ t: "pw-fill", id: o.id, url: location.href }); });
+        const u = it.querySelector(".u"), name = o.user || "(tanpa nama)";
+        const at = q ? name.toLowerCase().indexOf(q.toLowerCase()) : -1;
+        if (at >= 0) {
+          u.append(name.slice(0, at));
+          const m = document.createElement("b"); m.textContent = name.slice(at, at + q.length); u.append(m);
+          u.append(name.slice(at + q.length));
+        } else u.textContent = name;
+        it.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); choose(o); });
+        it.__o = o;
         b.append(it);
+        rows.push(it);
       }
       document.documentElement.append(host);
       box = host;
+      if (q && rows.length) mark(0);
     }
+    const managed = (el) => el instanceof HTMLInputElement && (el.type === "password" || pwFields().some((p) => userFieldFor(p) === el));
+    // Mengetik di kolom pengguna langsung menyaring daftar.
+    document.addEventListener("input", (e) => {
+      if (offers.length && managed(e.target) && e.target.type !== "password") show(e.target);
+    }, true);
+    // Panah atas/bawah, Enter, Esc seperti daftar isi otomatis Chrome.
+    document.addEventListener("keydown", (e) => {
+      if (!box || e.target !== anchorEl) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); e.stopImmediatePropagation(); mark(Math.min(rows.length - 1, sel + 1)); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); e.stopImmediatePropagation(); mark(Math.max(0, sel - 1)); }
+      else if (e.key === "Enter" && rows[sel]) { e.preventDefault(); e.stopImmediatePropagation(); choose(rows[sel].__o); }
+      else if (e.key === "Escape") hide();
+    }, true);
     // Isi seperti mengetik: banyak situs (Angular/React) baru menerima nilai setelah event ini.
     function type(el, v) {
       if (!el) return;
@@ -415,7 +462,8 @@
         offers = list || [];
         if (auto && offers.length === 1) post({ t: "pw-fill", id: offers[0].id, url: location.href });
         const a = document.activeElement;
-        if (a && a.tagName === "INPUT" && (a.type === "password" || pwFields().some((p) => userFieldFor(p) === a))) show(a);
+        for (const p of pwFields()) { quiet(p); quiet(userFieldFor(p)); }
+        if (a && a.tagName === "INPUT" && managed(a)) show(a);
       },
       fill(user, pass) {
         // Kolom nama pengguna kadang baru muncul/dirender sesaat setelah kolom sandi: coba lagi
@@ -441,7 +489,7 @@
       const el = e.target;
       if (!(el instanceof HTMLInputElement)) return;
       check();
-      if (offers.length && (el.type === "password" || pwFields().some((p) => userFieldFor(p) === el))) show(el); else hide();
+      if (offers.length && managed(el)) show(el); else hide();
     }, true);
     document.addEventListener("mousedown", (e) => { if (box && !e.composedPath().includes(box)) hide(); }, true);
     // Tangkap login yang dikirim: submit formulir, klik tombol, atau Enter di kolom sandi.
