@@ -553,7 +553,17 @@ fn build_tab_view(
     let allow_http = cells.allow_http.clone();
     let scripts_on = cells.scripts_on.clone();
     scripts_on.set(true);
-    let init = shields::page_scripts(&s, tenv.session_key, private);
+    #[allow(unused_mut)]
+    let mut init = shields::page_scripts(&s, tenv.session_key, private);
+    // Windows: `window.ipc` hanya untuk halaman internal Ovner (bisa dihapus/ditimpa), bukan untuk
+    // situs dan iframe-nya.
+    #[cfg(windows)]
+    {
+        init = format!(
+            "if(location.href.startsWith({p:?})&&window.chrome&&window.chrome.webview)Object.defineProperty(window,'ipc',{{value:Object.freeze({{postMessage:s=>window.chrome.webview.postMessage(s)}}),configurable:true,writable:true}});\n{init}",
+            p = INTERNAL_PREFIX
+        );
+    }
     let p_ipc = tenv.proxy.clone();
     let p_title = tenv.proxy.clone();
     let p_load = tenv.proxy.clone();
@@ -588,7 +598,6 @@ fn build_tab_view(
         .with_devtools(s.devtools)
         .with_initialization_script(&init)
         .with_custom_protocol("ovner".into(), |_, req| serve_internal(req))
-        .with_ipc_handler(move |req| send(&p_ipc, UserEvent::Content(id, req.body().clone())))
         .with_document_title_changed_handler(move |t| send(&p_title, UserEvent::Title(id, t)))
         .with_on_page_load_handler(move |ev, url| send(&p_load, UserEvent::PageLoad(id, ev, url)))
         .with_navigation_handler(move |url| {
@@ -667,7 +676,15 @@ fn build_tab_view(
         b
     };
 
+    // Linux: saluran IPC wry (window.ipc). Windows: lihat win::on_message di bawah.
+    #[cfg(not(windows))]
+    let builder = {
+        let p_ipc = p_ipc.clone();
+        builder.with_ipc_handler(move |req| send(&p_ipc, UserEvent::Content(id, req.body().clone())))
+    };
     let wv = builder.build_as_child(&*tenv.window)?;
+    #[cfg(windows)]
+    win::on_message(&wv, move |body| send(&p_ipc, UserEvent::Content(id, body)));
     win::tune_webview(&wv, &s);
     for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
         win::cdp(&wv, method, &params);

@@ -63,6 +63,14 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.7
+
+- **Infor (LN) hitam — penyebab ditemukan lewat Rekam masalah halaman**: wry memasang
+  `window.ipc` yang tidak bisa dihapus di setiap halaman dan iframe. Aplikasi Infor LN (GWT)
+  punya variabel `ipc` sendiri, sehingga skripnya gagal ("Identifier 'ipc' has already been
+  declared") dan layar tetap hitam. Di Windows, Ovner kini menerima pesan halamannya lewat
+  `chrome.webview` langsung; `window.ipc` hanya ada di halaman internal Ovner.
+
 ## Perbaikan 0.7.6
 
 - **Kotak unduhan** seperti Mister Download Manager/IDM: begitu unduhan dimulai, muncul jendela

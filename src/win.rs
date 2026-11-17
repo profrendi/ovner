@@ -801,6 +801,29 @@ mod imp {
     }
 
     /// Halaman meminta jendelanya ditutup (window.close dari pop-up).
+    /// Terima pesan `chrome.webview.postMessage` dari skrip Ovner di halaman, tanpa membuat
+    /// `window.ipc` di setiap frame seperti wry. Properti itu tidak bisa dihapus dan bentrok
+    /// dengan situs yang punya variabel `ipc` sendiri (Infor LN/GWT: "Identifier 'ipc' has
+    /// already been declared" → aplikasi hitam).
+    pub fn on_message(webview: &wry::WebView, cb: impl Fn(String) + 'static) {
+        use webview2_com::WebMessageReceivedEventHandler;
+        use windows::core::PWSTR;
+        use wry::WebViewExtWindows;
+        let handler = WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+            if let Some(args) = args {
+                let mut js = PWSTR::null();
+                if unsafe { args.TryGetWebMessageAsString(&mut js) }.is_ok() {
+                    cb(webview2_com::take_pwstr(js));
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.webview().add_WebMessageReceived(&handler, &mut token);
+        }
+    }
+
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
         use webview2_com::WindowCloseRequestedEventHandler;
         use wry::WebViewExtWindows;
