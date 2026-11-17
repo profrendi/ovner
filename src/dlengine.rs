@@ -34,6 +34,9 @@ pub struct Request {
     /// Penanda versi berkas (ETag kuat / Last-Modified) untuk tajuk `If-Range`, dikirim bila
     /// server meminta prasyarat (HTTP 428, mis. CDN Bunny untuk mirror Parrot).
     pub if_range: Option<String>,
+    /// Batas menunggu jawaban server (detik); 0 = bawaan 30 detik. Server yang membuat berkas
+    /// dulu (kartu SIPP) baru menjawab setelah ±20–60 detik.
+    pub wait_secs: u32,
 }
 
 /// Hasil uji server.
@@ -67,6 +70,7 @@ struct Head {
     range_total: Option<u64>,
     /// Awal rentang yang benar-benar dikirim server.
     range_start: Option<u64>,
+    content_length: Option<u64>,
 }
 
 /// Isi respons boleh ditulis: tanpa Range cukup 200/206; dengan Range harus 206 dari posisi yang diminta.
@@ -90,6 +94,9 @@ fn parse_head(raw: &str) -> Head {
             h.etag = Some(v.trim().to_string());
         } else if k.trim().eq_ignore_ascii_case("last-modified") {
             h.last_modified = Some(v.trim().to_string());
+        }
+        if k.trim().eq_ignore_ascii_case("content-length") {
+            h.content_length = v.trim().parse().ok();
         }
         if k.trim().eq_ignore_ascii_case("content-range") {
             // bytes 0-0/12345
@@ -181,7 +188,7 @@ impl Job {
 
 /// Ambil isi teks sebuah alamat (mis. info lokasi server). Memblokir: panggil dari thread latar.
 pub fn get_text(url: &str) -> Option<String> {
-    let req = Request { url: url.to_string(), user_agent: "Ovner".into(), headers: vec![("Accept".into(), "application/json".into())], if_range: None };
+    let req = Request { url: url.to_string(), user_agent: "Ovner".into(), headers: vec![("Accept".into(), "application/json".into())], if_range: None, wait_secs: 0 };
     let mut body = Vec::new();
     let head = http_get(&req, None, &mut |d| {
         body.extend_from_slice(d);
@@ -300,6 +307,60 @@ pub fn unique_path(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+/// Unduh seluruh isi dengan satu koneksi (server tanpa Range, mis. PDF kartu SIPP yang dibuat
+/// saat diminta) ke `path`. `progress(byte)` dipanggil berkala. Gagal bila dibatalkan, koneksi
+/// putus sebelum Content-Length terpenuhi, atau isinya bukan PDF padahal `pdf` (mis. halaman
+/// login karena sesi habis).
+pub fn fetch_whole(req: &Request, path: &Path, pdf: bool, cancel: &std::sync::atomic::AtomicBool, mut progress: impl FnMut(u64)) -> Result<u64, String> {
+    use std::io::Write;
+    let mut file = File::create(path).map_err(|e| format!("buat berkas: {e}"))?;
+    let mut got = 0u64;
+    let mut first: Vec<u8> = Vec::new();
+    let mut werr: Option<String> = None;
+    let mut last = Instant::now();
+    let head = http_get(req, None, &mut |d| {
+        if cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        if first.len() < 8 {
+            first.extend_from_slice(&d[..d.len().min(8 - first.len())]);
+        }
+        if let Err(e) = file.write_all(d) {
+            werr = Some(format!("tulis berkas: {e}"));
+            return false;
+        }
+        got += d.len() as u64;
+        if last.elapsed() >= Duration::from_millis(300) {
+            last = Instant::now();
+            progress(got);
+        }
+        true
+    })?;
+    progress(got);
+    if cancel.load(Ordering::SeqCst) {
+        return Err("dibatalkan".into());
+    }
+    if let Some(e) = werr {
+        return Err(e);
+    }
+    if head.status != 200 && head.status != 206 {
+        return Err(format!("HTTP {}", head.status));
+    }
+    if let Some(cl) = head.content_length {
+        if got != cl {
+            return Err(format!("koneksi terputus ({got} dari {cl} byte)"));
+        }
+    }
+    if got == 0 {
+        return Err("isi kosong".into());
+    }
+    if pdf && !first.starts_with(b"%PDF") {
+        return Err("bukan PDF (sesi habis / halaman galat)".into());
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    Ok(got)
 }
 
 /// Mulai unduhan ke `path` (ukuran `total` dari [`probe`]). `cb` dipanggil dari thread latar.
@@ -629,6 +690,10 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
         }
         let wide: Vec<u16> = headers.encode_utf16().collect();
         let _ = WinHttpAddRequestHeaders(hreq, &wide, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        if req.wait_secs > 0 {
+            let w = (req.wait_secs as i32).saturating_mul(1000);
+            let _ = WinHttpSetTimeouts(hreq, 10_000, 10_000, 30_000, w);
+        }
         let result = (|| {
             WinHttpSendRequest(hreq, None, None, 0, 0, 0).map_err(|e| e.to_string())?;
             WinHttpReceiveResponse(hreq, std::ptr::null_mut()).map_err(|e| e.to_string())?;
@@ -684,7 +749,7 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
     let host = u.host_str().ok_or("tanpa host")?;
     let port = u.port_or_known_default().unwrap_or(80);
     let mut s = std::net::TcpStream::connect((host, port)).map_err(|e| e.to_string())?;
-    let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = s.set_read_timeout(Some(Duration::from_secs(if req.wait_secs > 0 { req.wait_secs as u64 } else { 10 })));
     let mut path = u.path().to_string();
     if let Some(q) = u.query() {
         path.push('?');
@@ -795,6 +860,29 @@ mod tests {
     }
 
     #[test]
+    fn whole_download_without_range() {
+        let data: Vec<u8> = b"%PDF-1.4\n".iter().copied().chain((0..400_000u32).map(|i| i as u8)).collect();
+        let data = Arc::new(data);
+        let port = server(data.clone(), false);
+        let req = Request { url: format!("http://127.0.0.1:{port}/kartu/download"), user_agent: "uji".into(), headers: vec![], if_range: None, wait_secs: 5 };
+        let dir = std::env::temp_dir().join(format!("ovner-whole-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("k.pdf.ovnerrace");
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut seen = 0;
+        let n = fetch_whole(&req, &target, true, &cancel, |g| seen = g).expect("unduh");
+        assert_eq!(n, data.len() as u64);
+        assert_eq!(seen, n);
+        assert_eq!(std::fs::read(&target).unwrap(), *data);
+        // Bukan PDF: ditolak.
+        let html = Arc::new(b"<html>login</html>".to_vec());
+        let port = server(html, false);
+        let req = Request { url: format!("http://127.0.0.1:{port}/kartu/download"), ..req };
+        assert!(fetch_whole(&req, &target, true, &cancel, |_| {}).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn head_parsing() {
         let h = parse_head("HTTP/1.1 206 Partial Content\r\nContent-Type: application/pdf\r\nContent-Range: bytes 0-0/123456\r\n\r\n");
         assert_eq!((h.status, h.range_total, h.range_start), (206, Some(123456), Some(0)));
@@ -806,7 +894,7 @@ mod tests {
         let data: Vec<u8> = (0..3_500_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
         let data = Arc::new(data);
         let port = server(data.clone(), flaky);
-        let req = Request { url: format!("http://127.0.0.1:{port}/berkas.bin"), user_agent: "uji".into(), headers: vec![("Cookie".into(), "a=b".into())], if_range: None };
+        let req = Request { url: format!("http://127.0.0.1:{port}/berkas.bin"), user_agent: "uji".into(), headers: vec![("Cookie".into(), "a=b".into())], if_range: None, wait_secs: 0 };
         let p = probe(&req).expect("probe");
         assert_eq!(p.total, data.len() as u64);
         let dir = std::env::temp_dir().join(format!("ovner-dl-{}-{flaky}", std::process::id()));

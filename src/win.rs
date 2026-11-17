@@ -36,6 +36,9 @@ pub enum DlEvent {
     WaitEnd { id: u64 },
     /// Baris untuk ovner.log.
     Log(String),
+    /// PDF yang sedang dibaca dari respons boleh diunduh juga lewat koneksi Ovner sendiri
+    /// (WinHTTP, seperti download manager): mana yang selesai lebih dulu dipakai.
+    Race { id: u64, url: String, cookie: String, referer: String, user_agent: String, total: i64 },
 }
 
 /// Jenis kegagalan proses WebView2.
@@ -1228,7 +1231,8 @@ mod imp {
     /// Baca potongan berikutnya dari aliran respons PDF `id` dan tulis ke berkas.
     fn read_stream(id: u64) {
         let Some((core, handle)) = STREAMS.with(|m| m.borrow().get(&id).map(|s| (s.core.clone(), s.handle.clone()))) else { return };
-        let params = serde_json::json!({"handle": handle, "size": 1 << 20}).to_string();
+        // Satu permintaan baca menunggu sampai `size` terkumpul: 256 KB supaya kemajuan sering terlihat.
+        let params = serde_json::json!({"handle": handle, "size": 256 * 1024}).to_string();
         cdp_then(&core, "IO.read", &params, move |v| {
             use base64::Engine as _;
             use std::io::Write as _;
@@ -1382,8 +1386,51 @@ mod imp {
                     },
                 )
             });
-            cb(DlEvent::Log(format!("PDF diunduh langsung dari respons: {url} → {path} ({} KB)", total / 1024)));
-            cb(DlEvent::Started { id, url, path, total });
+            let rh = &v["request"]["headers"];
+            let rhv = |name: &str| rh.as_object().and_then(|o| o.iter().find(|(k, _)| k.eq_ignore_ascii_case(name))).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string();
+            let (referer, agent) = (rhv("referer"), rhv("user-agent"));
+            cb(DlEvent::Log(format!(
+                "PDF diunduh langsung dari respons: {url} → {path} ({} KB; Accept-Ranges={}, ETag={}, Last-Modified={}, Server={})",
+                total / 1024,
+                hv("accept-ranges").unwrap_or_default(),
+                hv("etag").unwrap_or_default(),
+                hv("last-modified").unwrap_or_default(),
+                hv("server").unwrap_or_default()
+            )));
+            cb(DlEvent::Started { id, url: url.clone(), path, total });
+            // Cookie situs (termasuk HttpOnly) untuk koneksi kedua milik Ovner.
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+            if let Some(cm) = sender.cast::<ICoreWebView2_2>().ok().and_then(|w| unsafe { w.CookieManager() }.ok()) {
+                let cb3 = cb.clone();
+                let u2 = url.clone();
+                let once = std::cell::RefCell::new(Some((referer, agent)));
+                let h = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_r, list| {
+                    let Some((referer, user_agent)) = once.borrow_mut().take() else { return Ok(()) };
+                    let mut cookie = String::new();
+                    if let Some(list) = list {
+                        let mut n = 0u32;
+                        unsafe {
+                            let _ = list.Count(&mut n);
+                            for i in 0..n.min(300) {
+                                if let Ok(c) = list.GetValueAtIndex(i) {
+                                    let (mut a, mut b) = (windows::core::PWSTR::null(), windows::core::PWSTR::null());
+                                    if c.Name(&mut a).is_ok() && c.Value(&mut b).is_ok() {
+                                        if !cookie.is_empty() {
+                                            cookie.push_str("; ");
+                                        }
+                                        cookie.push_str(&webview2_com::take_pwstr(a));
+                                        cookie.push('=');
+                                        cookie.push_str(&webview2_com::take_pwstr(b));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cb3(DlEvent::Race { id, url: u2.clone(), cookie, referer, user_agent, total });
+                    Ok(())
+                }));
+                let _ = unsafe { cm.GetCookies(&HSTRING::from(url.as_str()), &h) };
+            }
             cdp_then(&sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
                 let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
                 let known = STREAMS.with(|m| {

@@ -71,6 +71,21 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.10
+
+- **Kartu PDF SIPP: koneksi kedua seperti download manager.** Log 0.8.9 menunjukkan PDF gagal
+  di 83% (15,1 dari 18,2 MB) setelah 423 detik, padahal tidak ada unduhan lain: server SIPP
+  mengirim tiap koneksi pelan (±35 KB/dtk lewat mesin halaman, ±78 KB/dtk di Mister Download
+  Manager), tidak mendukung Range/lanjut, dan memutus koneksi yang terlalu lama. Kini selain
+  membaca respons halaman, Ovner membuka koneksi kedua sendiri (WinHTTP, dengan cookie dan
+  Referer situs, menunggu server membuat PDF sampai 3 menit) dan mengulanginya sampai 3 kali bila
+  putus. Setelah keduanya berjalan ±15 detik, yang jelas lebih lambat dihentikan agar yang lebih
+  cepat dapat seluruh bandwidth; mana pun yang selesai utuh lebih dulu (dicek ukuran dan tanda
+  `%PDF`) itulah yang disimpan. Bila respons halaman putus, unduhan tidak lagi gagal selama
+  koneksi kedua masih berjalan.
+- Kolom koneksi menunjukkan jumlah jalur PDF yang aktif; log mencatat kecepatan dan sisa waktu
+  masing-masing, serta tajuk server (Accept-Ranges, ETag, Last-Modified).
+
 ## Perbaikan 0.8.9
 
 - **Kartu PDF SIPP cepat dan tidak gagal di tengah jalan.** Penyebab lambat (±35 KB/dtk) dan

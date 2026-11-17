@@ -1,6 +1,6 @@
 [package]
 name = "ovner"
-version = "0.8.9"
+version = "0.8.10"
 edition = "2021"
 description = "Browser ringan untuk Windows: mesin WebView2 + pemblokir iklan Brave (adblock-rust), tanpa hak admin"
 license = "MIT"
