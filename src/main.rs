@@ -155,6 +155,41 @@ fn my_location() -> Option<(f64, f64)> {
     v
 }
 
+/// Hapus berkas unduhan beserta sisa-sisanya (.ovnerpart mesin Ovner, .crdownload, dan
+/// .part/.ytdl/potongan format yt-dlp). Dicoba ulang sebentar di latar karena pegangan berkas
+/// bisa baru saja dilepas.
+fn delete_download_files(path: &str) {
+    let p = PathBuf::from(path);
+    if path.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let (Some(dir), Some(name)) = (p.parent().map(Path::to_path_buf), p.file_name().map(|n| n.to_string_lossy().to_string())) else { return };
+        let stem = p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        for _ in 0..10 {
+            let mut left = false;
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                let ours = n == name
+                    || n == format!("{name}.ovnerpart")
+                    || n == format!("{name}.crdownload")
+                    || (!stem.is_empty() && n.starts_with(&format!("{stem}.")) && (n.ends_with(".part") || n.ends_with(".ytdl") || n.contains(".part-Frag") || n.contains(".temp.") || {
+                        // Potongan format yt-dlp: "judul [id].f137.mp4".
+                        let rest = &n[stem.len() + 1..];
+                        rest.starts_with('f') && rest[1..].split('.').next().is_some_and(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit() || c == '-'))
+                    }));
+                if ours && e.path().is_file() && std::fs::remove_file(e.path()).is_err() {
+                    left = true;
+                }
+            }
+            if !left {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+}
+
 /// Jarak dua titik di bumi (km).
 fn haversine_km(a1: f64, o1: f64, a2: f64, o2: f64) -> f64 {
     let (p1, p2) = (a1.to_radians(), a2.to_radians());
@@ -458,6 +493,8 @@ struct App {
     dl_skip: Rc<RefCell<HashSet<String>>>,
     dl_render_at: Instant,
     dl_meta: HashMap<u64, DlMeta>,
+    /// Unduhan yang dibatalkan saat masih menguji server.
+    dl_cancelled: HashSet<u64>,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
     bm_edit: Option<(String, bool)>,
     /// Folder terakhir yang dipilih di kotak bookmark (bookmark baru masuk ke sana).
@@ -1906,6 +1943,7 @@ impl App {
         let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) else { return };
         match ev {
             video::Event::Title(t) => d.name = t,
+            video::Event::Path(p) => d.path = p,
             video::Event::Progress { received, total, speed, eta } => {
                 d.received = received as i64;
                 d.total = total as i64;
@@ -1923,6 +1961,10 @@ impl App {
                     d.name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone());
                     d.path = path;
                 } else {
+                    // Sisa .part/.ytdl dan potongan format (nama.f137.mp4) dihapus.
+                    if !d.path.is_empty() {
+                        delete_download_files(&d.path);
+                    }
                     log(&format!("unduh video gagal: {error}"));
                     d.name = format!("{} ({error})", d.name);
                 }
@@ -1942,6 +1984,9 @@ impl App {
 
     /// Jawaban uji server: ambil alih dengan mesin unduh Ovner, atau biarkan WebView2.
     fn on_dl_probe(&mut self, id: u64, tab: u64, req: dlengine::Request, path: String, res: Result<u64, String>) {
+        if self.dl_cancelled.remove(&id) {
+            return;
+        }
         let total = match res {
             Ok(t) => t,
             Err(e) => {
@@ -2016,6 +2061,16 @@ impl App {
                 }
                 let (url, err) = (d.url.clone(), error.unwrap_or_default());
                 let job = self.dl_jobs.remove(&id);
+                if err == "dibatalkan" {
+                    // Pegangan berkas dilepas bersama job; pastikan sisa .ovnerpart hilang.
+                    drop(job);
+                    delete_download_files(&d.path);
+                    self.save_downloads();
+                    self.last_render_key.clear();
+                    self.render();
+                    self.refresh_pages("downloads");
+                    return;
+                }
                 if !ok && err != "dibatalkan" {
                     // Gagal di tengah jalan (mis. tautan sekali pakai): ulangi lewat WebView2.
                     log(&format!("mesin unduh Ovner gagal: {err}; diulang dengan WebView2"));
@@ -2048,6 +2103,20 @@ impl App {
             "dl-cancel" => match (self.dl_jobs.get(&id), self.video_jobs.get(&id)) {
                 (Some((job, _)), _) => job.cancel(),
                 (_, Some(v)) => v.cancel(),
+                _ if self.dl_meta.get(&id).is_some_and(|m| m.connecting) => {
+                    // Masih menguji server: batalkan unduhan WebView2 yang ditahan dan jangan
+                    // mulai mesin unduh saat hasil uji datang (dulu tetap lanjut sampai selesai).
+                    self.dl_cancelled.insert(id);
+                    win::resolve_download(id, true);
+                    if let Some(m) = self.dl_meta.get_mut(&id) {
+                        m.connecting = false;
+                    }
+                    let d = &mut self.downloads[pos];
+                    d.state = "failed".into();
+                    d.speed = 0;
+                    self.save_downloads();
+                    self.refresh_pages("downloads");
+                }
                 _ => win::cancel_download(id),
             },
             "dl-pause" => {
@@ -2060,8 +2129,11 @@ impl App {
                     job.resume();
                 }
             }
-            "dl-remove" => {
-                self.downloads.remove(pos);
+            "dl-remove" | "dl-delete" => {
+                let d = self.downloads.remove(pos);
+                if kind == "dl-delete" {
+                    delete_download_files(&d.path);
+                }
                 self.save_downloads();
                 self.refresh_pages("downloads");
             }
@@ -3171,8 +3243,13 @@ impl App {
                     }
                 }
             }
-            "dl-open" | "dl-show" | "dl-remove" | "dl-cancel" | "dl-pause" | "dl-resume" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
+            "dl-open" | "dl-show" | "dl-remove" | "dl-delete" | "dl-cancel" | "dl-pause" | "dl-resume" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
             "dl-clear" => {
+                if msg["files"].as_bool() == Some(true) {
+                    for d in self.downloads.iter().filter(|d| d.state != "progress" && d.state != "paused") {
+                        delete_download_files(&d.path);
+                    }
+                }
                 self.downloads.retain(|d| d.state == "progress" || d.state == "paused");
                 self.save_downloads();
                 self.push_page_state(i);
@@ -3480,7 +3557,7 @@ impl App {
                     self.clip_toolbar(&rects);
                 }
             }
-            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-pause" | "dl-resume" => self.download_action(&cmd, id),
+            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-delete" | "dl-pause" | "dl-resume" => self.download_action(&cmd, id),
             "dl-toggle" => {
                 self.dl_bubble = !self.dl_bubble;
                 self.last_render_key.clear();
@@ -4681,6 +4758,7 @@ fn main() {
         dl_skip: Rc::new(RefCell::new(HashSet::new())),
         dl_render_at: Instant::now(),
         dl_meta: HashMap::new(),
+        dl_cancelled: HashSet::new(),
         bm_edit: None,
         last_bm_folder: String::new(),
         record_at: Instant::now(),
@@ -5159,6 +5237,22 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deletes_download_leftovers_only() {
+        let d = std::env::temp_dir().join(format!("ovner-del-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let names = ["Lagu [abc].mp4", "Lagu [abc].f137.mp4.part", "Lagu [abc].f140.m4a", "Lagu [abc].mp4.ytdl", "big.iso.ovnerpart", "Lagu lain.mp4", "Lagu [abc] (1).mp4"];
+        for n in names {
+            std::fs::write(d.join(n), b"x").unwrap();
+        }
+        delete_download_files(&d.join("Lagu [abc].mp4").display().to_string());
+        delete_download_files(&d.join("big.iso").display().to_string());
+        std::thread::sleep(Duration::from_millis(300));
+        let mut left: Vec<String> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        left.sort();
+        assert_eq!(left, vec!["Lagu [abc] (1).mp4", "Lagu lain.mp4"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use super::*;
 
     #[test]

@@ -22,12 +22,21 @@
   .acts button { width: 34px; height: 34px; padding: 0; border: 0; background: none; border-radius: 50%; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
   .acts button:hover { background: var(--line); color: var(--text); }
   .acts svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  dialog#del { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); padding: 18px 20px; min-width: 360px; }
+  dialog#del::backdrop { background: #0006; }
+  dialog#del h3 { margin: 0 0 6px; font-size: 15px; }
+  dialog#del .nm { color: var(--muted); font-size: 12.5px; word-break: break-all; margin-bottom: 14px; }
+  dialog#del label { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+  dialog#del .bb { display: flex; justify-content: flex-end; gap: 8px; }
+  dialog#del button.danger { background: #d33b2b; border-color: #d33b2b; color: #fff; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1 id="h1"></h1>
   <div class="head"><input type="search" id="q"><button id="clear"></button></div>
+  <dialog id="del"><h3 id="delT"></h3><div class="nm" id="delN"></div><label><input type="checkbox" id="delF"><span id="delL"></span></label>
+    <div class="bb"><button id="delNo"></button><button id="delOk" class="danger"></button></div></dialog>
   <div id="list"></div>
 </div>
 <script>
@@ -36,9 +45,9 @@
   const $ = (id) => document.getElementById(id);
   const W = {
     id: { h1: "Unduhan", q: "Cari riwayat unduhan", clear: "Hapus semua dari daftar", empty: "Belum ada unduhan.", today: "Hari ini", yday: "Kemarin", loc: "id-ID",
-      deleted: "Dihapus", failed: "Gagal / dibatalkan", copy: "Salin tautan", show: "Tampilkan di folder", remove: "Hapus dari daftar", cancel: "Batalkan", pause: "Jeda", resume: "Lanjutkan", paused: "Dijeda", conns: "koneksi", engine: "Mesin unduh Ovner (multi-koneksi)" },
+      deleted: "Dihapus", failed: "Gagal / dibatalkan", copy: "Salin tautan", show: "Tampilkan di folder", remove: "Hapus", delT: "Hapus unduhan ini?", delAllT: "Hapus semua unduhan?", delAllN: "Unduhan yang selesai dan gagal dihapus dari daftar.", delFiles: "Hapus berkasnya juga (permanen dari disk)", delOk: "Hapus", delNo: "Batal", cancel: "Batalkan", pause: "Jeda", resume: "Lanjutkan", paused: "Dijeda", conns: "koneksi", engine: "Mesin unduh Ovner (multi-koneksi)" },
     en: { h1: "Downloads", q: "Search download history", clear: "Clear all", empty: "No downloads yet.", today: "Today", yday: "Yesterday", loc: "en-US",
-      deleted: "Deleted", failed: "Failed / cancelled", copy: "Copy link", show: "Show in folder", remove: "Remove from list", cancel: "Cancel", pause: "Pause", resume: "Resume", paused: "Paused", conns: "connections", engine: "Ovner download engine (multi-connection)" },
+      deleted: "Deleted", failed: "Failed / cancelled", copy: "Copy link", show: "Show in folder", remove: "Delete", delT: "Delete this download?", delAllT: "Clear all downloads?", delAllN: "Finished and failed downloads are removed from the list.", delFiles: "Delete files too (permanently from disk)", delOk: "Delete", delNo: "Cancel", cancel: "Cancel", pause: "Pause", resume: "Resume", paused: "Paused", conns: "connections", engine: "Ovner download engine (multi-connection)" },
   };
   let w = W.id, items = [];
   const svg = {
@@ -94,7 +103,7 @@
       if (d.engine && d.state === "progress") btn("pause", w.pause, () => post({ t: "dl-pause", id: d.id }));
       if (d.engine && d.state === "paused") btn("play", w.resume, () => post({ t: "dl-resume", id: d.id }));
       if (live) btn("x", w.cancel, () => post({ t: "dl-cancel", id: d.id }));
-      else btn("x", w.remove, () => post({ t: "dl-remove", id: d.id }));
+      else btn("x", w.remove, () => ask(w.delT, d.name, d.state === "done" && d.exists, (files) => post({ t: files ? "dl-delete" : "dl-remove", id: d.id })));
       list.append(el);
     }
   }
@@ -106,7 +115,21 @@
     render();
   };
   $("q").oninput = render;
-  $("clear").onclick = () => post({ t: "dl-clear" });
+  // Hapus dari daftar, dengan pilihan "Hapus berkasnya juga" (pilihan terakhir diingat).
+  function ask(title, name, canFiles, done) {
+    $("delT").textContent = title; $("delN").textContent = name;
+    $("delL").textContent = w.delFiles; $("delOk").textContent = w.delOk; $("delNo").textContent = w.delNo;
+    let last = false; try { last = localStorage.getItem("ovner-dl-del-files") === "1"; } catch (e) {}
+    $("delF").checked = last; $("delF").parentElement.hidden = !canFiles;
+    $("delNo").onclick = () => $("del").close();
+    $("delOk").onclick = () => {
+      const f = canFiles && $("delF").checked;
+      try { localStorage.setItem("ovner-dl-del-files", $("delF").checked ? "1" : "0"); } catch (e) {}
+      $("del").close(); done(f);
+    };
+    $("del").showModal();
+  }
+  $("clear").onclick = () => ask(w.delAllT, w.delAllN, items.some((d) => d.state === "done" && d.exists), (files) => post({ t: "dl-clear", files }));
   post({ t: "page-ready" });
 })();
 </script>

@@ -125,6 +125,8 @@ fn hide_window(cmd: &mut Command) {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Title(String),
+    /// Nama berkas akhir (untuk menghapus sisa .part bila dibatalkan).
+    Path(String),
     Progress { received: u64, total: u64, speed: u64, eta: u64 },
     Done { ok: bool, path: String, error: String },
 }
@@ -136,6 +138,9 @@ pub fn parse_line(line: &str) -> Option<Event> {
         let num = |i: usize| f.get(i).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0) as u64;
         let total = if num(1) > 0 { num(1) } else { num(2) };
         return Some(Event::Progress { received: num(0), total, speed: num(3), eta: num(4) });
+    }
+    if let Some(t) = line.split("[ovner-path] ").nth(1) {
+        return Some(Event::Path(t.trim().to_string()));
     }
     if let Some(t) = line.split("[ovner-title] ").nth(1) {
         return Some(Event::Title(t.trim().to_string()));
@@ -166,6 +171,7 @@ pub fn start(data: &Path, page_url: &str, choice: &str, out_dir: &Path, cb: impl
     cmd.args(["--newline", "--no-colors", "--no-playlist", "--no-simulate", "--progress", "--no-mtime"])
         .args(["--progress-template", "download:[ovner] %(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s"])
         .args(["--print", "before_dl:[ovner-title] %(title)s"])
+        .args(["--print", "before_dl:[ovner-path] %(filename)s"])
         .args(["--print", "after_move:[ovner-file] %(filepath)s"])
         .arg("-f")
         .arg(fmt)

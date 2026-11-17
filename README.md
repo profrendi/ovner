@@ -63,6 +63,14 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.9
+
+- **Batal unduhan = berkas terhapus**: sisa `.ovnerpart` mesin Ovner dan `.part`/`.ytdl`/potongan
+  format yt-dlp dihapus saat dibatalkan. Membatalkan saat masih "Menghubungkan…" kini benar-benar
+  membatalkan (dulu tetap lanjut sampai selesai).
+- **Hapus unduhan dengan pilihan "Hapus berkasnya juga"** di halaman Unduhan (satu per satu atau
+  "Hapus semua"); pilihan terakhir diingat.
+
 ## Perbaikan 0.7.8
 
 - **Download box v2** (Setelan → Unduhan, bisa dimatikan): kotak unduhan terpisah dihapus dan
