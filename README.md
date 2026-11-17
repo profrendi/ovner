@@ -63,6 +63,36 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Fitur baru di 0.7
+
+- **RAM per tab seperti Task Manager Windows**: tiap tab dipasangkan dengan proses halamannya
+  (baris "WebView2: judul" di Task Manager), termasuk tab yang ditangguhkan. Pemantau
+  pemakaian kini berjalan di thread sendiri dan diperbarui tiap detik; sebelumnya tick 2 detik
+  tertunda terus selama mouse bergerak, sehingga angka di toolbar tampak macet.
+- **Startpage**: tantangan anti-bot Anubis dipecahkan Ovner secara native (Rust, semua inti
+  CPU, biasanya beberapa milidetik) lalu halaman diarahkan ke alamat lolos tantangan, seperti
+  SearXNG. Pencarian memakai format ekstensi resmi Startpage (`pl=ext-chrome`). Aset Anubis
+  tidak pernah diblokir. Berlaku juga untuk situs lain yang memakai Anubis.
+- **Kolom alamat**: teks tidak lagi ditimpa saat diedit; isi otomatis dari bookmark bisa
+  diterima dengan Tab/→/End lalu diedit, Backspace menghapus isi otomatis saja.
+- **Mesin unduh multi-koneksi** (seperti Mister Download Manager/IDM): berkas ≥ 2 MB dari
+  server yang mendukung Range diunduh lewat 8 koneksi; bagian yang selesai lebih dulu
+  membelah bagian terbesar ("rebalance sampai byte terakhir"); bagian yang putus diulang dari
+  posisi terakhirnya; bisa dijeda/dilanjutkan. Cookie, user agent, dan referrer tab ikut
+  dikirim. Bila server tidak mendukung atau gagal di tengah, unduhan diulang lewat WebView2.
+- **Mode gelap seperti Dark Reader**: tombol bulan di toolbar membuka panel per situs
+  (Ikut umum / Nyala / Mati), mode untuk semua situs (mati, nyala, ikut tema Windows), cara
+  (Dinamis = Dark Reader, Filter, Chromium), serta kecerahan, kontras, sepia, dan abu-abu.
+  Berlaku langsung tanpa muat ulang. Dark Reader (MIT) dibundel dan hanya dimuat di situs
+  yang digelapkan. "Paksa mode gelap" lama otomatis menjadi mode Chromium untuk semua situs.
+- **Penghemat tab seperti TabWars**: situs yang tidak pernah ditidurkan, tab dengan formulir
+  yang sedang diisi tidak ditidurkan, tutup tab duplikat, **Sesi tab** (simpan semua tab
+  dengan nama, buka lagi dalam keadaan tidur, ganti tab, ubah nama), daftar tab yang baru
+  ditutup, dan statistik (tab ditidurkan, RAM dibebaskan, duplikat ditutup).
+- **Izinkan salin seperti Allow Copy+**: per situs lewat tameng (atau semua situs): pilih teks,
+  salin, tempel, seret, dan klik kanan tidak bisa dilarang situs. **Paksa tempel**: Alt+Shift+V
+  di kolom yang melarang tempel (semua situs).
+
 ## Fitur baru di 0.6
 
 - **Anti-blokir** (Pengaturan → Privasi dan keamanan): proxy di dalam Ovner yang mencari

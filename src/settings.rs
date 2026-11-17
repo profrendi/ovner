@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Versi skema setelan. Naik bila bawaan lama perlu diubah untuk pengguna yang sudah ada.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 fn zero() -> u32 {
     0
@@ -38,8 +38,22 @@ pub struct Settings {
     /// Halaman tab baru: "blank" (kosong, seperti Brave Origin) atau "ovner" (kotak cari).
     pub newtab: String,
     pub default_zoom: u32,
-    /// Paksa mode gelap di semua situs (fitur Chromium).
+    /// Lama: digantikan `dark_mode` + `dark_engine` "chromium" (tetap dibaca untuk migrasi).
     pub force_dark: bool,
+    /// Mode gelap halaman web (seperti Dark Reader): "off", "on" (semua situs), "system"
+    /// (ikut tema Windows). Situs bisa dinyalakan/dimatikan sendiri.
+    pub dark_mode: String,
+    /// Cara menggelapkan: "dynamic" (Dark Reader dinamis, paling rapi), "filter" (balik warna,
+    /// cepat), "chromium" (mode gelap otomatis Chromium, paling ringan).
+    pub dark_engine: String,
+    /// Kecerahan, kontras, sepia, dan skala abu-abu mode gelap (persen, seperti Dark Reader).
+    pub dark_brightness: u32,
+    pub dark_contrast: u32,
+    pub dark_sepia: u32,
+    pub dark_grayscale: u32,
+    /// Situs yang selalu gelap / tidak pernah gelap (mengalahkan `dark_mode`).
+    pub dark_on_sites: Vec<String>,
+    pub dark_off_sites: Vec<String>,
     /// CSS sendiri yang dipasang di semua halaman.
     pub user_css: String,
     /// CSS sendiri untuk toolbar Ovner (seperti userChrome.css Waterfox).
@@ -149,8 +163,21 @@ pub struct Settings {
     /// Abaikan dialog "Tinggalkan situs?" (beforeunload).
     pub disable_beforeunload: bool,
 
+    // ---------- izinkan salin (seperti Allow Copy+) ----------
+    /// Izinkan pilih teks, salin, tempel, dan klik kanan di semua situs.
+    pub allow_copy_all: bool,
+    /// Situs yang dibuka larangan salin/klik kanannya.
+    pub allow_copy_sites: Vec<String>,
+
     // ---------- unduhan ----------
     pub download_dir: String,
+    /// Mesin unduh Ovner (seperti Mister Download Manager/IDM): berkas besar diunduh dengan
+    /// beberapa koneksi sekaligus, bisa dijeda/dilanjutkan.
+    pub dl_engine: bool,
+    /// Jumlah koneksi per unduhan.
+    pub dl_connections: u32,
+    /// Hanya berkas sebesar ini (MB) ke atas yang diambil alih mesin unduh Ovner.
+    pub dl_min_mb: u32,
 
     // ---------- saat mulai ----------
     pub restore_tabs: bool,
@@ -158,6 +185,10 @@ pub struct Settings {
 
     // ---------- hemat RAM ----------
     pub sleep_tabs_minutes: u64,
+    /// Situs yang tidak pernah ditidurkan (seperti whitelist TabWars).
+    pub sleep_never_sites: Vec<String>,
+    /// Jangan tidurkan tab yang formulirnya sedang diisi.
+    pub sleep_skip_forms: bool,
     pub suspend_hidden_tabs: bool,
     pub close_to_tray: bool,
     pub low_memory_when_hidden: bool,
@@ -245,6 +276,21 @@ impl Default for Settings {
             newtab: "blank".into(),
             default_zoom: 100,
             force_dark: false,
+            dark_mode: "off".into(),
+            dark_engine: "dynamic".into(),
+            dark_brightness: 100,
+            dark_contrast: 100,
+            dark_sepia: 0,
+            dark_grayscale: 0,
+            dark_on_sites: Vec::new(),
+            dark_off_sites: Vec::new(),
+            allow_copy_all: false,
+            allow_copy_sites: Vec::new(),
+            dl_engine: true,
+            dl_connections: 8,
+            dl_min_mb: 2,
+            sleep_never_sites: Vec::new(),
+            sleep_skip_forms: true,
             user_css: String::new(),
             search_engine: "google".into(),
             bangs: true,
@@ -436,6 +482,15 @@ impl Settings {
             // YouTube Restricted Mode (error 151) atau memblokir DNS aman.
             self.secure_dns = "off".into();
         }
+        if self.schema < 5 && self.force_dark {
+            // 0.7: "Paksa mode gelap" menjadi mode gelap per situs (mesin Chromium, sama persis
+            // seperti sebelumnya, tetapi sekarang bisa diatur per situs tanpa buka ulang).
+            self.dark_mode = "on".into();
+            self.dark_engine = "chromium".into();
+        }
+        if self.schema < 5 {
+            self.force_dark = false;
+        }
         if self.schema < 2 {
             // 0.3.1: "Matikan GPU" menjadi pilihan mode GPU.
             self.gpu_mode = if self.no_gpu { "off".into() } else { "full".into() };
@@ -461,6 +516,14 @@ impl Settings {
         pick(&mut self.security_level, &["standard", "safer", "safest"], "standard");
         pick(&mut self.gpu_mode, &["full", "lite", "off"], "full");
         pick(&mut self.background_media, &["pause", "keep", "timer"], "keep");
+        pick(&mut self.dark_mode, &["off", "on", "system"], "off");
+        pick(&mut self.dark_engine, &["dynamic", "filter", "chromium"], "dynamic");
+        self.dark_brightness = self.dark_brightness.clamp(30, 150);
+        self.dark_contrast = self.dark_contrast.clamp(30, 150);
+        self.dark_sepia = self.dark_sepia.min(100);
+        self.dark_grayscale = self.dark_grayscale.min(100);
+        self.dl_connections = self.dl_connections.clamp(1, 32);
+        self.dl_min_mb = self.dl_min_mb.min(10_000);
         self.background_media_minutes = self.background_media_minutes.clamp(1, 24 * 60);
         pick(&mut self.youtube_h264, &["auto", "on", "off"], "auto");
         self.filter_update_hours = self.filter_update_hours.clamp(1, 24 * 7);
@@ -472,7 +535,16 @@ impl Settings {
         self.sleep_tabs_minutes = self.sleep_tabs_minutes.min(24 * 60);
         self.trim_every_minutes = self.trim_every_minutes.min(24 * 60);
         self.renderer_process_limit = self.renderer_process_limit.min(64);
-        for list in [&mut self.exceptions, &mut self.script_blocked, &mut self.farbling_off, &mut self.script_allowed] {
+        for list in [
+            &mut self.exceptions,
+            &mut self.script_blocked,
+            &mut self.farbling_off,
+            &mut self.script_allowed,
+            &mut self.dark_on_sites,
+            &mut self.dark_off_sites,
+            &mut self.allow_copy_sites,
+            &mut self.sleep_never_sites,
+        ] {
             *list = list.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
             list.sort();
             list.dedup();
@@ -694,7 +766,9 @@ impl Settings {
             "brave" => "https://search.brave.com/search?q=%s",
             "google" => "https://www.google.com/search?q=%s",
             "qwant" => "https://www.qwant.com/?q=%s",
-            "startpage" => "https://www.startpage.com/do/search?q=%s",
+            // Format yang dipakai ekstensi resmi Startpage (pl=ext-chrome): dikenali Startpage
+            // sebagai pencarian dari browser, bukan dari skrip/bot.
+            "startpage" => "https://www.startpage.com/do/dsearch?query=%s&cat=web&pl=ext-chrome&extVersion=1.3.0",
             "leta" => "https://leta.mullvad.net/search?q=%s",
             "ecosia" => "https://www.ecosia.org/search?q=%s",
             "mojeek" => "https://www.mojeek.com/search?q=%s",
@@ -711,6 +785,25 @@ impl Settings {
 
     pub fn toggle_exception(&mut self, host: &str) -> bool {
         toggle_host(&mut self.exceptions, host)
+    }
+
+    /// Mesin mode gelap untuk situs ini, atau `None` bila situs ini tidak digelapkan.
+    pub fn dark_for(&self, host: &str, system_dark: bool) -> Option<&str> {
+        if host.is_empty() || host_in(&self.dark_off_sites, host) {
+            return None;
+        }
+        let on = host_in(&self.dark_on_sites, host)
+            || match self.dark_mode.as_str() {
+                "on" => true,
+                "system" => system_dark,
+                _ => false,
+            };
+        on.then_some(self.dark_engine.as_str())
+    }
+
+    /// Larangan salin/klik kanan dibuka di situs ini?
+    pub fn allow_copy_for(&self, host: &str) -> bool {
+        !host.is_empty() && (self.allow_copy_all || host_in(&self.allow_copy_sites, host))
     }
 
     /// Pengacakan sidik jari yang berlaku untuk situs ini ("off", "standard", "strict").
@@ -846,6 +939,36 @@ mod tests {
         assert_eq!(s.search_url("harga cabai"), "https://www.google.com/search?q=harga+cabai");
         let s = Settings { search_engine: "https://x.id/?q=%s".into(), ..Settings::default() };
         assert_eq!(s.search_url("a&b"), "https://x.id/?q=a%26b");
+    }
+
+    #[test]
+    fn dark_mode_and_allow_copy_per_site() {
+        let mut s = Settings::default();
+        assert_eq!(s.dark_for("example.com", true), None);
+        s.dark_on_sites.push("example.com".into());
+        assert_eq!(s.dark_for("example.com", false), Some("dynamic"));
+        assert_eq!(s.dark_for("sub.example.com", false), Some("dynamic"));
+        s.dark_mode = "system".into();
+        assert_eq!(s.dark_for("other.id", true), Some("dynamic"));
+        assert_eq!(s.dark_for("other.id", false), None);
+        s.dark_off_sites.push("other.id".into());
+        assert_eq!(s.dark_for("other.id", true), None);
+        assert!(!s.allow_copy_for("bpjs.go.id"));
+        s.allow_copy_sites.push("bpjs.go.id".into());
+        assert!(s.allow_copy_for("www.bpjs.go.id") || s.allow_copy_for("bpjs.go.id"));
+        // 0.7: "Paksa mode gelap" lama berpindah ke mode gelap per situs (mesin Chromium).
+        let old = r#"{"schema":4,"force_dark":true}"#;
+        let dir = std::env::temp_dir().join(format!("ovner-dark-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(Settings::path(&dir), old).unwrap();
+        let m = Settings::load(&dir);
+        assert_eq!((m.dark_mode.as_str(), m.dark_engine.as_str(), m.force_dark), ("on", "chromium", false));
+        assert!(!m.browser_args().contains("WebContentsForceDark"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut c = Settings::default();
+        assert!(c.set("dark_brightness", &serde_json::json!(999)));
+        assert_eq!(c.dark_brightness, 150);
+        assert!(c.search_url("kartu bpjs").starts_with("https://www.startpage.com/do/dsearch?query=kartu+bpjs") || c.search_engine != "startpage");
     }
 
     #[test]

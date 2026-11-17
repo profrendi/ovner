@@ -123,12 +123,78 @@
     else if (e.altKey && !e.ctrlKey && k === "home") c = "home";
     else if (k === "f6") c = "address";
     else if (k === "escape" && e.shiftKey) c = "tasks";
+    // Paksa tempel (seperti Allow Copy+): Alt+Shift+V di kolom yang melarang tempel.
+    if (e.altKey && e.shiftKey && !e.ctrlKey && k === "v") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      pasteTarget = document.activeElement;
+      post({ t: "paste" });
+      return;
+    }
     if (c) {
       e.preventDefault();
       e.stopImmediatePropagation();
       post({ t: "key", k: c });
     }
   }, true);
+
+  // ---- Formulir sedang diisi: tab ini jangan ditidurkan (teks yang diketik tidak hilang). ----
+  let dirty = false;
+  document.addEventListener("input", (e) => {
+    const el = e.target;
+    if (dirty || !el) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || "") || el.isContentEditable) {
+      if (el.type === "search" || el.type === "password") return;
+      dirty = true;
+      post({ t: "dirty" });
+    }
+  }, true);
+  document.addEventListener("submit", () => { if (dirty) { dirty = false; post({ t: "clean" }); } }, true);
+
+  // ---- Paksa tempel: teks dimasukkan seolah diketik (tanpa event paste yang bisa ditolak) ----
+  let pasteTarget = null;
+  Object.defineProperty(window, "__ovnerForcePaste", {
+    value: (text) => {
+      const el = pasteTarget && pasteTarget.isConnected ? pasteTarget : document.activeElement;
+      if (!el || typeof text !== "string") return;
+      try { el.focus(); } catch (e) {}
+      if (document.execCommand && document.execCommand("insertText", false, text)) return;
+      if ("value" in el) {
+        const a = el.selectionStart ?? el.value.length, b = el.selectionEnd ?? el.value.length;
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const set = Object.getOwnPropertyDescriptor(proto, "value").set;
+        set.call(el, el.value.slice(0, a) + text + el.value.slice(b));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    },
+  });
+
+  // ---- Anubis ("Making sure you're not a bot!", dipakai Startpage): tantangan proof-of-work
+  // dipecahkan Ovner secara native (Rust, semua inti CPU), lalu halaman diarahkan ke alamat
+  // lolos tantangan seperti yang dilakukan skrip Anubis sendiri. ----
+  onReady(() => {
+    const el = document.getElementById("anubis_challenge");
+    if (!el) return;
+    let data;
+    try { data = JSON.parse(el.textContent); } catch (e) { return; }
+    const ch = data && data.challenge, rules = (data && data.rules) || {};
+    const random = typeof ch === "string" ? ch : ch && ch.randomData;
+    const algo = rules.algorithm || (ch && ch.method) || "fast";
+    const diff = Number(rules.difficulty);
+    if (!random || !/^(fast|slow)$/.test(algo) || !(diff >= 1 && diff <= 6)) return;
+    let prefix = "";
+    try { const bp = document.getElementById("anubis_base_prefix"); if (bp) prefix = JSON.parse(bp.textContent) || ""; } catch (e) {}
+    const t0 = Date.now();
+    Object.defineProperty(window, "__ovnerAnubis", {
+      value: (hash, nonce) => {
+        const q = new URLSearchParams({ response: hash, nonce: String(nonce), redir: location.href, elapsedTime: String(Math.max(1, Date.now() - t0)) });
+        if (ch && typeof ch === "object" && ch.id) q.set("id", ch.id);
+        location.replace(prefix + "/.within.website/x/cmd/anubis/api/pass-challenge?" + q.toString());
+      },
+    });
+    post({ t: "anubis", data: random, difficulty: diff });
+  });
 
   // Alamat berubah lewat history API (YouTube, Gmail, dsb.).
   // ---- Filter kosmetik procedural (:has-text, :upward, :matches-css, :remove, ...) ----

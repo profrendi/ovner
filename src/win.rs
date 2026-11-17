@@ -22,6 +22,9 @@ pub struct Proc {
 #[derive(Debug, Clone)]
 pub enum DlEvent {
     Started { id: u64, url: String, path: String, total: i64 },
+    /// Unduhan ditahan: mesin unduh Ovner boleh menguji server lalu memutuskan lewat
+    /// `resolve_download`. `cookie` = tajuk Cookie situs untuk alamat ini.
+    Offer { id: u64, url: String, path: String, total: i64, cookie: String },
     Progress { id: u64, received: i64, total: i64 },
     /// Selesai (`ok`), gagal/dibatalkan (`!ok`).
     Done { id: u64, ok: bool, path: String, received: i64 },
@@ -294,65 +297,165 @@ mod imp {
     }
     static NEXT_DL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-    /// Lacak unduhan tab ini sendiri; panel unduhan bawaan WebView2 disembunyikan.
-    pub fn on_download(webview: &wry::WebView, cb: impl Fn(DlEvent) + 'static) {
+    thread_local! {
+        /// Unduhan yang ditahan (deferral) sambil Ovner menguji apakah mesin unduhnya bisa
+        /// mengambil alih: id → (args, deferral, operasi, alamat, path, total, callback).
+        static PENDING: std::cell::RefCell<std::collections::HashMap<u64, PendingDl>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    struct PendingDl {
+        args: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadStartingEventArgs,
+        deferral: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Deferral,
+        op: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+        url: String,
+        path: String,
+        total: i64,
+        cb: std::rc::Rc<dyn Fn(DlEvent)>,
+    }
+
+    /// Nomor unduhan berikutnya (dipakai juga oleh mesin unduh Ovner).
+    pub fn next_download_id() -> u64 {
+        NEXT_DL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Ikuti kemajuan unduhan WebView2 `op` (panel bawaan disembunyikan).
+    unsafe fn track_download(
+        op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+        id: u64,
+        url: String,
+        path: String,
+        total: i64,
+        cb: std::rc::Rc<dyn Fn(DlEvent)>,
+    ) {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
-        use webview2_com::{take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler};
+        use webview2_com::{take_pwstr, BytesReceivedChangedEventHandler, StateChangedEventHandler};
+        cb(DlEvent::Started { id, url, path, total });
+        DOWNLOADS.with(|d| d.borrow_mut().insert(id, op.clone()));
+        let (cb1, cb2) = (cb.clone(), cb.clone());
+        let last = std::cell::Cell::new(std::time::Instant::now());
+        let progress = BytesReceivedChangedEventHandler::create(Box::new(move |op, _| {
+            if let Some(op) = op {
+                if last.get().elapsed() >= std::time::Duration::from_millis(300) {
+                    last.set(std::time::Instant::now());
+                    let (mut r, mut t) = (0i64, 0i64);
+                    let _ = op.BytesReceived(&mut r);
+                    let _ = op.TotalBytesToReceive(&mut t);
+                    cb1(DlEvent::Progress { id, received: r, total: t });
+                }
+            }
+            Ok(())
+        }));
+        let state = StateChangedEventHandler::create(Box::new(move |op, _| {
+            if let Some(op) = op {
+                let mut st = COREWEBVIEW2_DOWNLOAD_STATE::default();
+                let _ = op.State(&mut st);
+                if st != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+                    let mut p = windows::core::PWSTR::null();
+                    let path = if op.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                    let mut r = 0i64;
+                    let _ = op.BytesReceived(&mut r);
+                    DOWNLOADS.with(|d| d.borrow_mut().remove(&id));
+                    cb2(DlEvent::Done { id, ok: st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, path, received: r });
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        let _ = op.add_BytesReceivedChanged(&progress, &mut token);
+        let _ = op.add_StateChanged(&state, &mut token);
+    }
+
+    /// Lacak unduhan tab ini sendiri; panel unduhan bawaan WebView2 disembunyikan.
+    /// `offer(alamat, total)` = true bila mesin unduh Ovner ingin mencoba mengambil alih:
+    /// unduhan ditahan, cookie situs diambil, lalu `DlEvent::Offer` dikirim; Ovner menjawab
+    /// lewat [`resolve_download`].
+    pub fn on_download(webview: &wry::WebView, cb: impl Fn(DlEvent) + 'static, offer: impl Fn(&str, i64) -> bool + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use webview2_com::{take_pwstr, DownloadStartingEventHandler, GetCookiesCompletedHandler};
         use wry::WebViewExtWindows;
         let Ok(w4) = webview.webview().cast::<ICoreWebView2_4>() else { return };
-        let cb = std::rc::Rc::new(cb);
-        let handler = DownloadStartingEventHandler::create(Box::new(move |_, args| {
+        let cb: std::rc::Rc<dyn Fn(DlEvent)> = std::rc::Rc::new(cb);
+        let handler = DownloadStartingEventHandler::create(Box::new(move |sender, args| {
             let Some(args) = args else { return Ok(()) };
             unsafe {
                 let _ = args.SetHandled(true);
                 let op = args.DownloadOperation()?;
-                let id = NEXT_DL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let id = next_download_id();
                 let mut p = windows::core::PWSTR::null();
                 let url = if op.Uri(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
                 let mut p = windows::core::PWSTR::null();
                 let path = if args.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
                 let mut total = 0i64;
                 let _ = op.TotalBytesToReceive(&mut total);
-                cb(DlEvent::Started { id, url, path, total });
-                DOWNLOADS.with(|d| d.borrow_mut().insert(id, op.clone()));
-                let (cb1, cb2) = (cb.clone(), cb.clone());
-                let last = std::cell::Cell::new(std::time::Instant::now());
-                let progress = BytesReceivedChangedEventHandler::create(Box::new(move |op, _| {
-                    if let Some(op) = op {
-                        if last.get().elapsed() >= std::time::Duration::from_millis(300) {
-                            last.set(std::time::Instant::now());
-                            let (mut r, mut t) = (0i64, 0i64);
-                            let _ = op.BytesReceived(&mut r);
-                            let _ = op.TotalBytesToReceive(&mut t);
-                            cb1(DlEvent::Progress { id, received: r, total: t });
+                let cookies = sender.as_ref().and_then(|s| s.cast::<ICoreWebView2_2>().ok()).and_then(|w2| w2.CookieManager().ok());
+                if offer(&url, total) {
+                    if let (Some(cm), Ok(deferral)) = (cookies, args.GetDeferral()) {
+                        PENDING.with(|m| {
+                            m.borrow_mut().insert(
+                                id,
+                                PendingDl { args: args.clone(), deferral, op: op.clone(), url: url.clone(), path: path.clone(), total, cb: cb.clone() },
+                            )
+                        });
+                        let cb3 = cb.clone();
+                        let (u2, p2) = (url.clone(), path.clone());
+                        let once = std::cell::RefCell::new(Some(()));
+                        let h = GetCookiesCompletedHandler::create(Box::new(move |_r, list| {
+                            if once.borrow_mut().take().is_none() {
+                                return Ok(());
+                            }
+                            let mut cookie = String::new();
+                            if let Some(list) = list {
+                                let mut n = 0u32;
+                                let _ = list.Count(&mut n);
+                                for i in 0..n.min(300) {
+                                    if let Ok(c) = list.GetValueAtIndex(i) {
+                                        let (mut a, mut b) = (windows::core::PWSTR::null(), windows::core::PWSTR::null());
+                                        if c.Name(&mut a).is_ok() && c.Value(&mut b).is_ok() {
+                                            if !cookie.is_empty() {
+                                                cookie.push_str("; ");
+                                            }
+                                            cookie.push_str(&take_pwstr(a));
+                                            cookie.push('=');
+                                            cookie.push_str(&take_pwstr(b));
+                                        }
+                                    }
+                                }
+                            }
+                            cb3(DlEvent::Offer { id, url: u2.clone(), path: p2.clone(), total, cookie });
+                            Ok(())
+                        }));
+                        if cm.GetCookies(&HSTRING::from(url.as_str()), &h).is_ok() {
+                            return Ok(());
+                        }
+                        // Cookie tidak bisa diambil: unduh cara biasa.
+                        if let Some(pd) = PENDING.with(|m| m.borrow_mut().remove(&id)) {
+                            let _ = pd.deferral.Complete();
                         }
                     }
-                    Ok(())
-                }));
-                let state = StateChangedEventHandler::create(Box::new(move |op, _| {
-                    if let Some(op) = op {
-                        let mut st = COREWEBVIEW2_DOWNLOAD_STATE::default();
-                        let _ = op.State(&mut st);
-                        if st != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
-                            let mut p = windows::core::PWSTR::null();
-                            let path = if op.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
-                            let mut r = 0i64;
-                            let _ = op.BytesReceived(&mut r);
-                            DOWNLOADS.with(|d| d.borrow_mut().remove(&id));
-                            cb2(DlEvent::Done { id, ok: st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, path, received: r });
-                        }
-                    }
-                    Ok(())
-                }));
-                let mut token = 0i64;
-                let _ = op.add_BytesReceivedChanged(&progress, &mut token);
-                let _ = op.add_StateChanged(&state, &mut token);
+                }
+                track_download(&op, id, url, path, total, cb.clone());
             }
             Ok(())
         }));
         let mut token = 0i64;
         unsafe {
             let _ = w4.add_DownloadStarting(&handler, &mut token);
+        }
+    }
+
+    /// Jawaban untuk unduhan yang ditahan: `take_over` = mesin unduh Ovner yang mengerjakan
+    /// (unduhan WebView2 dibatalkan), selain itu WebView2 melanjutkan seperti biasa.
+    pub fn resolve_download(id: u64, take_over: bool) {
+        let Some(pd) = PENDING.with(|m| m.borrow_mut().remove(&id)) else { return };
+        unsafe {
+            if take_over {
+                let _ = pd.args.SetCancel(true);
+                let _ = pd.deferral.Complete();
+            } else {
+                let _ = pd.deferral.Complete();
+                track_download(&pd.op, id, pd.url, pd.path, pd.total, pd.cb);
+            }
         }
     }
 
@@ -470,6 +573,33 @@ mod imp {
         }
     }
 
+    /// Baca teks dari clipboard Windows (untuk "Paksa tempel").
+    pub fn read_clipboard() -> Option<String> {
+        use windows::Win32::Foundation::HGLOBAL;
+        use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+        use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+        const CF_UNICODETEXT: u32 = 13;
+        unsafe {
+            OpenClipboard(None).ok()?;
+            let mut out = None;
+            if let Ok(h) = GetClipboardData(CF_UNICODETEXT) {
+                let g = HGLOBAL(h.0);
+                let p = GlobalLock(g) as *const u16;
+                if !p.is_null() {
+                    let max = GlobalSize(g) / 2;
+                    let mut n = 0usize;
+                    while n < max && *p.add(n) != 0 {
+                        n += 1;
+                    }
+                    out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+                    let _ = GlobalUnlock(g);
+                }
+            }
+            let _ = CloseClipboard();
+            out
+        }
+    }
+
     static CRASH_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
     /// Catat crash tingkat Windows (akses memori ilegal di COM/WebView2, dsb.) ke ovner.log:
@@ -519,6 +649,99 @@ mod imp {
         }
     }
 
+    /// ID bingkai utama tab ini (ICoreWebView2_20::FrameId), untuk mencocokkan proses halaman.
+    pub fn main_frame_id(webview: &wry::WebView) -> Option<u32> {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_20;
+        use wry::WebViewExtWindows;
+        let w = webview.webview().cast::<ICoreWebView2_20>().ok()?;
+        let mut id = 0u32;
+        unsafe { w.FrameId(&mut id).ok()? };
+        (id != 0).then_some(id)
+    }
+
+    /// Proses halaman (renderer) WebView2 beserta bingkai utama yang dilayaninya:
+    /// `(pid, [frame id utama])`. Seperti nama "WebView2: <judul>" di Task Manager Windows.
+    ///
+    /// Untuk berjaga-jaga (Ovner 0.5 pernah tertutup sendiri di sekitar API ini), sebuah
+    /// berkas penanda dibuat sebelum memanggil dan dihapus setelah hasilnya datang. Bila
+    /// Ovner mati di tengahnya, penanda tertinggal dan fitur ini mati otomatis saat mulai.
+    pub fn request_renderer_frames(
+        env: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment,
+        sentinel: &Path,
+        cb: impl FnOnce(Vec<(u32, Vec<u32>)>) + 'static,
+    ) -> bool {
+        use webview2_com::GetProcessExtendedInfosCompletedHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use windows::core::BOOL;
+        let Ok(env13) = env.cast::<ICoreWebView2Environment13>() else { return false };
+        let _ = std::fs::write(sentinel, b"1");
+        let sentinel = sentinel.to_path_buf();
+        let cb = std::cell::RefCell::new(Some(cb));
+        let handler = GetProcessExtendedInfosCompletedHandler::create(Box::new(move |res, coll| {
+            let mut out = Vec::new();
+            if let (Ok(()), Some(coll)) = (res, coll) {
+                unsafe {
+                    let mut n = 0u32;
+                    let _ = coll.Count(&mut n);
+                    for i in 0..n.min(512) {
+                        let Ok(info) = coll.GetValueAtIndex(i) else { continue };
+                        let Ok(pi) = info.ProcessInfo() else { continue };
+                        let (mut pid, mut kind) = (0i32, COREWEBVIEW2_PROCESS_KIND::default());
+                        let _ = pi.ProcessId(&mut pid);
+                        let _ = pi.Kind(&mut kind);
+                        if kind != COREWEBVIEW2_PROCESS_KIND_RENDERER || pid <= 0 {
+                            continue;
+                        }
+                        let mut mains: Vec<u32> = Vec::new();
+                        let Ok(frames) = info.AssociatedFrameInfos() else { continue };
+                        let Ok(it) = frames.GetIterator() else { continue };
+                        let mut guard = 0;
+                        loop {
+                            guard += 1;
+                            let mut has = BOOL::default();
+                            if guard > 256 || it.HasCurrent(&mut has).is_err() || !has.as_bool() {
+                                break;
+                            }
+                            if let Ok(fr) = it.GetCurrent() {
+                                // Naik ke bingkai utama: iframe di proses lain tetap milik tab itu.
+                                let mut cur = fr.cast::<ICoreWebView2FrameInfo2>().ok();
+                                for _ in 0..16 {
+                                    let Some(f2) = cur.clone() else { break };
+                                    let mut k = COREWEBVIEW2_FRAME_KIND::default();
+                                    let _ = f2.FrameKind(&mut k);
+                                    if k == COREWEBVIEW2_FRAME_KIND_MAIN_FRAME {
+                                        break;
+                                    }
+                                    match f2.ParentFrameInfo().and_then(|p| p.cast::<ICoreWebView2FrameInfo2>()) {
+                                        Ok(p) => cur = Some(p),
+                                        Err(_) => break,
+                                    }
+                                }
+                                if let Some(f2) = cur {
+                                    let mut id = 0u32;
+                                    if f2.FrameId(&mut id).is_ok() && id != 0 && !mains.contains(&id) {
+                                        mains.push(id);
+                                    }
+                                }
+                            }
+                            let mut more = BOOL::default();
+                            if it.MoveNext(&mut more).is_err() || !more.as_bool() {
+                                break;
+                            }
+                        }
+                        out.push((pid as u32, mains));
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&sentinel);
+            if let Some(cb) = cb.borrow_mut().take() {
+                cb(out);
+            }
+            Ok(())
+        }));
+        unsafe { env13.GetProcessExtendedInfos(&handler).is_ok() }
+    }
+
     /// Panggil metode DevTools langsung pada ICoreWebView2 (dari handler navigasi).
     pub fn cdp_core(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, method: &str, params: &str) {
         use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
@@ -557,6 +780,15 @@ mod imp {
         unsafe {
             let _ = webview.webview().CallDevToolsProtocolMethod(&HSTRING::from(method), &HSTRING::from(params), &handler);
         }
+    }
+
+    /// Tema aplikasi Windows sedang gelap? (Pengaturan → Personalisasi → Warna)
+    pub fn system_dark() -> bool {
+        winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+            .and_then(|k| k.get_value::<u32, _>("AppsUseLightTheme"))
+            .map(|v| v == 0)
+            .unwrap_or(false)
     }
 
     /// Versi Windows untuk laporan diagnostik, mis. "Windows 10.0.19045".
@@ -813,7 +1045,12 @@ mod imp {
             .unwrap_or_else(|| "Linux".into())
     }
     pub fn set_clipboard(_text: &str) {}
-    pub fn on_download(_webview: &wry::WebView, _cb: impl Fn(DlEvent) + 'static) {}
+    pub fn on_download(_webview: &wry::WebView, _cb: impl Fn(DlEvent) + 'static, _offer: impl Fn(&str, i64) -> bool + 'static) {}
+    pub fn resolve_download(_id: u64, _take_over: bool) {}
+    pub fn next_download_id() -> u64 {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn cancel_download(_id: u64) {}
     pub fn open_path(path: &str, reveal: bool) {
         let p = if reveal { std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default() } else { path.to_string() };
@@ -834,6 +1071,15 @@ mod imp {
     pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail) + 'static) {}
     pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
     pub fn cname_of(_host: &str) -> Option<String> {
+        None
+    }
+    pub fn main_frame_id(_webview: &wry::WebView) -> Option<u32> {
+        None
+    }
+    pub fn system_dark() -> bool {
+        false
+    }
+    pub fn read_clipboard() -> Option<String> {
         None
     }
 }

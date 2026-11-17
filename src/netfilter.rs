@@ -108,6 +108,10 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                     return Ok(());
                 }
+                // Aset tantangan anti-bot Anubis (Startpage, dsb.) tidak pernah diblokir.
+                if uri.contains("/.within.website/") {
+                    return Ok(());
+                }
                 let page = ctx.page.borrow().clone();
                 let page_host = url::Url::parse(&page).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())).unwrap_or_default();
                 let (block_ads, gpc, block_telemetry, exception, cname_on, local_block, referrer) = {
@@ -198,16 +202,25 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
     let add = {
         let ctx = ctx.clone();
         let ids = ids.clone();
-        Rc::new(move |core: &ICoreWebView2, uri: &str| {
-            let (on, page_host) = {
+        Rc::new(move |core: &ICoreWebView2, uri: &str, main: bool| {
+            let page_host = url::Url::parse(uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+            let (on, features) = {
                 let s = ctx.settings.borrow();
-                let h = url::Url::parse(uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
-                (s.block_ads && !h.is_empty() && !s.is_exception(&h), h)
+                let on = s.block_ads && !page_host.is_empty() && !s.is_exception(&page_host);
+                // Fitur per situs (mode gelap, izinkan salin): ditentukan oleh situs halaman utama.
+                let features = if main {
+                    crate::shields::site_feature_script(&s, &crate::settings::norm_host(&page_host))
+                } else {
+                    let top = url::Url::parse(&ctx.page.borrow()).ok().and_then(|u| u.host_str().map(crate::settings::norm_host)).unwrap_or_default();
+                    if s.allow_copy_for(&top) { crate::shields::allow_copy_script().to_string() } else { String::new() }
+                };
+                (on, features)
             };
-            if !on {
-                return;
+            let mut script = if on { ctx.blocker.borrow().scriptlets(uri) } else { String::new() };
+            if !features.is_empty() {
+                script.push('\n');
+                script.push_str(&features);
             }
-            let script = ctx.blocker.borrow().scriptlets(uri);
             if script.trim().is_empty() {
                 return;
             }
@@ -266,12 +279,15 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
                     }
                 }
             }
+            // Mode gelap Chromium per situs (tanpa skrip, tanpa buka ulang Ovner).
+            let (m, p) = crate::shields::dark_cdp(&s, &crate::settings::norm_host(&host));
+            crate::win::cdp_core(&core, m, p);
             for id in ids.borrow_mut().drain(..) {
                 unsafe {
                     let _ = core.RemoveScriptToExecuteOnDocumentCreated(&HSTRING::from(id));
                 }
             }
-            (*add)(&core, &uri);
+            (*add)(&core, &uri, true);
             Ok(())
         }))
     };
@@ -280,7 +296,7 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
         let (Some(core), Some(args)) = (sender, args) else { return Ok(()) };
         let uri = uri_of(&args);
         if uri.starts_with("http://") || uri.starts_with("https://") {
-            (*add)(&core, &uri);
+            (*add)(&core, &uri, false);
         }
         Ok(())
     }));

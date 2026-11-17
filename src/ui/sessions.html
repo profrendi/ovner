@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Sesi tab</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0 18px; }
+  .stats div { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .stats b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--muted); font-size: 12px; }
+  .sess { margin-bottom: 10px; }
+  .sess summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 11px 16px; }
+  .sess summary::-webkit-details-marker { display: none; }
+  .sess summary .n { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess summary .c { color: var(--muted); font-size: 12.5px; flex: none; }
+  .sess summary button { padding: 4px 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .fi { width: 16px; height: 16px; border-radius: 3px; flex: none; background-size: cover; }
+  @media (max-width: 700px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1 id="h1"></h1>
+<div class="stats">
+  <div><b id="sSlept">0</b><span id="lSlept"></span></div>
+  <div><b id="sRam">0 MB</b><span id="lRam"></span></div>
+  <div><b id="sDup">0</b><span id="lDup"></span></div>
+  <div><b id="sSaved">0</b><span id="lSaved"></span></div>
+</div>
+<div class="bar"><input type="text" id="name"><button class="primary" id="save"></button><button id="dups"></button></div>
+<p class="muted" id="openinfo"></p>
+<h2 id="hSaved"></h2>
+<div id="list"></div>
+<h2 id="hClosed"></h2>
+<div class="card list" id="closed"></div>
+<p class="muted" id="note"></p>
+</div>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const $ = (id) => document.getElementById(id);
+  const W = {
+    id: { h1: "Sesi tab", save: "Simpan semua tab", name: "Nama sesi (mis. Kerja BPJS)", dups: "Tutup tab duplikat", saved: "Sesi tersimpan", closed: "Baru saja ditutup",
+      open: "Buka", replace: "Ganti tab", del: "Hapus", rename: "Ubah nama", tabs: "tab", none: "Belum ada sesi. Simpan tab yang sedang terbuka untuk dibuka lagi kapan saja.",
+      noneClosed: "Tidak ada.", openinfo: "{n} tab terbuka ({s} tidur){d}.", dupsInfo: ", {n} duplikat", confirmDel: "Hapus sesi ini?", confirmReplace: "Tutup semua tab lain lalu buka sesi ini?",
+      lSlept: "tab ditidurkan", lRam: "RAM dibebaskan (perkiraan)", lDup: "duplikat ditutup", lSaved: "sesi disimpan", askName: "Nama baru:",
+      note: "Seperti TabWars: tab sesi dibuka dalam keadaan tidur dan baru dimuat saat diklik, jadi membuka sesi besar tetap hemat RAM. Tab yang memutar suara, formulir yang sedang diisi, dan situs di daftar \"Jangan tidurkan\" (tameng → Jangan tidurkan situs ini) tidak ditidurkan otomatis.", loc: "id-ID" },
+    en: { h1: "Tab sessions", save: "Save all tabs", name: "Session name (e.g. BPJS work)", dups: "Close duplicate tabs", saved: "Saved sessions", closed: "Recently closed",
+      open: "Open", replace: "Replace tabs", del: "Delete", rename: "Rename", tabs: "tabs", none: "No sessions yet. Save the open tabs to reopen them any time.",
+      noneClosed: "None.", openinfo: "{n} tabs open ({s} sleeping){d}.", dupsInfo: ", {n} duplicates", confirmDel: "Delete this session?", confirmReplace: "Close all other tabs and open this session?",
+      lSlept: "tabs slept", lRam: "RAM freed (estimate)", lDup: "duplicates closed", lSaved: "sessions saved", askName: "New name:",
+      note: "Like TabWars: session tabs open asleep and only load when clicked, so opening a big session stays light on RAM. Tabs playing audio, forms being filled and sites on the \"Never sleep\" list (shield → Never sleep this site) are not slept automatically.", loc: "en-US" },
+  };
+  const fill = (t, m) => t.replace(/\{(\w+)\}/g, (_, k) => m[k]);
+  const mb = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : (b / 1048576).toFixed(0) + " MB");
+  const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+  const COLORS = ["#4f8cff", "#e0a100", "#3fb27f", "#e05d5d", "#9b6bff", "#18a5b8"];
+  function linkRow(t, icons) {
+    const row = document.createElement("div"); row.className = "row";
+    const ic = document.createElement("span"); ic.className = "fi";
+    const ico = icons && icons[hostOf(t.url)];
+    if (ico) ic.style.backgroundImage = `url("${ico}")`; else ic.style.background = "var(--line)";
+    const a = document.createElement("a"); a.href = t.url;
+    a.innerHTML = '<span class="t"></span><span class="u"></span>';
+    a.querySelector(".t").textContent = t.title || t.url; a.querySelector(".u").textContent = t.url;
+    row.append(ic, a);
+    return row;
+  }
+  window.ovnerPage = (s) => {
+    const w = W[s.lang] || W.id;
+    document.documentElement.lang = s.lang;
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    document.title = w.h1;
+    for (const [id, k] of [["h1", "h1"], ["save", "save"], ["dups", "dups"], ["hSaved", "saved"], ["hClosed", "closed"], ["note", "note"], ["lSlept", "lSlept"], ["lRam", "lRam"], ["lDup", "lDup"], ["lSaved", "lSaved"]]) $(id).textContent = w[k];
+    $("name").placeholder = w.name;
+    const st = s.stats || {};
+    $("sSlept").textContent = st.slept || 0; $("sRam").textContent = mb(st.ram_freed || 0);
+    $("sDup").textContent = st.duplicates || 0; $("sSaved").textContent = st.sessions_saved || 0;
+    $("openinfo").textContent = fill(w.openinfo, { n: s.open.length, s: s.open.filter((t) => t.sleeping).length, d: s.dups ? fill(w.dupsInfo, { n: s.dups }) : "" });
+    $("dups").disabled = !s.dups;
+    const list = $("list"); list.textContent = "";
+    if (!s.sessions.length) {
+      list.innerHTML = '<div class="card"><div class="empty"></div></div>';
+      list.querySelector(".empty").textContent = w.none;
+    }
+    s.sessions.forEach((x, k) => {
+      const d = document.createElement("details"); d.className = "card sess";
+      const sm = document.createElement("summary");
+      const dot = document.createElement("span"); dot.className = "dot"; dot.style.background = COLORS[k % COLORS.length];
+      const n = document.createElement("span"); n.className = "n"; n.textContent = x.name;
+      const c = document.createElement("span"); c.className = "c";
+      c.textContent = `${x.tabs.length} ${w.tabs} · ${new Date(x.saved * 1000).toLocaleString(w.loc, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+      const mk = (label, fn, cls) => { const b = document.createElement("button"); b.textContent = label; if (cls) b.className = cls; b.onclick = (e) => { e.preventDefault(); fn(); }; return b; };
+      sm.append(dot, n, c,
+        mk(w.open, () => post({ t: "session-open", idx: k }), "primary"),
+        mk(w.replace, () => { if (confirm(w.confirmReplace)) post({ t: "session-replace", idx: k }); }),
+        mk(w.rename, () => { const v = prompt(w.askName, x.name); if (v) post({ t: "session-rename", idx: k, name: v }); }),
+        mk(w.del, () => { if (confirm(w.confirmDel)) post({ t: "session-delete", idx: k }); }, "danger"));
+      const body = document.createElement("div"); body.className = "list";
+      for (const t of x.tabs) body.append(linkRow(t, s.icons));
+      d.append(sm, body);
+      list.append(d);
+    });
+    const cl = $("closed"); cl.textContent = "";
+    if (!s.closed.length) cl.innerHTML = `<div class="empty">${w.noneClosed}</div>`;
+    for (const u of s.closed) {
+      const r = linkRow({ url: u, title: hostOf(u) }, s.icons);
+      r.querySelector("a").onclick = (e) => { e.preventDefault(); post({ t: "reopen-closed", url: u }); };
+      cl.append(r);
+    }
+  };
+  $("save").onclick = () => { post({ t: "session-save", name: $("name").value }); $("name").value = ""; };
+  $("name").onkeydown = (e) => { if (e.key === "Enter") $("save").click(); };
+  $("dups").onclick = () => post({ t: "close-duplicates" });
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

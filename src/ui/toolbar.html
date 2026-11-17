@@ -124,6 +124,22 @@
   #dlbtn { display: none; position: relative; }
   #dlbtn.show { display: grid; }
   #dlbtn.busy svg { color: var(--accent); }
+  #darkbtn.on { color: var(--accent); }
+  #darkpanel { position: absolute; right: 48px; top: 4px; width: 330px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 10px 28px #0005; padding: 12px 14px; font-size: 13px; }
+  #darkpanel.show { display: block; }
+  #darkpanel h3 { margin: 0 0 2px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  #darkpanel .site { color: var(--muted); font-size: 12px; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #darkpanel .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+  #darkpanel .seg button { flex: 1; border: 0; background: none; color: var(--text); padding: 6px 4px; font: inherit; cursor: pointer; }
+  #darkpanel .seg button + button { border-left: 1px solid var(--line); }
+  #darkpanel .seg button.on { background: var(--accent); color: #fff; }
+  #darkpanel label.r { display: grid; grid-template-columns: 96px 1fr 40px; align-items: center; gap: 8px; margin: 6px 0; }
+  #darkpanel label.r span:last-child { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #darkpanel select { width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+  #darkpanel input[type=range] { width: 100%; accent-color: var(--accent); }
+  #darkpanel .k { color: var(--muted); font-size: 12px; margin: 8px 0 4px; }
+  #darkpanel .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
   #splitbox { display: none; gap: 2px; }
   #splitbox.show { display: flex; }
 </style>
@@ -147,6 +163,7 @@
   </span>
   <button id="upd"></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+  <button class="b" id="darkbtn"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
   <button class="b" id="menu" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 </div>
@@ -159,7 +176,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -168,13 +185,19 @@
       back: "Kembali (Alt+←)", fwd: "Maju (Alt+→)", reload: "Muat ulang (F5)", stop: "Hentikan (Esc)", home: "Beranda", addr: "Cari atau ketik alamat",
       addrNs: "Ketik alamat", star: "Bookmark halaman ini (Ctrl+D)", upd: "Versi baru sudah diunduh. Klik untuk membuka ulang Ovner.", menu: "Menu",
       find: "Cari di halaman", prev: "Sebelumnya (Shift+Enter)", next: "Berikutnya (Enter)", fclose: "Tutup (Esc)", bmEmpty: "Simpan halaman dengan Ctrl+D; bookmark muncul di sini.",
-      swap: "Pindah ke sisi lain", tab: "Tab", usageApp: "Total Ovner + semua proses WebView2 (RAM = kolom Memory di Task Manager Windows)", usageTab: "Tab yang sedang dibuka: memori JavaScript halaman dan CPU utas utamanya", other: "Bookmark lain", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      swap: "Pindah ke sisi lain", tab: "Tab", usageApp: "Total Ovner + semua proses WebView2 (RAM = kolom Memory di Task Manager Windows)", usageTab: "Tab yang sedang dibuka: RAM dan CPU proses halamannya (seperti baris WebView2 di Task Manager Windows). * = berbagi proses dengan tab lain dari situs yang sama", other: "Bookmark lain",
+      darkTitle: "Mode gelap (seperti Dark Reader)", dark: "Mode gelap", darkSite: "Situs:", darkNoSite: "Buka sebuah situs untuk mengatur per situs.", darkDefault: "Ikut umum", darkOn: "Nyala", darkOff: "Mati",
+      darkAll: "Semua situs", darkAllOff: "Mati", darkAllOn: "Nyala", darkAllSys: "Ikut tema Windows", darkEngine: "Cara", engDyn: "Dinamis (Dark Reader)", engFilter: "Filter (cepat)", engChromium: "Chromium (paling ringan)",
+      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
       addrNs: "Type an address", star: "Bookmark this page (Ctrl+D)", upd: "A new version is downloaded. Click to restart Ovner.", menu: "Menu",
       find: "Find in page", prev: "Previous (Shift+Enter)", next: "Next (Enter)", fclose: "Close (Esc)", bmEmpty: "Save pages with Ctrl+D; bookmarks appear here.",
-      swap: "Switch side", tab: "Tab", usageApp: "Ovner + all WebView2 processes (RAM = Memory column in Windows Task Manager)", usageTab: "Current tab: page JavaScript memory and main-thread CPU", other: "Other bookmarks", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      swap: "Switch side", tab: "Tab", usageApp: "Ovner + all WebView2 processes (RAM = Memory column in Windows Task Manager)", usageTab: "Current tab: RAM and CPU of its page process (like the WebView2 rows in Windows Task Manager). * = shares its process with other tabs of the same site", other: "Other bookmarks",
+      darkTitle: "Dark mode (like Dark Reader)", dark: "Dark mode", darkSite: "Site:", darkNoSite: "Open a site to set it per site.", darkDefault: "Use default", darkOn: "On", darkOff: "Off",
+      darkAll: "All sites", darkAllOff: "Off", darkAllOn: "On", darkAllSys: "Follow Windows theme", darkEngine: "Method", engDyn: "Dynamic (Dark Reader)", engFilter: "Filter (fast)", engChromium: "Chromium (lightest)",
+      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -240,9 +263,10 @@
   }
   const mb = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : Math.round(b / 1048576) + " MB");
   const pct = (v) => (v >= 10 ? Math.round(v) : (Math.round(v * 10) / 10)) + "%";
+  let curUsage = null;
   function renderUsage() {
     const el = $("usage");
-    const u = state.usage;
+    const u = curUsage;
     // Saat tab vertikal, baris tab tersembunyi: indikator pindah ke baris alamat.
     const home = state.vertical ? $("bar") : $("tabs");
     if (el.parentElement !== home) home.insertBefore(el, state.vertical ? $("menu") : null);
@@ -250,7 +274,7 @@
     let html = "";
     if (u.app) html += `<span title="${W.usageApp}">Ovner <b>${mb(u.app.ram)}</b> · CPU <b>${pct(u.app.cpu)}</b> · GPU <b>${pct(u.app.gpu)}</b></span>`;
     if (u.app && u.tab) html += `<span class="sep">|</span>`;
-    if (u.tab) html += `<span title="${W.usageTab}">${W.tab} <b>${mb(u.tab.js)}</b> JS · CPU <b>${pct(u.tab.cpu)}</b></span>`;
+    if (u.tab) html += `<span title="${W.usageTab}">${W.tab} <b>${u.tab.ram ? mb(u.tab.ram) : "—"}</b>${u.tab.proc ? "" : " JS"}${u.tab.shared > 1 ? "*" : ""} · CPU <b>${pct(u.tab.cpu)}</b></span>`;
     el.innerHTML = html;
     el.classList.add("show");
   }
@@ -357,11 +381,17 @@
       // dipertahankan selama tab yang sama masih aktif.
       const act = (s.tabs.find((t) => t.active) || {}).id;
       if (act !== activeId) {
-        activeId = act; typing = false;
+        activeId = act; typing = false; shownUrl = s.url;
         addr.value = s.url;
         if (document.activeElement === addr && s.url) addr.blur();
-      } else if (!typing || document.activeElement !== addr) {
+      } else if (document.activeElement !== addr) {
         typing = false;
+        if (addr.value !== s.url) addr.value = s.url;
+        shownUrl = s.url;
+      } else if (!typing && s.url !== shownUrl) {
+        // Kolom alamat sedang dipegang pengguna: jangan ditimpa (kursor dan seleksi tetap),
+        // kecuali halaman benar-benar pindah alamat sebelum pengguna mulai mengetik.
+        shownUrl = s.url;
         addr.value = s.url;
       }
       $("reload").innerHTML = s.loading ? stopIcon : reloadIcon;
@@ -378,13 +408,15 @@
       u.textContent = s.update ? "Update " + s.update : "";
       $("find").classList.toggle("show", !!s.find);
       renderBubble();
+      renderDark();
       const dl = $("dlbtn");
       dl.classList.toggle("show", (s.downloads || []).length > 0);
-      dl.classList.toggle("busy", (s.downloads || []).some((d) => d.state === "progress"));
+      dl.classList.toggle("busy", (s.downloads || []).some((d) => d.state === "progress" || d.state === "paused"));
       dl.title = W.dlTitle;
       sendHeight();
     },
     focusAddress() { addr.focus(); addr.select(); },
+    usage(u) { curUsage = u; renderUsage(); },
     suggestions(r) {
       if (r.text !== typed) return;
       showOmni(r);
@@ -399,7 +431,7 @@
     for (const k in tt) $(k).title = tt[k];
     findq.placeholder = W.find;
   }
-  let sugTimer = 0, picked = false, typing = false, activeId = null;
+  let sugTimer = 0, picked = false, typing = false, activeId = null, shownUrl = "";
   // ---- Kolom alamat: saran (bookmark, riwayat, pencarian) dan isi otomatis alamat ----
   let typed = "", omniItems = [], omniSel = -1, autoOk = false;
   const strip = (u) => u.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/$/, "");
@@ -479,6 +511,11 @@
       typing = false; addr.value = state.url; addr.blur(); send({ cmd: "focus-page" });
     } else if (e.key === "Delete" || e.key === "Backspace") {
       autoOk = false;
+    } else if ((e.key === "Tab" || e.key === "ArrowRight" || e.key === "End") && addr.selectionStart < addr.selectionEnd && addr.selectionEnd === addr.value.length && !e.shiftKey) {
+      // Terima isi otomatis: kursor ke akhir, teks tetap bisa diedit.
+      e.preventDefault();
+      addr.setSelectionRange(addr.value.length, addr.value.length);
+      typed = addr.value; typing = true;
     }
   });
 
@@ -512,12 +549,21 @@
       for (const d of state.downloads) {
         const it = document.createElement("div"); it.className = "di";
         const pct = d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30;
-        it.innerHTML = `<div class="dn"><b></b><div class="ds"></div>${d.state === "progress" ? `<div class="pb"><i style="width:${pct}%"></i></div>` : ""}</div><button class="db"></button>`;
+        const live = d.state === "progress" || d.state === "paused";
+        it.innerHTML = `<div class="dn"><b></b><div class="ds"></div>${live ? `<div class="pb"><i style="width:${pct}%"></i></div>` : ""}</div><button class="db pz"></button><button class="db"></button>`;
         it.querySelector("b").textContent = d.name;
-        it.querySelector(".ds").textContent = d.state === "progress" ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}`
+        it.querySelector(".ds").textContent = live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
           : d.state === "failed" ? W.dlFailed : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
-        const act = it.querySelector(".db");
-        if (d.state === "progress") { act.textContent = "✕"; act.title = W.dlCancel; act.onclick = () => send({ cmd: "dl-cancel", id: d.id }); }
+        const pz = it.querySelector(".pz");
+        if (d.engine && live) {
+          pz.innerHTML = d.state === "paused"
+            ? '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M7 5l12 7-12 7z" fill="currentColor"/></svg>'
+            : '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.6" fill="none"/></svg>';
+          pz.title = d.state === "paused" ? W.dlResume : W.dlPause;
+          pz.onclick = () => send({ cmd: d.state === "paused" ? "dl-resume" : "dl-pause", id: d.id });
+        } else pz.remove();
+        const act = it.querySelector(".db:not(.pz)");
+        if (live) { act.textContent = "✕"; act.title = W.dlCancel; act.onclick = () => send({ cmd: "dl-cancel", id: d.id }); }
         else if (d.exists) { act.textContent = "📂"; act.title = W.dlShow; act.onclick = () => send({ cmd: "dl-show", id: d.id }); it.querySelector("b").onclick = () => send({ cmd: "dl-open", id: d.id }); }
         else act.remove();
         box.append(it);
@@ -530,10 +576,75 @@
     $("ov").style.top = base + "px";
     const om = $("omni").classList.contains("show") ? $("omni").offsetHeight : 0;
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
-    send({ cmd: "height", h: base, over: Math.max(om, bu) });
+    const dp = $("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0;
+    send({ cmd: "height", h: base, over: Math.max(om, bu, dp) });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov") { hideOmni(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov") { hideOmni(); closeDark(); send({ cmd: "bubble-close" }); } });
+  // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
+  let darkOpen = false, darkKey = "";
+  function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }
+  function renderDark() {
+    const d = state.dark || {};
+    $("darkbtn").classList.toggle("on", !!d.active);
+    $("darkbtn").title = W.darkTitle;
+    const p = $("darkpanel");
+    if (!darkOpen) return;
+    const key = JSON.stringify([d, state.site, state.lang]);
+    if (key === darkKey) return;
+    darkKey = key;
+    p.textContent = "";
+    const h = document.createElement("h3");
+    h.innerHTML = `<span></span><button class="xb" style="border:0;background:none;color:var(--muted);font-size:18px;cursor:pointer">×</button>`;
+    h.querySelector("span").textContent = W.dark;
+    h.querySelector("button").onclick = closeDark;
+    const site = document.createElement("div"); site.className = "site";
+    site.textContent = state.site ? W.darkSite + " " + state.site : W.darkNoSite;
+    p.append(h, site);
+    if (state.site) {
+      const seg = document.createElement("div"); seg.className = "seg";
+      for (const [v, label] of [["default", W.darkDefault], ["on", W.darkOn], ["off", W.darkOff]]) {
+        const b = document.createElement("button"); b.textContent = label;
+        b.classList.toggle("on", d.site === v);
+        b.onclick = () => send({ cmd: "dark-site", v });
+        seg.append(b);
+      }
+      p.append(seg);
+    }
+    const sel = (key, val, opts, label) => {
+      const l = document.createElement("label"); l.className = "r"; l.style.gridTemplateColumns = "96px 1fr";
+      const t = document.createElement("span"); t.textContent = label;
+      const s2 = document.createElement("select");
+      for (const [v, txt] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = txt; s2.append(o); }
+      s2.value = val;
+      s2.onchange = () => send({ cmd: "dark-set", key, value: s2.value });
+      l.append(t, s2); return l;
+    };
+    p.append(sel("dark_mode", d.mode, [["off", W.darkAllOff], ["on", W.darkAllOn], ["system", W.darkAllSys]], W.darkAll));
+    p.append(sel("dark_engine", d.engine, [["dynamic", W.engDyn], ["filter", W.engFilter], ["chromium", W.engChromium]], W.darkEngine));
+    const sliders = document.createElement("div");
+    for (const [key, label, min, max, val] of [["dark_brightness", W.bright, 30, 150, d.b], ["dark_contrast", W.contrast, 30, 150, d.c], ["dark_sepia", "Sepia", 0, 100, d.se], ["dark_grayscale", W.gray, 0, 100, d.g]]) {
+      const l = document.createElement("label"); l.className = "r";
+      const t = document.createElement("span"); t.textContent = label;
+      const r = document.createElement("input"); r.type = "range"; r.min = min; r.max = max; r.value = val;
+      const v = document.createElement("span"); v.textContent = val + "%";
+      r.oninput = () => { v.textContent = r.value + "%"; };
+      r.onchange = () => send({ cmd: "dark-set", key, value: Number(r.value) });
+      r.disabled = d.engine === "chromium";
+      l.append(t, r, v); sliders.append(l);
+    }
+    p.append(sliders);
+    const note = document.createElement("div"); note.className = "note"; note.textContent = W.darkNote;
+    p.append(note);
+    sendHeight();
+  }
+  $("darkbtn").onclick = () => {
+    if (darkOpen) { closeDark(); return; }
+    hideOmni(); send({ cmd: "bubble-close" });
+    darkOpen = true; darkKey = "";
+    $("darkpanel").classList.add("show");
+    renderDark();
+  };
   $("dlbtn").onclick = () => send({ cmd: "dl-toggle" });
   findq.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); send({ cmd: "find", text: findq.value, back: e.shiftKey }); }

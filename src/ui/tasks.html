@@ -9,7 +9,8 @@
   .sum div { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .sum b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
   .sum span { color: var(--muted); font-size: 12px; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.pg { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
   @media (max-width: 700px) { .sum { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
@@ -24,9 +25,10 @@
 </div>
 <div class="bar"><span id="note2" class="muted"></span><span style="flex:1"></span><button id="trim"></button><button id="sleepall"></button></div>
 <h2 id="hTabs"></h2>
-<div class="card"><table id="tabs"><thead><tr><th data-k="title"></th><th data-k="state"></th><th class="num" data-k="js"></th><th class="num">CPU</th><th class="num" data-k="blocked"></th><th></th></tr></thead><tbody></tbody></table></div>
+<div class="card"><table id="tabs"><thead><tr><th data-k="title"></th><th data-k="state"></th><th class="num" data-k="ws"></th><th class="num">CPU</th><th class="num" data-k="js"></th><th class="num">PID</th><th class="num" data-k="blocked"></th><th></th></tr></thead><tbody></tbody></table></div>
+<p class="muted" id="statsline"></p>
 <h2 id="hProcs"></h2>
-<div class="card"><table id="procs"><thead><tr><th>PID</th><th data-k="kind"></th><th class="num" data-k="ws"></th><th class="num">CPU</th><th class="num">GPU</th><th class="num" data-k="gmem"></th></tr></thead><tbody></tbody></table></div>
+<div class="card"><table id="procs"><thead><tr><th>PID</th><th data-k="kind"></th><th data-k="page"></th><th class="num" data-k="ws"></th><th class="num">CPU</th><th class="num">GPU</th><th class="num" data-k="gmem"></th></tr></thead><tbody></tbody></table></div>
 <p class="muted" id="note"></p>
 </div>
 <script>
@@ -36,19 +38,21 @@
   const pct = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + "%";
   const W = {
     id: { h1: "Task manager Ovner", trim: "Rapikan RAM sekarang", sleepall: "Tidurkan semua tab lain", tabs: "Tab", procs: "Proses (Ovner + WebView2)",
-      title: "Judul", state: "Keadaan", js: "RAM JS", blocked: "Diblokir", kind: "Jenis", ws: "RAM", gmem: "Memori GPU",
+      title: "Judul", state: "Keadaan", js: "RAM JS", page: "Tab", blocked: "Diblokir", kind: "Jenis", ws: "RAM", gmem: "Memori GPU",
       lRam: "RAM total (seperti kolom Memory Task Manager)", lProc: "proses",
       active: "aktif", sleep: "tidur", susp: "ditangguhkan", bg: "latar", priv: "privat", media: "memutar media", close: "Tutup", doSleep: "Tidurkan",
       kinds: { ovner: "Ovner", browser: "Browser", renderer: "Halaman", gpu: "GPU", network: "Jaringan", storage: "Penyimpanan", audio: "Audio", utility: "Utilitas", crashpad: "Crashpad", lain: "Lain" },
-      note2: "Diperbarui tiap 2 detik.",
-      note: "RAM = private working set, sama dengan kolom Memory di Task Manager Windows. Proses WebView2 dikenali dari folder data Ovner. RAM JS dan CPU per tab diukur dari dalam halaman (memori JavaScript dan utas utama), jadi tidak termasuk gambar, video, dan GPU; Chromium memakai satu proses GPU untuk semua tab, sehingga GPU hanya bisa diukur per proses. Tab yang tidur tidak memakai proses." },
+      note2: "Diperbarui tiap detik.", shared: "berbagi proses dengan {n} tab", mapOff: "RAM per tab dimatikan otomatis karena Ovner pernah tertutup saat mengukurnya; hapus berkas .proses-tab-mati di folder data untuk mencoba lagi.",
+      stats: "Sejak dipasang: {s} tab ditidurkan, sekitar {r} RAM dibebaskan, {d} tab duplikat ditutup, {sv} sesi disimpan.",
+      note: "RAM dan CPU per tab = proses halaman (renderer) tab itu, sama dengan baris \"WebView2: judul\" di Task Manager Windows (private working set). Tab dari situs yang sama bisa berbagi satu proses. RAM JS = memori JavaScript halaman. GPU hanya bisa diukur per proses karena Chromium memakai satu proses GPU untuk semua tab. Tab yang tidur tidak memakai proses." },
     en: { h1: "Ovner task manager", trim: "Trim memory now", sleepall: "Sleep all other tabs", tabs: "Tabs", procs: "Processes (Ovner + WebView2)",
-      title: "Title", state: "State", js: "JS RAM", blocked: "Blocked", kind: "Type", ws: "RAM", gmem: "GPU memory",
+      title: "Title", state: "State", js: "JS RAM", page: "Tab", blocked: "Blocked", kind: "Type", ws: "RAM", gmem: "GPU memory",
       lRam: "Total RAM (like Task Manager's Memory column)", lProc: "processes",
       active: "active", sleep: "sleeping", susp: "suspended", bg: "background", priv: "private", media: "playing media", close: "Close", doSleep: "Sleep",
       kinds: { ovner: "Ovner", browser: "Browser", renderer: "Page", gpu: "GPU", network: "Network", storage: "Storage", audio: "Audio", utility: "Utility", crashpad: "Crashpad", lain: "Other" },
-      note2: "Refreshes every 2 seconds.",
-      note: "RAM = private working set, same as the Memory column in Windows Task Manager. WebView2 processes are recognised by Ovner's data folder. Per-tab JS RAM and CPU are measured inside the page (JavaScript memory and main thread), so images, video and GPU are not included; Chromium uses one GPU process for all tabs, so GPU can only be measured per process. Sleeping tabs use no process." },
+      note2: "Refreshes every second.", shared: "shares its process with {n} tabs", mapOff: "Per-tab RAM was turned off automatically because Ovner once closed while measuring it; delete .proses-tab-mati in the data folder to try again.",
+      stats: "Since install: {s} tabs slept, about {r} RAM freed, {d} duplicate tabs closed, {sv} sessions saved.",
+      note: "Per-tab RAM and CPU = the tab's page (renderer) process, same as the \"WebView2: title\" rows in Windows Task Manager (private working set). Tabs of the same site can share one process. JS RAM = the page's JavaScript memory. GPU can only be measured per process because Chromium uses one GPU process for all tabs. Sleeping tabs use no process." },
   };
   const tag = (txt, on) => `<span class="tag${on ? " on" : ""}">${txt}</span>`;
   window.ovnerPage = (s) => {
@@ -58,18 +62,22 @@
     for (const [id, k] of [["h1", "h1"], ["trim", "trim"], ["sleepall", "sleepall"], ["hTabs", "tabs"], ["hProcs", "procs"], ["note", "note"], ["note2", "note2"], ["lRam", "lRam"], ["lProc", "lProc"]]) document.getElementById(id).textContent = w[k];
     for (const th of document.querySelectorAll("th[data-k]")) th.textContent = w[th.dataset.k];
     const tb = document.querySelector("#tabs tbody"); tb.textContent = "";
+    const fill = (txt, map) => txt.replace(/\{(\w+)\}/g, (_, k) => map[k]);
     for (const t of s.tabs) {
       const tr = document.createElement("tr");
       const st = t.active ? tag(w.active, true) : t.sleeping ? tag(w.sleep) : t.suspended ? tag(w.susp) : tag(w.bg);
       const live = !t.sleeping && !t.suspended;
+      const ram = t.pid ? mb(t.ram) + (t.shared > 1 ? " *" : "") : t.sleeping ? "0 MB" : "—";
       tr.innerHTML = `<td></td><td>${st}${t.private ? " " + tag(w.priv) : ""}${t.media ? " " + tag(w.media, true) : ""}</td>` +
-        `<td class="num">${live && t.js ? mb(t.js) : "—"}</td><td class="num">${live && t.js ? pct(t.cpu) : "—"}</td><td class="num">${t.blocked}</td><td></td>`;
+        `<td class="num">${ram}</td><td class="num">${t.pid ? pct(t.pcpu) : live && t.js ? pct(t.cpu) : "—"}</td>` +
+        `<td class="num">${live && t.js ? mb(t.js) : "—"}</td><td class="num">${t.pid || "—"}</td><td class="num">${t.blocked}</td><td></td>`;
       tr.children[0].textContent = t.title || t.url;
       tr.children[0].title = t.url;
+      if (t.shared > 1) tr.children[2].title = fill(w.shared, { n: t.shared });
       if (!t.active) {
         const b = document.createElement("button"); b.textContent = t.sleeping ? w.close : w.doSleep;
         b.onclick = () => post({ t: t.sleeping ? "tab-close" : "tab-sleep", id: t.id });
-        tr.children[5].append(b);
+        tr.children[7].append(b);
       }
       tb.append(tr);
     }
@@ -79,10 +87,14 @@
     for (const p of procs) {
       ram += p.working; cpu += p.cpu; gpu += p.gpu;
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${p.pid}</td><td>${w.kinds[p.kind] || p.kind}</td><td class="num">${mb(p.working)}</td>` +
+      tr.innerHTML = `<td>${p.pid}</td><td>${w.kinds[p.kind] || p.kind}</td><td class="pg"></td><td class="num">${mb(p.working)}</td>` +
         `<td class="num">${pct(p.cpu)}</td><td class="num">${pct(p.gpu)}</td><td class="num">${p.gpuMem ? mb(p.gpuMem) : "—"}</td>`;
+      tr.children[2].textContent = (p.tabs || []).join(", ");
       pb.append(tr);
     }
+    const st = s.stats || {};
+    document.getElementById("statsline").textContent = (s.mapOff ? w.mapOff + " " : "") +
+      fill(w.stats, { s: st.slept || 0, r: mb(st.ram_freed || 0), d: st.duplicates || 0, sv: st.sessions_saved || 0 });
     document.getElementById("sRam").textContent = procs.length ? mb(ram) : "—";
     document.getElementById("sCpu").textContent = procs.length ? pct(Math.min(cpu, 100)) : "—";
     document.getElementById("sGpu").textContent = procs.length ? pct(Math.min(gpu, 100)) : "—";
@@ -91,7 +103,7 @@
   document.getElementById("trim").onclick = () => post({ t: "trim" });
   document.getElementById("sleepall").onclick = () => post({ t: "sleep-all" });
   post({ t: "page-ready" });
-  setInterval(() => post({ t: "page-ready" }), 2000);
+  setInterval(() => post({ t: "page-ready" }), 5000);
 })();
 </script>
 </body>

@@ -13,6 +13,80 @@ use crate::settings::Settings;
 const CONTENT_JS: &str = include_str!("ui/content.js");
 const FARBLE_JS: &str = include_str!("ui/farble.js");
 const PRIVACY_JS: &str = include_str!("ui/privacy.js");
+/// Dark Reader (MIT, darkreader.org), diperkecil dan dibungkus supaya selalu jadi global.
+pub const DARKREADER_JS: &str = include_str!("ui/darkreader.js");
+const DARKFILTER_JS: &str = include_str!("ui/darkfilter.js");
+const ALLOWCOPY_JS: &str = include_str!("ui/allowcopy.js");
+
+/// Tema Windows sedang gelap? (untuk mode gelap "ikut Windows"; diperbarui thread UI)
+pub static SYSTEM_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn system_dark() -> bool {
+    SYSTEM_DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Setelan Dark Reader dari Ovner (persen → angka yang dipakai Dark Reader).
+fn dark_theme_json(s: &Settings) -> String {
+    json!({
+        "brightness": s.dark_brightness, "contrast": s.dark_contrast,
+        "sepia": s.dark_sepia, "grayscale": s.dark_grayscale,
+    })
+    .to_string()
+}
+
+/// Nyalakan Dark Reader begitu `<head>` ada (skrip awal dokumen jalan sebelum ada DOM).
+fn dark_enable_js(s: &Settings) -> String {
+    format!(
+        "\n(function(){{var go=function(){{try{{DarkReader.setFetchMethod(window.fetch.bind(window));DarkReader.enable({});}}catch(e){{}}}};\
+if(document.head){{go();return;}}\
+var mo=new MutationObserver(function(){{if(document.head){{mo.disconnect();go();}}}});\
+mo.observe(document,{{childList:true,subtree:true}});}})();\n",
+        dark_theme_json(s)
+    )
+}
+
+/// Skrip awal dokumen untuk fitur per situs (mode gelap, izinkan salin), atau kosong.
+/// Mode gelap Chromium tidak memakai skrip (lihat [`dark_cdp`]).
+pub fn site_feature_script(s: &Settings, host: &str) -> String {
+    let mut out = String::new();
+    match s.dark_for(host, system_dark()) {
+        Some("dynamic") => {
+            out.push_str(DARKREADER_JS);
+            out.push_str(&dark_enable_js(s));
+        }
+        Some("filter") => out.push_str(&DARKFILTER_JS.replace("__OVNER_DARK__", &dark_theme_json(s))),
+        _ => {}
+    }
+    if s.allow_copy_for(host) {
+        out.push('\n');
+        out.push_str(ALLOWCOPY_JS);
+    }
+    out
+}
+
+/// Skrip untuk menyalakan/mematikan mode gelap di halaman yang sudah terbuka (tanpa muat ulang).
+pub fn dark_live_script(s: &Settings, engine: Option<&str>) -> String {
+    let off = "try{window.DarkReader&&DarkReader.disable()}catch(e){};window.__ovnerDarkFilter&&__ovnerDarkFilter(false);";
+    match engine {
+        Some("dynamic") => format!("{off}if(!window.DarkReader){{{DARKREADER_JS}\n}}{}", dark_enable_js(s)),
+        Some("filter") => format!("{off}{}", DARKFILTER_JS.replace("__OVNER_DARK__", &dark_theme_json(s))),
+        _ => off.to_string(),
+    }
+}
+
+/// Perintah DevTools mode gelap otomatis Chromium untuk situs ini.
+pub fn dark_cdp(s: &Settings, host: &str) -> (&'static str, &'static str) {
+    if s.dark_for(host, system_dark()) == Some("chromium") {
+        ("Emulation.setAutoDarkModeOverride", r#"{"enabled":true}"#)
+    } else {
+        ("Emulation.setAutoDarkModeOverride", "{}")
+    }
+}
+
+/// Skrip izinkan salin untuk halaman yang sudah terbuka.
+pub fn allow_copy_script() -> &'static str {
+    ALLOWCOPY_JS
+}
 
 /// Bang bawaan: (kode, URL dengan %s).
 pub const BANGS: &[(&str, &str)] = &[
@@ -195,7 +269,7 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
 /// Situs yang menolak browser dengan identitas atau sidik jari yang diubah (menganggapnya bot
 /// atau "user-agent switcher"). Di sini Ovner memakai identitas asli WebView2 tanpa farbling;
 /// iklan dan pelacak tetap diblokir.
-pub const COMPAT_HOSTS: &[&str] = &["startpage.com"];
+pub const COMPAT_HOSTS: &[&str] = &["startpage.com", "startpage.nl"];
 
 /// Situs ini perlu identitas asli (kompatibilitas bawaan, atau dikecualikan pengguna)?
 pub fn needs_real_identity(s: &Settings, host: &str) -> bool {
@@ -289,6 +363,29 @@ pub fn decode_data_url(u: &str) -> Option<(String, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn site_features() {
+        let mut s = Settings::default();
+        assert!(site_feature_script(&s, "contoh.id").is_empty());
+        s.dark_on_sites.push("contoh.id".into());
+        let js = site_feature_script(&s, "contoh.id");
+        assert!(js.contains("DarkReader.enable(") && js.contains("\"brightness\":100"));
+        if let Ok(p) = std::env::var("OVNER_DUMP_JS") {
+            let _ = std::fs::write(p, &js);
+        }
+        s.dark_engine = "filter".into();
+        let js = site_feature_script(&s, "contoh.id");
+        assert!(js.contains("__ovnerDarkFilter") && !js.contains("__OVNER_DARK__") && !js.contains("DarkReader.enable"));
+        s.dark_engine = "chromium".into();
+        assert!(site_feature_script(&s, "contoh.id").is_empty());
+        assert_eq!(dark_cdp(&s, "contoh.id").1, r#"{"enabled":true}"#);
+        assert_eq!(dark_cdp(&s, "lain.id").1, "{}");
+        s.allow_copy_sites.push("lain.id".into());
+        assert!(site_feature_script(&s, "lain.id").contains("__ovnerAllowCopy"));
+        assert!(dark_live_script(&s, None).contains("DarkReader.disable"));
+        assert!(dark_live_script(&s, Some("dynamic")).contains("if(!window.DarkReader)"));
+    }
+
     use super::*;
 
     #[test]

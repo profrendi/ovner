@@ -81,6 +81,13 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         ),
         "d.pw_clear" => ("Hapus semua sandi yang tersimpan di Ovner?", "Delete all passwords saved in Ovner?"),
         "m.diagnostics" => ("Diagnostik", "Diagnostics"),
+        "m.sessions" => ("Sesi tab (simpan/buka)", "Tab sessions (save/open)"),
+        "m.close_duplicates" => ("Tutup tab duplikat", "Close duplicate tabs"),
+        "p.sessions" => ("Sesi tab", "Tab sessions"),
+        "sh.dark" => ("Mode gelap di situs ini", "Dark mode on this site"),
+        "sh.copy" => ("Izinkan salin dan klik kanan", "Allow copy and right-click"),
+        "sh.nosleep" => ("Jangan tidurkan situs ini", "Never sleep this site"),
+        "d.dl_engine_fail" => ("Mesin unduh Ovner gagal ({e}); mengunduh dengan cara biasa.", "Ovner's download engine failed ({e}); downloading the normal way."),
         "p.diagnostics" => ("Diagnostik", "Diagnostics"),
         "d.report_copied" => (
             "Laporan diagnostik sudah disalin. Tempelkan (Ctrl+V) ke percakapan untuk dianalisis.",

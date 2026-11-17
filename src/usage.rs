@@ -145,6 +145,50 @@ impl Sampler {
     }
 }
 
+/// Mode pemantau latar: 0 = berhenti, 1 = RAM/CPU, 2 = RAM/CPU/GPU.
+static MONITOR_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static MONITOR_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Atur pemantau latar (0 berhenti, 1 tanpa GPU, 2 dengan GPU).
+pub fn set_monitor(mode: u8) {
+    MONITOR_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Jalankan pemantau pemakaian di thread sendiri: tiap detik mengambil sampel semua proses
+/// Ovner/WebView2 (seperti Task Manager) lalu memanggil `cb`. Pengukuran tidak lagi
+/// membebani thread antarmuka, jadi halaman dan unduhan tidak ikut tersendat.
+pub fn start_monitor(cb: impl Fn(Vec<ProcStat>) + Send + 'static) {
+    if MONITOR_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("ovner-usage".into()).spawn(move || {
+        let mut sampler = Sampler::new();
+        let mut was_on = false;
+        loop {
+            let mode = MONITOR_MODE.load(std::sync::atomic::Ordering::Relaxed);
+            if mode == 0 {
+                if was_on {
+                    // Mulai lagi dari nol supaya persen CPU pertama tidak berasal dari jeda lama.
+                    sampler = Sampler::new();
+                    was_on = false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                continue;
+            }
+            let started = Instant::now();
+            let first = !was_on;
+            was_on = true;
+            let stats = sampler.sample(mode >= 2);
+            if !first {
+                cb(stats);
+            }
+            let spent = started.elapsed();
+            let wait = if first { std::time::Duration::from_millis(300) } else { std::time::Duration::from_millis(1000).saturating_sub(spent) };
+            std::thread::sleep(wait.max(std::time::Duration::from_millis(200)));
+        }
+    });
+}
+
 /// PID semua proses Ovner (ovner.exe + WebView2), untuk perapian RAM dan mode hemat.
 pub fn ovner_pids() -> Vec<u32> {
     imp::processes().into_iter().map(|(pid, _)| pid).collect()
