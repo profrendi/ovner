@@ -63,6 +63,15 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.4
+
+- **Startpage/Anubis "Something went wrong during verification"**: identitas tab (user agent
+  dan merek Sec-CH-UA "Microsoft Edge") kini dipasang sebelum alamat pertama dimuat dan tidak
+  pernah diganti per situs. Sebelumnya permintaan pertama memakai identitas asli WebView2 lalu
+  permintaan berikutnya identitas samaran (dan untuk Startpage diganti balik lagi), sehingga
+  aturan Anubis saat tantangan dibuat berbeda dengan saat dijawab, dan Startpage menganggapnya
+  "user-agent switcher".
+
 ## Perbaikan 0.7.3
 
 - **Tingkat pemblokiran Standar seperti Brave** (bawaan): iklan dan pelacak pihak ketiga

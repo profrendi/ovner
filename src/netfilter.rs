@@ -258,8 +258,6 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
         }
         String::new()
     };
-    // Identitas yang sedang dipakai tab ini: true = asli (situs kompatibilitas).
-    let real_identity = Rc::new(std::cell::Cell::new(false));
     let main = {
         let (add, ids) = (add.clone(), ids.clone());
         let ctx2 = ctx.clone();
@@ -269,25 +267,10 @@ pub fn attach_scriptlets(wv: &wry::WebView, ctx: FilterCtx) {
             if !(uri.starts_with("http://") || uri.starts_with("https://")) {
                 return Ok(());
             }
-            // Startpage dan situs yang dikecualikan memakai identitas asli WebView2.
+            // Identitas tab tidak pernah diganti di tengah jalan: situs seperti Startpage (Anubis)
+            // menolak browser yang user agent-nya berubah antarpermintaan.
             let host = url::Url::parse(&uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
             let s = ctx2.settings.borrow().clone();
-            if s.hide_webview2 || s.uniform_fingerprint {
-                let want_real = crate::shields::needs_real_identity(&s, &host);
-                if want_real != real_identity.get() {
-                    real_identity.set(want_real);
-                    if want_real {
-                        // String kosong = hapus override (kembali ke user agent asli).
-                        crate::win::cdp_core(&core, "Emulation.setUserAgentOverride", r#"{"userAgent":""}"#);
-                        crate::win::cdp_core(&core, "Emulation.setTimezoneOverride", r#"{"timezoneId":""}"#);
-                    } else {
-                        let ua = crate::win::core_user_agent(&core);
-                        for (m, p) in crate::shields::identity_overrides(&s, &ua) {
-                            crate::win::cdp_core(&core, m, &p);
-                        }
-                    }
-                }
-            }
             // Mode gelap Chromium per situs (tanpa skrip, tanpa buka ulang Ovner).
             let (m, p) = crate::shields::dark_cdp(&s, &crate::settings::norm_host(&host));
             crate::win::cdp_core(&core, m, p);

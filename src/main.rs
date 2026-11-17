@@ -529,7 +529,13 @@ fn build_tab_view(
         (true, _) => WebViewBuilder::new().with_incognito(true),
         _ => WebViewBuilder::new(),
     };
-    if let Some(u) = url {
+    // Identitas (user agent + merek Sec-CH-UA) dipasang lewat DevTools sesudah WebView dibuat.
+    // Bila alamat langsung dimuat saat dibuat, permintaan pertama masih memakai identitas asli
+    // dan permintaan berikutnya identitas samaran: Startpage/Anubis menganggapnya "user-agent
+    // switcher" (Access Temporarily Suspended, verifikasi gagal). Jadi alamat baru dimuat
+    // setelah identitasnya terpasang.
+    let ident_first = !shields::identity_overrides(&s, "Mozilla/5.0 Chrome/120.0.0.0 Edg/120.0.0.0").is_empty();
+    if let Some(u) = url.filter(|_| !ident_first) {
         builder = builder.with_url(u);
     }
     builder = builder
@@ -624,6 +630,9 @@ fn build_tab_view(
     win::tune_webview(&wv, &s);
     for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
         win::cdp(&wv, method, &params);
+    }
+    if let Some(u) = url.filter(|_| ident_first) {
+        let _ = wv.load_url(u);
     }
     #[cfg(windows)]
     {

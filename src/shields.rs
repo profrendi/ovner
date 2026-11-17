@@ -272,6 +272,7 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
 pub const COMPAT_HOSTS: &[&str] = &["startpage.com", "startpage.nl", "inforcloudsuite.com", "infor.com"];
 
 /// Situs ini perlu identitas asli (kompatibilitas bawaan, atau dikecualikan pengguna)?
+#[allow(dead_code)]
 pub fn needs_real_identity(s: &Settings, host: &str) -> bool {
     let h = host.trim_start_matches("www.").to_ascii_lowercase();
     COMPAT_HOSTS.iter().any(|c| h == *c || h.ends_with(&format!(".{c}")))
