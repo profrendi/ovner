@@ -780,9 +780,8 @@ impl Settings {
             "brave" => "https://search.brave.com/search?q=%s",
             "google" => "https://www.google.com/search?q=%s",
             "qwant" => "https://www.qwant.com/?q=%s",
-            // Format yang dipakai ekstensi resmi Startpage (pl=ext-chrome): dikenali Startpage
-            // sebagai pencarian dari browser, bukan dari skrip/bot.
-            "startpage" => "https://www.startpage.com/do/dsearch?query=%s&cat=web&pl=ext-chrome&extVersion=1.3.0",
+            // Alamat formulir pencarian Startpage sendiri (seperti mengetik di startpage.com).
+            "startpage" => "https://www.startpage.com/sp/search?query=%s&cat=web",
             "leta" => "https://leta.mullvad.net/search?q=%s",
             "ecosia" => "https://www.ecosia.org/search?q=%s",
             "mojeek" => "https://www.mojeek.com/search?q=%s",
@@ -982,7 +981,8 @@ mod tests {
         let mut c = Settings::default();
         assert!(c.set("dark_brightness", &serde_json::json!(999)));
         assert_eq!(c.dark_brightness, 150);
-        assert!(c.search_url("kartu bpjs").starts_with("https://www.startpage.com/do/dsearch?query=kartu+bpjs") || c.search_engine != "startpage");
+        c.search_engine = "startpage".into();
+        assert!(c.search_url("kartu bpjs").starts_with("https://www.startpage.com/sp/search?query=kartu+bpjs"));
     }
 
     #[test]

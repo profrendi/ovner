@@ -170,12 +170,28 @@
     },
   });
 
-  // ---- Anubis ("Making sure you're not a bot!", dipakai Startpage): tantangan proof-of-work
-  // dipecahkan Ovner secara native (Rust, semua inti CPU), lalu halaman diarahkan ke alamat
-  // lolos tantangan seperti yang dilakukan skrip Anubis sendiri. ----
+  // ---- Anubis ("Making sure you're not a bot!", dipakai Startpage). Skrip Anubis sendiri
+  // dibiarkan bekerja lebih dulu: dua jawaban untuk satu tantangan ditolak server ("double
+  // spend" → "Something went wrong during verification"). Bila setelah 10 detik halaman masih
+  // di tantangan (skripnya macet/lambat), Ovner memecahkannya secara native (Rust). Bila
+  // verifikasi tetap gagal, alamat aslinya dibuka ulang sekali untuk tantangan baru. ----
   onReady(() => {
+    const onPass = /\/\.within\.website\/x\/cmd\/anubis\/api\/pass-challenge/.test(location.pathname);
+    if (onPass) {
+      const redir = new URLSearchParams(location.search).get("redir");
+      const text = (document.body && document.body.innerText) || "";
+      let tries = 0;
+      try { tries = Number(sessionStorage.getItem("__ovnerAnubisRetry") || 0); } catch (e) {}
+      if (redir && tries < 2 && /went wrong|verification|double|error|kesalahan/i.test(text)) {
+        try { sessionStorage.setItem("__ovnerAnubisRetry", String(tries + 1)); } catch (e) {}
+        let target = redir;
+        try { target = new URL(redir, location.origin).href; } catch (e) {}
+        if (target.startsWith(location.origin)) setTimeout(() => location.replace(target), 400);
+      }
+      return;
+    }
     const el = document.getElementById("anubis_challenge");
-    if (!el) return;
+    if (!el) { try { sessionStorage.removeItem("__ovnerAnubisRetry"); } catch (e) {} return; }
     let data;
     try { data = JSON.parse(el.textContent); } catch (e) { return; }
     const ch = data && data.challenge, rules = (data && data.rules) || {};
@@ -186,14 +202,20 @@
     let prefix = "";
     try { const bp = document.getElementById("anubis_base_prefix"); if (bp) prefix = JSON.parse(bp.textContent) || ""; } catch (e) {}
     const t0 = Date.now();
+    const here = location.href;
     Object.defineProperty(window, "__ovnerAnubis", {
       value: (hash, nonce) => {
-        const q = new URLSearchParams({ response: hash, nonce: String(nonce), redir: location.href, elapsedTime: String(Math.max(1, Date.now() - t0)) });
+        if (location.href !== here || !document.getElementById("anubis_challenge")) return;
+        const q = new URLSearchParams();
         if (ch && typeof ch === "object" && ch.id) q.set("id", ch.id);
+        q.set("response", hash); q.set("nonce", String(nonce)); q.set("redir", location.href);
+        q.set("elapsedTime", String(Math.max(1, Date.now() - t0)));
         location.replace(prefix + "/.within.website/x/cmd/anubis/api/pass-challenge?" + q.toString());
       },
     });
-    post({ t: "anubis", data: random, difficulty: diff });
+    setTimeout(() => {
+      if (location.href === here && document.getElementById("anubis_challenge")) post({ t: "anubis", data: random, difficulty: diff });
+    }, 10000);
   });
 
   // Alamat berubah lewat history API (YouTube, Gmail, dsb.).

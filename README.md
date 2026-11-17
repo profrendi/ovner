@@ -63,6 +63,15 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.7.2
+
+- **Startpage sebagai mesin pencari**: pemecah Anubis Ovner tidak lagi berlomba dengan skrip
+  Anubis milik halaman. Dua jawaban untuk satu tantangan ditolak server ("double spend"),
+  itulah penyebab "Something went wrong during verification". Kini skrip halaman bekerja lebih
+  dulu; pemecah native hanya membantu bila halaman masih di tantangan setelah 10 detik, dan
+  verifikasi yang gagal dicoba ulang otomatis dengan tantangan baru. Pencarian memakai alamat
+  formulir Startpage sendiri (`/sp/search?query=`).
+
 ## Perbaikan 0.7.1
 
 - **Pop-up dengan opener** (Infor Ming.le, OAuth, pembayaran): `window.open` kini dibuka
