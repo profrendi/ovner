@@ -2549,7 +2549,7 @@ impl App {
         #[cfg(windows)]
         {
             use tao::platform::windows::WindowExtWindows;
-            win::caption_text(self.window.hwnd() as isize, &parts, dark);
+            win::caption_text(self.window.hwnd() as isize, &parts, dark, self.window.scale_factor());
         }
         #[cfg(not(windows))]
         let _ = (parts, dark);

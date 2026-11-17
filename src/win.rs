@@ -854,7 +854,7 @@ mod imp {
     /// memakan tempat tab). Bilah judul digambar Windows (DWM), jadi teksnya digambar di jendela
     /// kecil tembus-klik milik jendela utama yang mengikuti posisinya. `parts` = (teks, tebal).
     /// `parts` kosong = sembunyikan.
-    pub fn caption_text(owner: isize, parts: &[(String, bool)], dark: bool) {
+    pub fn caption_text(owner: isize, parts: &[(String, bool)], dark: bool, scale: f64) {
         use windows::core::{w, PCWSTR};
         use windows::Win32::Foundation::*;
         use windows::Win32::Graphics::Dwm::*;
@@ -906,7 +906,7 @@ mod imp {
             // Letak tombol judul (minimize/maximize/close) relatif ke jendela.
             let mut win = RECT::default();
             let _ = GetWindowRect(owner_h, &mut win);
-            let dpi = GetDpiForWindow(owner_h).max(96) as i32;
+            let dpi = ((scale.max(1.0)) * 96.0).round() as i32;
             let mut btn = RECT::default();
             let ok = DwmGetWindowAttribute(owner_h, DWMWA_CAPTION_BUTTON_BOUNDS, &mut btn as *mut _ as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() && btn.right > btn.left;
             if !ok {
@@ -1303,7 +1303,7 @@ mod imp {
     ) {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
-    pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool) {}
+    pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
     pub fn next_download_id() -> u64 {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
