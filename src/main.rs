@@ -125,6 +125,8 @@ struct Lane {
 /// selesai utuh lebih dulu, itulah yang disimpan.
 struct PdfRace {
     req: dlengine::Request,
+    /// Awalan berkas sementara tiap jalur (`{base}.ovnerraceN`).
+    base: String,
     /// Mulai setelah ini (bila pembacaan respons belum selesai).
     due: Instant,
     started: bool,
@@ -247,6 +249,12 @@ fn log_crash_report() {
         Some((t, p, len)) if t.elapsed().map_or(false, |e| e.as_secs() < 300) => log(&format!("laporan crash WebView2: {} ({} KB)", p.display(), len / 1024)),
         _ => log(&format!("laporan crash WebView2: tidak ada yang baru di {}", dir.display())),
     }
+}
+
+/// Kunci alamat PDF yang dipelajari: host + path (tanpa query), huruf kecil.
+fn pdf_key(url: &str) -> String {
+    let u = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+    u.split_once("://").map(|(_, r)| r.to_string()).unwrap_or(u)
 }
 
 /// Path unduhan yang belum dipakai: berkasnya maupun sisa `.ovnerpart`/`.crdownload`-nya
@@ -642,6 +650,8 @@ struct App {
     /// Mode efisiensi Windows (EcoQoS, prioritas rendah) sedang diterapkan ke proses Ovner.
     eco_on: bool,
     pdf_race: HashMap<u64, PdfRace>,
+    /// Alamat (host/path) yang pernah menghasilkan PDF besar: jalur Ovner dimulai lebih awal.
+    pdf_learned: HashSet<String>,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
     bm_edit: Option<(String, bool)>,
     /// Folder bookmark yang sedang diedit (alamat yang sama bisa ada di beberapa folder).
@@ -1961,9 +1971,25 @@ impl App {
             win::DlEvent::WaitEnd { id } => {
                 self.dl_waiting.remove(&id);
                 self.drop_waiting_entry(id);
+                // Ternyata bukan PDF: hentikan jalur yang dimulai lebih awal.
+                if let Some(r) = self.pdf_race.remove(&id) {
+                    r.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    log("PDF: jalur awal dihentikan (server tidak mengirim PDF)");
+                }
                 return;
             }
             win::DlEvent::Race { id, url, cookie, referer, user_agent, total } => {
+                let early = total < 0;
+                if early && !self.pdf_learned.contains(&pdf_key(&url)) {
+                    // Belum pernah menghasilkan PDF besar: tunggu jawaban server dulu.
+                    return;
+                }
+                if let Some(r) = self.pdf_race.get(&id) {
+                    // Sudah dimulai lebih awal (tahap permintaan): cukup.
+                    if r.started || early {
+                        return;
+                    }
+                }
                 let ua = if user_agent.is_empty() {
                     self.tab_index(tab).and_then(|i| self.tabs[i].webview.as_ref().map(win::user_agent)).unwrap_or_default()
                 } else {
@@ -1980,9 +2006,21 @@ impl App {
                 // Kecil (selesai beberapa detik) tidak perlu koneksi kedua: tunggu sebentar dulu.
                 // Besar: langsung, karena server butuh waktu lagi untuk membuat berkasnya.
                 let wait = if total > 0 && total < 2 * 1_048_576 { 15 } else { 0 };
+                if early {
+                    log(&format!("PDF: alamat ini dulu menghasilkan PDF besar, jalur Ovner dimulai bersamaan dengan halaman: {url}"));
+                }
+                let base = self.downloads.iter().find(|d| d.id == id && !d.path.is_empty()).map(|d| d.path.clone()).unwrap_or_else(|| {
+                    let mut dir = self.download_dir();
+                    if self.settings.borrow().dl_box_v2 {
+                        dir = dir.join("Documents");
+                    }
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir.join(format!(".ovner-pdf-{id}")).display().to_string()
+                });
                 self.pdf_race.insert(
                     id,
                     PdfRace {
+                        base,
                         req: dlengine::Request { url, user_agent: ua, headers, if_range: None, wait_secs: 180 },
                         due: Instant::now() + Duration::from_secs(wait),
                         started: false,
@@ -2070,6 +2108,11 @@ impl App {
                     if win::is_pdf_stream(id) {
                         m.pdf = true;
                         m.resumable = Some(false);
+                    }
+                }
+                if self.dl_meta.get(&id).is_some_and(|m| m.pdf) && total >= 2 * 1_048_576 && self.pdf_learned.insert(pdf_key(&url)) {
+                    if let Ok(t) = serde_json::to_string(&self.pdf_learned) {
+                        let _ = std::fs::write(data_dir().join("pdf_endpoints.json"), t);
                     }
                 }
                 self.connecting_done(id);
@@ -2165,12 +2208,13 @@ impl App {
     fn start_due_races(&mut self) {
         let due: Vec<u64> = self.pdf_race.iter().filter(|(_, r)| !r.started && !r.finished && Instant::now() >= r.due).map(|(id, _)| *id).collect();
         for id in due {
-            let Some(d) = self.downloads.iter().find(|d| d.id == id && d.state == "progress") else {
+            let entry = self.downloads.iter().find(|d| d.id == id);
+            if entry.is_some_and(|d| d.state != "progress") {
                 self.pdf_race.remove(&id);
                 continue;
-            };
-            let base = d.path.clone();
+            }
             let Some(r) = self.pdf_race.get_mut(&id) else { continue };
+            let base = r.base.clone();
             r.started = true;
             log(&format!("PDF: {RACE_LANES} jalur koneksi Ovner (WinHTTP) dimulai untuk {}", r.req.url));
             for lane in 0..RACE_LANES {
@@ -2324,7 +2368,7 @@ impl App {
                 return;
             }
             RaceMsg::Done(lane, res) => {
-                let base = self.downloads.iter().find(|d| d.id == id).map(|d| d.path.clone());
+                let base = self.pdf_race.get(&id).map(|r| r.base.clone());
                 let race_path = base.as_ref().map(|b| PathBuf::from(format!("{b}.ovnerrace{lane}")));
                 if let Some(l) = self.pdf_race.get_mut(&id).and_then(|r| r.lanes.get_mut(lane)) {
                     l.done = true;
@@ -2333,6 +2377,17 @@ impl App {
                 match res {
                     Ok(n) if active => {
                         let Some(pos) = self.downloads.iter().position(|d| d.id == id) else { return };
+                        if self.downloads[pos].path.is_empty() {
+                            // Jalur awal selesai sebelum halaman menjawab: nama dari alamat.
+                            let url = self.downloads[pos].url.clone();
+                            let mut dir = self.download_dir();
+                            if self.settings.borrow().dl_box_v2 {
+                                dir = dir.join("Documents");
+                            }
+                            let p = free_download_path(&dir.join(dlengine::pdf_name("", &url)));
+                            self.downloads[pos].name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                            self.downloads[pos].path = p.display().to_string();
+                        }
                         let final_path = self.downloads[pos].path.clone();
                         let _ = std::fs::remove_file(&final_path);
                         let moved = race_path.as_ref().is_some_and(|rp| std::fs::rename(rp, &final_path).is_ok());
@@ -2450,6 +2505,16 @@ impl App {
         self.last_render_key.clear();
         self.render();
         true
+    }
+
+    /// Folder unduhan (setelan, atau Downloads pengguna).
+    fn download_dir(&self) -> PathBuf {
+        let d = self.settings.borrow().download_dir.trim().to_string();
+        if d.is_empty() {
+            std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
+        } else {
+            PathBuf::from(d)
+        }
     }
 
     /// Hapus tampilan "menunggu server" yang ternyata bukan unduhan.
@@ -4658,6 +4723,23 @@ impl App {
                     self.activate(i);
                 }
             }
+            "tab-move" => {
+                // Tab diseret ke posisi lain di baris tab / bilah samping.
+                if let Some(from) = self.tab_index(id) {
+                    let to = (msg["to"].as_u64().unwrap_or(from as u64) as usize).min(self.tabs.len().saturating_sub(1));
+                    if to != from {
+                        let active_id = self.tabs.get(self.active).map(|t| t.id);
+                        let t = self.tabs.remove(from);
+                        self.tabs.insert(to, t);
+                        if let Some(a) = active_id.and_then(|a| self.tab_index(a)) {
+                            self.active = a;
+                        }
+                        self.save_session();
+                    }
+                    self.last_render_key.clear();
+                    self.render();
+                }
+            }
             "close" => {
                 if let Some(i) = self.tab_index(id) {
                     self.close_tab(i);
@@ -5891,6 +5973,7 @@ fn main() {
         dl_no_yield: HashSet::new(),
         eco_on: false,
         pdf_race: HashMap::new(),
+        pdf_learned: std::fs::read_to_string(data_dir().join("pdf_endpoints.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         bm_edit: None,
         bm_edit_from: None,
         last_bm_folder: String::new(),
@@ -6399,6 +6482,15 @@ fn main() {
             *control_flow = ControlFlow::Exit;
         }
     });
+}
+
+#[cfg(test)]
+mod pdf_key_tests {
+    #[test]
+    fn keys() {
+        assert_eq!(super::pdf_key("https://SIPP.bpjsketenagakerjaan.go.id/kartu/download?x=1"), "sipp.bpjsketenagakerjaan.go.id/kartu/download");
+        assert_eq!(super::pdf_key("http://a.b/c.pdf#p"), "a.b/c.pdf");
+    }
 }
 
 #[cfg(test)]

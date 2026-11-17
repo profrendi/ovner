@@ -15,6 +15,7 @@
   #new { margin: 8px; height: 32px; border: 1px dashed var(--line); border-radius: 8px; background: none; color: var(--text); font: inherit; cursor: pointer; text-align: left; padding: 0 12px; }
   #new:hover { background: var(--hover); }
   #list { flex: 1; overflow-y: auto; padding: 0 6px 8px; }
+  .tab.dragging { opacity: .7; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .tab { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 10px; border-radius: 8px; cursor: default; }
   .tab:hover { background: var(--hover); }
   .tab.active { background: var(--active); box-shadow: 0 1px 2px #0002; }
@@ -40,6 +41,48 @@
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
   const list = document.getElementById("list");
   const els = new Map();
+  // Seret tab untuk memindah urutannya (lepas = kirim posisi baru ke Ovner). Klik biasa tetap
+  // mengaktifkan tab; seret baru dimulai setelah bergeser 6 piksel.
+  let tabDragging = false;
+  function tabDrag(el, id, box, axis) {
+    el.dataset.id = id;
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest(".x")) return;
+      const start = axis === "x" ? e.clientX : e.clientY;
+      let moved = false;
+      const move = (ev) => {
+        const pos = axis === "x" ? ev.clientX : ev.clientY;
+        if (!moved) {
+          if (Math.abs(pos - start) < 6) return;
+          moved = true; tabDragging = true; el.classList.add("dragging");
+          try { el.setPointerCapture(e.pointerId); } catch (x) {}
+        }
+        for (const s of box.querySelectorAll(".tab")) {
+          if (s === el) continue;
+          const r = s.getBoundingClientRect();
+          const lo = axis === "x" ? r.left : r.top, hi = axis === "x" ? r.right : r.bottom;
+          if (pos < lo || pos > hi) continue;
+          if (pos < (lo + hi) / 2) { if (el.nextSibling !== s) box.insertBefore(el, s); }
+          else if (s.nextSibling !== el) box.insertBefore(el, s.nextSibling);
+          break;
+        }
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        if (!moved) return;
+        el.classList.remove("dragging");
+        tabDragging = false;
+        const order = [...box.querySelectorAll(".tab")].map((x) => +x.dataset.id);
+        send({ cmd: "tab-move", id, to: order.indexOf(id) });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
+  }
+
   const W = { id: { nt: "Tab baru", newk: "+  Tab baru", close: "Tutup tab (Ctrl+W)" }, en: { nt: "New tab", newk: "+  New tab", close: "Close tab (Ctrl+W)" } };
   let w = W.id;
   function letter(t) {
@@ -59,6 +102,7 @@
     e.addEventListener("auxclick", (ev) => { if (ev.button === 1) send({ cmd: "close", id }); });
     e.addEventListener("contextmenu", (ev) => { ev.preventDefault(); send({ cmd: "tabmenu", id, x: ev.clientX, y: ev.clientY, side: true }); });
     e.append(ic, ti, x);
+    tabDrag(e, id, list, "y");
     els.set(id, e);
     return e;
   }
@@ -94,8 +138,8 @@
         e.children[0].textContent = ico ? "" : letter(t);
         e.children[1].textContent = t.title || w.nt;
         e.children[2].title = w.close;
-        list.append(e);
-        if (t.active) e.scrollIntoView({ block: "nearest" });
+        if (!tabDragging) list.append(e);
+        if (t.active && !tabDragging) e.scrollIntoView({ block: "nearest" });
       }
       for (const [id, e] of els) if (!keep.has(id)) { e.remove(); els.delete(id); }
     },

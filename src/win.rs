@@ -1228,6 +1228,42 @@ mod imp {
         s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
     }
 
+    /// Ambil cookie situs (termasuk HttpOnly) lalu kirim `DlEvent::Race` untuk jalur koneksi
+    /// Ovner. `total` < 0: masih tahap permintaan (Ovner yang memutuskan mulai lebih awal).
+    fn emit_race(sender: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, cb: &std::rc::Rc<dyn Fn(DlEvent)>, id: u64, url: &str, referer: String, agent: String, total: i64) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+        let Some(cm) = sender.cast::<ICoreWebView2_2>().ok().and_then(|w| unsafe { w.CookieManager() }.ok()) else { return };
+        let cb3 = cb.clone();
+        let u2 = url.to_string();
+        let once = std::cell::RefCell::new(Some((referer, agent)));
+        let h = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_r, list| {
+            let Some((referer, user_agent)) = once.borrow_mut().take() else { return Ok(()) };
+            let mut cookie = String::new();
+            if let Some(list) = list {
+                let mut n = 0u32;
+                unsafe {
+                    let _ = list.Count(&mut n);
+                    for i in 0..n.min(300) {
+                        if let Ok(c) = list.GetValueAtIndex(i) {
+                            let (mut a, mut b) = (windows::core::PWSTR::null(), windows::core::PWSTR::null());
+                            if c.Name(&mut a).is_ok() && c.Value(&mut b).is_ok() {
+                                if !cookie.is_empty() {
+                                    cookie.push_str("; ");
+                                }
+                                cookie.push_str(&webview2_com::take_pwstr(a));
+                                cookie.push('=');
+                                cookie.push_str(&webview2_com::take_pwstr(b));
+                            }
+                        }
+                    }
+                }
+            }
+            cb3(DlEvent::Race { id, url: u2.clone(), cookie, referer, user_agent, total });
+            Ok(())
+        }));
+        let _ = unsafe { cm.GetCookies(&HSTRING::from(url), &h) };
+    }
+
     /// Baca potongan berikutnya dari aliran respons PDF `id` dan tulis ke berkas.
     fn read_stream(id: u64) {
         let Some((core, handle)) = STREAMS.with(|m| m.borrow().get(&id).map(|s| (s.core.clone(), s.handle.clone()))) else { return };
@@ -1313,6 +1349,11 @@ mod imp {
                     let id = next_download_id();
                     WAITING.with(|m| m.borrow_mut().insert(job.clone(), (id, false)));
                     cb(DlEvent::Waiting { id, url: url.clone() });
+                    // Alamat yang dulu menghasilkan PDF besar: jalur Ovner boleh mulai sekarang
+                    // juga (server membuat berkas untuk tiap koneksi bersamaan).
+                    let rh = &v["request"]["headers"];
+                    let rhv = |name: &str| rh.as_object().and_then(|o| o.iter().find(|(k, _)| k.eq_ignore_ascii_case(name))).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string();
+                    emit_race(&sender, &cb, id, &url, rhv("referer"), rhv("user-agent"), -1);
                 }
                 continue_req(&sender);
                 return Ok(());
@@ -1398,39 +1439,7 @@ mod imp {
                 hv("server").unwrap_or_default()
             )));
             cb(DlEvent::Started { id, url: url.clone(), path, total });
-            // Cookie situs (termasuk HttpOnly) untuk koneksi kedua milik Ovner.
-            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-            if let Some(cm) = sender.cast::<ICoreWebView2_2>().ok().and_then(|w| unsafe { w.CookieManager() }.ok()) {
-                let cb3 = cb.clone();
-                let u2 = url.clone();
-                let once = std::cell::RefCell::new(Some((referer, agent)));
-                let h = webview2_com::GetCookiesCompletedHandler::create(Box::new(move |_r, list| {
-                    let Some((referer, user_agent)) = once.borrow_mut().take() else { return Ok(()) };
-                    let mut cookie = String::new();
-                    if let Some(list) = list {
-                        let mut n = 0u32;
-                        unsafe {
-                            let _ = list.Count(&mut n);
-                            for i in 0..n.min(300) {
-                                if let Ok(c) = list.GetValueAtIndex(i) {
-                                    let (mut a, mut b) = (windows::core::PWSTR::null(), windows::core::PWSTR::null());
-                                    if c.Name(&mut a).is_ok() && c.Value(&mut b).is_ok() {
-                                        if !cookie.is_empty() {
-                                            cookie.push_str("; ");
-                                        }
-                                        cookie.push_str(&webview2_com::take_pwstr(a));
-                                        cookie.push('=');
-                                        cookie.push_str(&webview2_com::take_pwstr(b));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    cb3(DlEvent::Race { id, url: u2.clone(), cookie, referer, user_agent, total });
-                    Ok(())
-                }));
-                let _ = unsafe { cm.GetCookies(&HSTRING::from(url.as_str()), &h) };
-            }
+            emit_race(&sender, &cb, id, &url, referer, agent, total);
             cdp_then(&sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
                 let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
                 let known = STREAMS.with(|m| {

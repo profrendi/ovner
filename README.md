@@ -71,6 +71,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.12
+
+- **Tab bisa diseret** untuk memindah urutannya, di baris tab atas maupun di tab vertikal (bilah
+  samping). Klik biasa tetap memindah ke tab itu; seret dimulai setelah bergeser sedikit.
+- **Kartu PDF SIPP mulai lebih cepat.** Log 0.8.11: server menjawab halaman setelah 11 detik,
+  tetapi jalur Ovner baru menerima data ±15 detik kemudian karena server membuat PDF lagi untuk
+  jalur itu. Kini Ovner mengingat alamat yang pernah menghasilkan PDF besar (`pdf_endpoints.json`);
+  saat alamat itu dibuka lagi, jalur Ovner langsung mulai bersamaan dengan halaman, sehingga
+  semua koneksi menunggu server di waktu yang sama. Bila ternyata server tidak mengirim PDF
+  (mis. sesi habis), jalur itu langsung dihentikan.
+
 ## Perbaikan 0.8.11
 
 - **Kartu PDF SIPP lebih cepat selesai dan tidak mengulang dari nol.** Log 0.8.10: jalur halaman

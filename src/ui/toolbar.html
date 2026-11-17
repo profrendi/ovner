@@ -25,6 +25,7 @@
     gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; cursor: default; }
   .tab:hover { background: var(--tab-hover); }
   .tab.active { background: var(--tab-active); }
+  .tab.dragging { opacity: .7; box-shadow: 0 2px 8px rgba(0,0,0,.35); z-index: 2; }
   .tab .ic { flex: none; width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
     font-size: 10px; font-weight: 700; color: #fff; background: var(--accent); }
   .tab.private .ic { background: var(--private); }
@@ -299,6 +300,48 @@
   // Elemen tab dipakai ulang (berdasarkan id) supaya klik tidak hilang saat toolbar
   // diperbarui di tengah klik, misalnya tombol × pada tab yang sedang dimuat.
   const tabEls = new Map();
+  // Seret tab untuk memindah urutannya (lepas = kirim posisi baru ke Ovner). Klik biasa tetap
+  // mengaktifkan tab; seret baru dimulai setelah bergeser 6 piksel.
+  let tabDragging = false;
+  function tabDrag(el, id, box, axis) {
+    el.dataset.id = id;
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest(".x")) return;
+      const start = axis === "x" ? e.clientX : e.clientY;
+      let moved = false;
+      const move = (ev) => {
+        const pos = axis === "x" ? ev.clientX : ev.clientY;
+        if (!moved) {
+          if (Math.abs(pos - start) < 6) return;
+          moved = true; tabDragging = true; el.classList.add("dragging");
+          try { el.setPointerCapture(e.pointerId); } catch (x) {}
+        }
+        for (const s of box.querySelectorAll(".tab")) {
+          if (s === el) continue;
+          const r = s.getBoundingClientRect();
+          const lo = axis === "x" ? r.left : r.top, hi = axis === "x" ? r.right : r.bottom;
+          if (pos < lo || pos > hi) continue;
+          if (pos < (lo + hi) / 2) { if (el.nextSibling !== s) box.insertBefore(el, s); }
+          else if (s.nextSibling !== el) box.insertBefore(el, s.nextSibling);
+          break;
+        }
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        if (!moved) return;
+        el.classList.remove("dragging");
+        tabDragging = false;
+        const order = [...box.querySelectorAll(".tab")].map((x) => +x.dataset.id);
+        send({ cmd: "tab-move", id, to: order.indexOf(id) });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
+  }
+
   function tabEl(id) {
     let el = tabEls.get(id);
     if (el) return el;
@@ -312,6 +355,7 @@
     el.addEventListener("auxclick", (e) => { if (e.button === 1) send({ cmd: "close", id }); });
     el.addEventListener("contextmenu", (e) => { e.preventDefault(); send({ cmd: "tabmenu", id, x: e.clientX, y: e.clientY }); });
     el.append(ic, ti, x);
+    tabDrag(el, id, tabsEl, "x");
     tabEls.set(id, el);
     return el;
   }
@@ -330,7 +374,7 @@
       el.children[1].textContent = t.title || W.newtab;
       el.children[2].title = W.close;
       if (el.nextSibling !== plus && tabsEl.lastChild !== el) { /* urutan diperbaiki di bawah */ }
-      tabsEl.insertBefore(el, plus);
+      if (!tabDragging) tabsEl.insertBefore(el, plus);
     }
     for (const [id, el] of tabEls) if (!keep.has(id)) { el.remove(); tabEls.delete(id); }
   }
