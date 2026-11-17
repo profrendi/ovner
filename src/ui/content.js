@@ -529,6 +529,12 @@
   }
   window.addEventListener("popstate", notifyUrl);
   window.addEventListener("hashchange", notifyUrl);
+  // Cadangan: situs yang memakai salinan pushState sendiri (YouTube) — periksa alamat tiap
+  // detik selama halaman terlihat, dan saat YouTube selesai berpindah halaman.
+  let lastHref = location.href;
+  const checkHref = () => { if (location.href !== lastHref) { lastHref = location.href; notifyUrl(); } };
+  setInterval(() => { if (!document.hidden) checkHref(); }, 1000);
+  window.addEventListener("yt-navigate-finish", checkHref);
 
   // Kosmetik: kirim kelas/id baru, Ovner membalas dengan CSS penyembunyi yang cocok.
   post({ t: "page" });

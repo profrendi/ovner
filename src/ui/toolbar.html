@@ -1087,7 +1087,7 @@
         it.querySelector("b").textContent = d.name;
         if (state.dlV2) v2item(it, d, live, pct);
         else it.querySelector(".ds").textContent = live && d.note ? d.note : live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
-          : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+          : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) + (d.error ? " · " + d.error : "") : W.dlDeleted;
         if (d.error) it.querySelector(".ds").title = d.error;
         const pz = it.querySelector(".pz");
         if ((d.engine || d.later) && live) {
@@ -1125,7 +1125,7 @@
     ds.querySelector(".st").textContent = d.connecting ? W.dlConnecting
       : live && d.note ? d.note
       : live ? `${sizeOf(d.received) || "0 KB"}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : ""}`
-      : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) : W.dlDeleted;
+      : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) + (d.error ? " · " + d.error : "") : W.dlDeleted;
     if (d.error) ds.title = d.error;
     const old = dn.querySelector(".pb"); if (old) old.remove();
     if (live) {
@@ -1293,7 +1293,9 @@
   function vdStart(later) {
     const c = vdChoice();
     if (!c || !vd.dir) return;
-    send({ cmd: "video-start", url: vd.url, key: c.key, dir: vd.dir, name: vd.name, sub: c.kind === "audio" ? "" : vd.sub || "", embed: !!vd.embed, later: !!later });
+    const sb = (vd.subs || []).find((x) => x.lang === vd.sub);
+    send({ cmd: "video-start", url: vd.url, key: c.key, fmt: c.fmt || "", dir: vd.dir, name: vd.name, sub: c.kind === "audio" ? "" : vd.sub || "",
+      subAuto: !!(sb && sb.auto), embed: !!vd.embed, later: !!later });
     closeVidDlg();
   }
   function renderVidDlg() {
@@ -1346,9 +1348,10 @@
     const sel = el("select", { disabled: audio || !subs.length }); sel.dataset.k = "sub";
     sel.append(el("option", { value: "", textContent: subs.length ? w.none : w.noSubs }));
     for (const sb of subs) sel.append(el("option", { value: sb.lang, textContent: sb.name + " (" + sb.lang + ")", selected: sb.lang === vd.sub }));
-    sel.onchange = () => { vd.sub = sel.value; renderVidDlg(); };
+    // Memilih subtitle langsung mencentang "Masukkan ke video" (bisa dimatikan lagi).
+    sel.onchange = () => { vd.sub = sel.value; if (vd.sub && !vd.embedTouched) vd.embed = true; renderVidDlg(); };
     const emb = el("input", { type: "checkbox", checked: !!vd.embed, disabled: audio || !vd.sub }); emb.dataset.k = "embed";
-    emb.onchange = () => { vd.embed = emb.checked; };
+    emb.onchange = () => { vd.embed = emb.checked; vd.embedTouched = true; };
     p.append(el("div", { className: "row" }, sel, el("label", { className: "chk" }, emb, w.embed)));
     if (vd.tools && (!vd.tools[0] || !vd.tools[1])) p.append(el("div", { className: "note", textContent: w.tools }));
     const ready = !vd.loading && !!c;

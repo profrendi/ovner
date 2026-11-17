@@ -94,7 +94,7 @@
         const bar = document.createElement("div"); bar.className = "bar";
         bar.innerHTML = `<i style="width:${d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30}%"></i>`;
         el.querySelector(".info").append(bar);
-      } else st.textContent = gone ? w.deleted : d.state === "failed" ? w.failed + (d.error ? ": " + d.error : "") : size(d.received || d.total);
+      } else st.textContent = gone ? w.deleted : d.state === "failed" ? w.failed + (d.error ? ": " + d.error : "") : size(d.received || d.total) + (d.error ? " · " + d.error : "");
       if (!gone && d.state === "done") el.querySelector("a").onclick = () => post({ t: "dl-open", id: d.id });
       const acts = el.querySelector(".acts");
       const btn = (icon, title, fn) => { const b = document.createElement("button"); b.innerHTML = svg[icon]; b.title = title; b.onclick = fn; acts.append(b); };

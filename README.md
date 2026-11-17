@@ -71,6 +71,33 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.17
+
+- **Alamat YouTube selalu sesuai halaman yang dibuka.** YouTube berpindah video tanpa memuat
+  ulang; pemberi tahu lewat skrip halaman bisa terlewat sehingga alamat (kolom alamat, dialog unduh
+  video, tombol video di toolbar) tetap alamat pertama. Kini Ovner memakai event resmi WebView2
+  (SourceChanged) ditambah cadangan pemeriksaan alamat di halaman. Perpindahan video juga masuk
+  riwayat.
+- **Unduh video sesuai kualitas yang dipilih.** Ovner memakai format persis hasil penelusuran
+  (mis. `137+140` = 1080p H.264 + audio M4A) dan tidak lagi diam-diam jatuh ke 360p bila format
+  itu gagal: lebih baik muncul pesan jelas. Pilihan per resolusi mengutamakan unduhan langsung
+  (bukan HLS), H.264 (paling kompatibel), lalu MP4.
+- **ffmpeg diperiksa benar-benar jalan** (`ffmpeg -version` dan `ffprobe -version`) setelah
+  dipasang dan sebelum dipakai; bila rusak, dipasang ulang. Bila yt-dlp tetap melaporkan ffmpeg
+  tidak ada ("formats won't be merged"), unduhan dinyatakan gagal dengan pesan jelas — dulu
+  dilaporkan berhasil padahal video dan audio terpisah / audio tidak dikonversi / subtitle tidak
+  tergabung. Arsip ffmpeg dibuka dengan `tar` bawaan Windows (bukan tar lain di PATH).
+- **Subtitle "Masukkan ke video" benar-benar tergabung** dan berkas .srt tidak tertinggal
+  (dulu `--write-subs` ikut dipasang). Memilih subtitle langsung mencentang *Masukkan ke video*.
+  Subtitle otomatis YouTube hanya diminta bila yang dipilih memang otomatis.
+- **Hasil diperiksa:** berkas akhir harus ada; resolusi hasil dibaca dengan ffprobe dan dicatat;
+  bila lebih rendah dari pilihan, tertulis di daftar unduhan (mis. "360p (dipilih 1080p)").
+- **Log lebih lengkap untuk laporan:** perintah yt-dlp, format yang dipilih, langkah
+  Merger/ExtractAudio/EmbedSubtitle, dan semua peringatan/galat yt-dlp masuk `ovner.log`.
+- Diuji ujung ke ujung dengan sumber DASH lokal (video 1080p/360p dan audio terpisah seperti
+  YouTube): 1080p dan 360p tergabung dengan suara, M4A, MP3 VBR/320/256/192/128, OPUS, FLAC,
+  subtitle tertanam (tanpa .srt tertinggal) dan subtitle terpisah; tanpa ffmpeg → gagal jelas.
+
 ## Perbaikan 0.8.16
 
 - **Unduh video YouTube gagal "The system cannot locate the object specified (0x800C0006)".**

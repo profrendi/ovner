@@ -477,6 +477,8 @@ enum UserEvent {
     CloseWindow(u32),
     /// Ikon situs (PNG) tab ini berubah.
     Favicon(u64, Vec<u8>),
+    /// Alamat tab berubah (juga tanpa memuat ulang, mis. pindah video di YouTube).
+    UrlChanged(u64, String, bool),
     Download(u64, win::DlEvent),
     /// Hasil uji server untuk unduhan yang ditahan: (id unduhan, tab, permintaan, ukuran/galat).
     DlProbe(u64, u64, dlengine::Request, String, Result<u64, String>),
@@ -1019,6 +1021,10 @@ fn build_tab_view(
     }
     let p_fail = tenv.proxy.clone();
     win::on_process_failed(&wv, move |k, d| send(&p_fail, UserEvent::ProcFailed(id, k, d)));
+    {
+        let p_src = tenv.proxy.clone();
+        win::on_source_changed(&wv, move |url, new_doc| send(&p_src, UserEvent::UrlChanged(id, url, new_doc)));
+    }
     let p_close = tenv.proxy.clone();
     win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
     let p_dl = tenv.proxy.clone();
@@ -3080,7 +3086,27 @@ impl App {
                 return;
             }
             let p2 = p.clone();
-            match video::start(&data, &spec, move |ev| send(&p2, UserEvent::Video(id, ev))) {
+            let want_h: Option<u64> = spec.key.strip_prefix("v:").and_then(|h| h.parse().ok());
+            let data2 = data.clone();
+            let on_ev = move |ev: video::Event| {
+                // Periksa hasil: resolusi sebenarnya dibanding pilihan (dicatat untuk laporan).
+                let ev = match ev {
+                    video::Event::Done { ok: true, path, .. } => {
+                        let mut warn = String::new();
+                        if let Some((h, codec)) = video::probe_result(&data2, Path::new(&path)) {
+                            log(&format!("hasil video: {h}p {codec}, {} MB: {path}", std::fs::metadata(&path).map(|m| m.len() / 1_048_576).unwrap_or(0)));
+                            if let Some(w) = want_h.filter(|w| h * 10 < w * 9) {
+                                warn = format!("{h}p (dipilih {w}p)");
+                                log(&format!("PERINGATAN: kualitas hasil {h}p lebih rendah dari pilihan {w}p"));
+                            }
+                        }
+                        video::Event::Done { ok: true, path, error: warn }
+                    }
+                    ev => ev,
+                };
+                send(&p2, UserEvent::Video(id, ev));
+            };
+            match video::start(&data, &spec, on_ev) {
                 Ok(job) => send(&p, UserEvent::VideoJob(id, job)),
                 Err(e) => send(&p, UserEvent::Video(id, video::Event::Done { ok: false, path: String::new(), error: e })),
             }
@@ -3112,6 +3138,7 @@ impl App {
                 d.state = if ok { "done".into() } else { "failed".into() };
                 d.speed = 0;
                 if ok {
+                    d.error = error.clone();
                     if let Ok(m) = std::fs::metadata(&path) {
                         d.received = m.len() as i64;
                         d.total = m.len() as i64;
@@ -5141,6 +5168,8 @@ impl App {
                     name: video::safe_name(msg["name"].as_str().unwrap_or("video")),
                     sub: msg["sub"].as_str().unwrap_or("").to_string(),
                     embed: msg["embed"].as_bool().unwrap_or(false),
+                    sub_auto: msg["subAuto"].as_bool().unwrap_or(false),
+                    fmt: msg["fmt"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_')).collect(),
                 };
                 if spec.page.starts_with("http") && !spec.dir.is_empty() {
                     self.start_video_spec(spec, msg["later"].as_bool().unwrap_or(false));
@@ -6146,7 +6175,7 @@ impl App {
             Toolbar(no, _) | CloseWindow(no) => return Some(*no),
             Menu(_) => return Some(self.menu_win.get()),
             TrayClick | Remote(_) => return Some(self.focused_win),
-            Content(id, _) | Title(id, _) | PageLoad(id, ..) | NewTab(id, _) | Navigate(id, _) | ScriptNav(id, ..) | ProcFailed(id, ..)
+            Content(id, _) | UrlChanged(id, ..) | Title(id, _) | PageLoad(id, ..) | NewTab(id, _) | Navigate(id, _) | ScriptNav(id, ..) | ProcFailed(id, ..)
             | TabMetrics(id, _) | Anubis(id, _) | Problem(id, ..) | ScriptClose(id) | NavDone(id, ..) | Upgraded(id, _) | Favicon(id, _)
             | Download(id, _) => *id,
             DlProbe(_, tab, ..) => *tab,
@@ -7224,6 +7253,21 @@ fn main() {
                 UserEvent::VideoInfo(req, r) => app.on_video_info(req, r),
                 UserEvent::VideoJob(id, job) => {
                     app.video_jobs.insert(id, job);
+                }
+                UserEvent::UrlChanged(id, url, new_doc) => {
+                    if let Some(i) = app.tab_index(id) {
+                        if app.tabs[i].url != url && !url.starts_with("data:") {
+                            app.tabs[i].url = url.clone();
+                            // Halaman baru dicatat ke riwayat saat dimuat (PageLoad); di sini hanya
+                            // perpindahan tanpa memuat ulang.
+                            if !new_doc && !app.tabs[i].private && app.settings.borrow().save_history && url.starts_with("http") {
+                                let ti = app.tabs[i].title.clone();
+                                app.store.visit(&url, &ti);
+                            }
+                            app.render();
+                            app.save_session();
+                        }
+                    }
                 }
                 UserEvent::Favicon(id, png) => {
                     if let Some(i) = app.tab_index(id) {

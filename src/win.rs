@@ -1750,6 +1750,35 @@ mod imp {
         }
     }
 
+    /// Alamat halaman berubah, termasuk tanpa memuat ulang (YouTube dan situs satu halaman
+    /// lain memakai history.pushState). Event resmi WebView2, jadi tidak bergantung pada skrip
+    /// halaman (situs bisa memakai salinan pushState yang belum dipasangi pemberi tahu Ovner).
+    /// `cb(alamat, dokumen_baru)`: dokumen_baru = false untuk perpindahan tanpa memuat ulang.
+    pub fn on_source_changed(webview: &wry::WebView, cb: impl Fn(String, bool) + 'static) {
+        use webview2_com::SourceChangedEventHandler;
+        use wry::WebViewExtWindows;
+        let handler = SourceChangedEventHandler::create(Box::new(move |wv, args| {
+            if let Some(wv) = wv {
+                let mut new_doc = windows::core::BOOL(1);
+                if let Some(a) = &args {
+                    let _ = unsafe { a.IsNewDocument(&mut new_doc) };
+                }
+                let mut p = windows::core::PWSTR::null();
+                if unsafe { wv.Source(&mut p) }.is_ok() {
+                    let url = webview2_com::take_pwstr(p);
+                    if !url.is_empty() {
+                        cb(url, new_doc.as_bool());
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.webview().add_SourceChanged(&handler, &mut token);
+        }
+    }
+
     /// Muat ekstensi dari folder (unpacked). Hasilnya dicatat lewat `log`.
     pub fn load_extensions(webview: &wry::WebView, dirs: &[String], log: fn(&str)) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
@@ -1914,6 +1943,7 @@ mod imp {
     pub fn resume(_webview: &wry::WebView) {}
     pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}
     pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail, String) + 'static) {}
+    pub fn on_source_changed(_webview: &wry::WebView, _cb: impl Fn(String, bool) + 'static) {}
     pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
     pub fn cname_of(_host: &str) -> Option<String> {
         None

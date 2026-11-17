@@ -1,0 +1,180 @@
+1794930841 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930842 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930842 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930843 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930844 yt-dlp -f 1+2/bv*[height=360][ext=mp4]+ba[ext=m4a]/bv*[height=360]+ba/b[height=360] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930845 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930845 yt-dlp -f 2/ba[ext=m4a]/ba → http://127.0.0.1:8765/dash/manifest.mpd
+1794930847 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930847 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 0 → http://127.0.0.1:8765/dash/manifest.mpd
+1794930849 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930849 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 320K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930850 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930851 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 256K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930852 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930853 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 192K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930854 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930855 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 128K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930856 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930856 yt-dlp -f ba[acodec^=opus]/ba/b -x --audio-format opus → http://127.0.0.1:8765/dash/manifest.mpd
+1794930858 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930858 yt-dlp -f ba/b -x --audio-format flac → http://127.0.0.1:8765/dash/manifest.mpd
+1794930860 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930869 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930870 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930871 yt-dlp -f 1+2/bv*[height=360][ext=mp4]+ba[ext=m4a]/bv*[height=360]+ba/b[height=360] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930872 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930872 yt-dlp -f 2/ba[ext=m4a]/ba → http://127.0.0.1:8765/dash/manifest.mpd
+1794930874 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930874 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 0 → http://127.0.0.1:8765/dash/manifest.mpd
+1794930875 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930876 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 320K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930877 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930878 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 256K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930879 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930879 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 192K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930880 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930881 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 128K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930882 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930883 yt-dlp -f ba[acodec^=opus]/ba/b -x --audio-format opus → http://127.0.0.1:8765/dash/manifest.mpd
+1794930884 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930885 yt-dlp -f ba/b -x --audio-format flac → http://127.0.0.1:8765/dash/manifest.mpd
+1794930886 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930901 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930902 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930903 yt-dlp -f 1+2/bv*[height=360][ext=mp4]+ba[ext=m4a]/bv*[height=360]+ba/b[height=360] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930904 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930904 yt-dlp -f 2/ba[ext=m4a]/ba → http://127.0.0.1:8765/dash/manifest.mpd
+1794930905 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930905 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 0 → http://127.0.0.1:8765/dash/manifest.mpd
+1794930907 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930907 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 320K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930908 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930909 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 256K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930910 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930911 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 192K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930912 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930913 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 128K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930914 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930915 yt-dlp -f ba[acodec^=opus]/ba/b -x --audio-format opus → http://127.0.0.1:8765/dash/manifest.mpd
+1794930916 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930916 yt-dlp -f ba/b -x --audio-format flac → http://127.0.0.1:8765/dash/manifest.mpd
+1794930917 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930920 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --embed-subs → http://127.0.0.1:8765/subs.html
+1794930921 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930922 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --write-subs → http://127.0.0.1:8765/subs.html
+1794930923 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930963 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930965 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930965 yt-dlp: [info] manifest: Downloading 1 format(s): 0+2
+1794930965 yt-dlp: [Merger] Merging formats into "/tmp/ytdata/out/tes v_1080.mp4"
+1794930965 yt-dlp -f 1+2/bv*[height=360][ext=mp4]+ba[ext=m4a]/bv*[height=360]+ba/b[height=360] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930966 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930966 yt-dlp: [info] manifest: Downloading 1 format(s): 1+2
+1794930966 yt-dlp: [Merger] Merging formats into "/tmp/ytdata/out/tes v_360.mp4"
+1794930967 yt-dlp -f 2/ba[ext=m4a]/ba → http://127.0.0.1:8765/dash/manifest.mpd
+1794930968 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930968 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930968 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 0 → http://127.0.0.1:8765/dash/manifest.mpd
+1794930969 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930969 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930970 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_0.mp3
+1794930970 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 320K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930971 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930971 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930971 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_320.mp3
+1794930972 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 256K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930973 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930973 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930973 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_256.mp3
+1794930973 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 192K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930975 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930975 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930975 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_192.mp3
+1794930975 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 128K → http://127.0.0.1:8765/dash/manifest.mpd
+1794930976 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930976 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930977 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_128.mp3
+1794930977 yt-dlp -f ba[acodec^=opus]/ba/b -x --audio-format opus → http://127.0.0.1:8765/dash/manifest.mpd
+1794930978 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930978 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930978 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_opus.opus
+1794930979 yt-dlp -f ba/b -x --audio-format flac → http://127.0.0.1:8765/dash/manifest.mpd
+1794930980 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930980 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794930980 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_flac.flac
+1794930982 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --embed-subs → http://127.0.0.1:8765/subs.html
+1794930983 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930984 yt-dlp: [info] subs-1: Downloading subtitles: en
+1794930984 yt-dlp: [info] subs-1: Downloading 1 format(s): 0
+1794930984 yt-dlp: [info] Writing video subtitles to: /tmp/ytdata/out-subs/sub.en.vtt
+1794930984 yt-dlp: [SubtitlesConvertor] Converting subtitles
+1794930984 yt-dlp: [EmbedSubtitle] Embedding subtitles in "/tmp/ytdata/out-subs/sub.mp4"
+1794930984 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --write-subs → http://127.0.0.1:8765/subs.html
+1794930985 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930986 yt-dlp: [info] subs-1: Downloading subtitles: en
+1794930986 yt-dlp: [info] subs-1: Downloading 1 format(s): 0
+1794930986 yt-dlp: [info] Writing video subtitles to: /tmp/ytdata/out-subs/sub2.en.vtt
+1794930986 yt-dlp: [SubtitlesConvertor] Converting subtitles
+1794930990 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930991 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930991 yt-dlp: [info] manifest: Downloading 1 format(s): 0+2
+1794930996 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794930997 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794930997 yt-dlp: [info] manifest: Downloading 1 format(s): 0+2
+1794931015 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794931016 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931017 yt-dlp: [info] manifest: Downloading 1 format(s): 0+2
+1794931017 yt-dlp: WARNING: You have requested merging of multiple formats but ffmpeg is not installed. The formats won't be merged
+1794931025 yt-dlp -f 0+2/bv*[height=1080][ext=mp4]+ba[ext=m4a]/bv*[height=1080]+ba/b[height=1080] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794931026 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931026 yt-dlp: [info] manifest: Downloading 1 format(s): 0+2
+1794931026 yt-dlp: [Merger] Merging formats into "/tmp/ytdata/out/tes v_1080.mp4"
+1794931027 yt-dlp -f 1+2/bv*[height=360][ext=mp4]+ba[ext=m4a]/bv*[height=360]+ba/b[height=360] --merge-output-format mp4/mkv → http://127.0.0.1:8765/dash/manifest.mpd
+1794931028 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931028 yt-dlp: [info] manifest: Downloading 1 format(s): 1+2
+1794931028 yt-dlp: [Merger] Merging formats into "/tmp/ytdata/out/tes v_360.mp4"
+1794931028 yt-dlp -f 2/ba[ext=m4a]/ba → http://127.0.0.1:8765/dash/manifest.mpd
+1794931029 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931029 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931030 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 0 → http://127.0.0.1:8765/dash/manifest.mpd
+1794931031 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931031 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931031 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_0.mp3
+1794931032 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 320K → http://127.0.0.1:8765/dash/manifest.mpd
+1794931033 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931033 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931033 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_320.mp3
+1794931033 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 256K → http://127.0.0.1:8765/dash/manifest.mpd
+1794931034 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931034 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931035 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_256.mp3
+1794931035 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 192K → http://127.0.0.1:8765/dash/manifest.mpd
+1794931036 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931036 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931036 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_192.mp3
+1794931037 yt-dlp -f ba/b -x --audio-format mp3 --audio-quality 128K → http://127.0.0.1:8765/dash/manifest.mpd
+1794931038 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931038 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931038 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_mp3_128.mp3
+1794931038 yt-dlp -f ba[acodec^=opus]/ba/b -x --audio-format opus → http://127.0.0.1:8765/dash/manifest.mpd
+1794931039 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931039 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931040 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_opus.opus
+1794931040 yt-dlp -f ba/b -x --audio-format flac → http://127.0.0.1:8765/dash/manifest.mpd
+1794931041 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931041 yt-dlp: [info] manifest: Downloading 1 format(s): 2
+1794931042 yt-dlp: [ExtractAudio] Destination: /tmp/ytdata/out/tes a_flac.flac
+1794931043 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --embed-subs → http://127.0.0.1:8765/subs.html
+1794931045 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931045 yt-dlp: [info] subs-1: Downloading subtitles: en
+1794931045 yt-dlp: [info] subs-1: Downloading 1 format(s): 0
+1794931045 yt-dlp: [info] Writing video subtitles to: /tmp/ytdata/out-subs/sub.en.vtt
+1794931045 yt-dlp: [SubtitlesConvertor] Converting subtitles
+1794931045 yt-dlp: [EmbedSubtitle] Embedding subtitles in "/tmp/ytdata/out-subs/sub.mp4"
+1794931045 yt-dlp -f bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b --merge-output-format mp4/mkv --sub-langs en --convert-subs srt --write-subs → http://127.0.0.1:8765/subs.html
+1794931046 yt-dlp: WARNING: [generic] Falling back on generic information extractor
+1794931047 yt-dlp: [info] subs-1: Downloading subtitles: en
+1794931047 yt-dlp: [info] subs-1: Downloading 1 format(s): 0
+1794931047 yt-dlp: [info] Writing video subtitles to: /tmp/ytdata/out-subs/sub2.en.vtt
+1794931047 yt-dlp: [SubtitlesConvertor] Converting subtitles

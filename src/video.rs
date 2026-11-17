@@ -131,13 +131,46 @@ fn fetch_any(urls: &[&str], dest: &Path, what: &str, note: &dyn Fn(&str)) -> Res
 fn unzip(zip: &Path, out: &Path) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
-    let mut cmd = Command::new("tar");
+    // tar bawaan Windows (System32, bsdtar: bisa membuka zip). tar lain di PATH (mis. dari Git)
+    // tidak bisa membuka zip.
+    #[cfg(windows)]
+    let tar = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32").join("tar.exe")).filter(|p| p.exists()).unwrap_or_else(|| PathBuf::from("tar"));
+    #[cfg(not(windows))]
+    let tar = PathBuf::from("tar");
+    let mut cmd = Command::new(tar);
     cmd.arg("-xf").arg(zip).arg("-C").arg(out);
     hide_window(&mut cmd);
     let st = cmd.status().map_err(|e| format!("tar: {e}"))?;
     if !st.success() {
         return Err("arsip zip tidak bisa dibuka".into());
     }
+    Ok(())
+}
+
+/// Jalankan `exe arg` (mis. `ffmpeg -version`): Ok(baris pertama keluarannya) bila berhasil.
+fn runs(exe: &Path, arg: &str) -> Result<String, String> {
+    let mut cmd = Command::new(exe);
+    cmd.arg(arg).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    hide_window(&mut cmd);
+    let o = cmd.output().map_err(|e| format!("{} tidak bisa dijalankan: {e}", exe.display()))?;
+    if !o.status.success() {
+        return Err(format!("{} gagal dijalankan (kode {:?})", exe.display(), o.status.code()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").chars().take(120).collect())
+}
+
+/// ffmpeg dan ffprobe milik Ovner sudah terbukti bisa dijalankan (sekali per sesi).
+static FFMPEG_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn ffmpeg_works(data: &Path) -> Result<(), String> {
+    if FFMPEG_OK.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    let v = runs(&ffmpeg(data), "-version")?;
+    let probe = ffmpeg_dir(data).join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+    runs(&probe, "-version")?;
+    crate::log(&format!("ffmpeg siap: {v}"));
+    FFMPEG_OK.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -185,9 +218,20 @@ pub fn ensure_tools(data: &Path, needs: Needs, note: &dyn Fn(&str)) -> Result<()
         });
         let _ = std::fs::remove_dir_all(&out);
         let _ = std::fs::remove_file(&zip);
+        let r = r.and_then(|_| runs(&deno(data), "--version").map(|v| crate::log(&format!("Deno siap: {v}"))));
+        if r.is_err() {
+            let _ = std::fs::remove_file(deno(data));
+        }
         // Tanpa Deno yt-dlp masih bisa mencoba (format mungkin lebih sedikit): jangan gagalkan.
         if let Err(e) = r {
             crate::log(&format!("Deno tidak terpasang, yt-dlp jalan tanpa runtime JavaScript: {e}"));
+        }
+    }
+    // ffmpeg yang ada tetapi tidak bisa dijalankan (berkas rusak/kurang DLL): pasang ulang.
+    if needs.ffmpeg && cfg!(windows) && ffmpeg(data).exists() {
+        if let Err(e) = ffmpeg_works(data) {
+            crate::log(&format!("ffmpeg dipasang ulang: {e}"));
+            let _ = std::fs::remove_dir_all(ffmpeg_dir(data));
         }
     }
     if needs.ffmpeg && cfg!(windows) && !ffmpeg(data).exists() {
@@ -219,10 +263,14 @@ pub fn ensure_tools(data: &Path, needs: Needs, note: &dyn Fn(&str)) -> Result<()
         });
         let _ = std::fs::remove_dir_all(&out);
         let _ = std::fs::remove_file(&zip);
+        let r = r.and_then(|_| ffmpeg_works(data));
         if r.is_err() {
             let _ = std::fs::remove_dir_all(&target);
         }
         r?;
+    }
+    if needs.ffmpeg && cfg!(windows) {
+        ffmpeg_works(data)?;
     }
     Ok(())
 }
@@ -296,6 +344,10 @@ pub fn parse_line(line: &str) -> Option<Event> {
     if let Some(p) = line.split("[ovner-file] ").nth(1) {
         return Some(Event::Done { ok: true, path: p.trim().to_string(), error: String::new() });
     }
+    // Berkas potongan yang sedang ditulis (untuk menghapus sisanya bila dibatalkan).
+    if let Some(p) = line.trim().strip_prefix("[download] Destination: ") {
+        return Some(Event::Path(p.trim().to_string()));
+    }
     None
 }
 
@@ -328,6 +380,13 @@ pub struct Spec {
     /// Subtitle dimasukkan ke dalam video (bukan berkas .srt terpisah).
     #[serde(default)]
     pub embed: bool,
+    /// Subtitle yang dipilih adalah terjemahan otomatis (YouTube).
+    #[serde(default)]
+    pub sub_auto: bool,
+    /// Format persis hasil penelusuran (mis. "137+140"), supaya yang diunduh benar-benar
+    /// kualitas yang dipilih, bukan jatuh diam-diam ke format lain yang lebih kecil.
+    #[serde(default)]
+    pub fmt: String,
 }
 
 impl Spec {
@@ -375,38 +434,49 @@ pub fn strip_ext(name: &str) -> &str {
 /// Argumen yt-dlp untuk sebuah pilihan.
 pub fn args_for(spec: &Spec) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
-    let mut f = |fmt: &str| {
+    // Format persis dari penelusuran dulu, lalu cadangan dengan kualitas yang sama.
+    let exact = |chain: &str| if spec.fmt.is_empty() { chain.to_string() } else { format!("{}/{chain}", spec.fmt) };
+    let mut f = |fmt: String| {
         a.push("-f".into());
-        a.push(fmt.into());
+        a.push(fmt);
     };
     let key = spec.key.as_str();
     if let Some(h) = key.strip_prefix("v:").and_then(|h| h.parse::<u32>().ok()) {
-        f(&format!("bv*[height={h}][ext=mp4]+ba[ext=m4a]/bv*[height={h}]+ba[ext=m4a]/bv*[height={h}]+ba/b[height={h}]/bv*[height<={h}]+ba/b"));
-        a.extend(["--merge-output-format".into(), "mp4".into()]);
+        // Tanpa jatuh ke kualitas lebih rendah: lebih baik gagal dengan pesan jelas daripada
+        // diam-diam mengunduh 360p (0.8.16: pilih 1080p dapat 28 MB).
+        f(exact(&format!("bv*[height={h}][ext=mp4]+ba[ext=m4a]/bv*[height={h}]+ba/b[height={h}]")));
+        a.extend(["--merge-output-format".into(), "mp4/mkv".into()]);
     } else if key == "a:m4a" {
-        f("ba[ext=m4a]/ba");
+        f(exact("ba[ext=m4a]/ba"));
     } else if key == "a:m4ax" {
         // Halaman tanpa format audio terpisah (pemutar video biasa): suara diambil dari videonya.
-        f("ba[ext=m4a]/ba/b");
+        f(exact("ba[ext=m4a]/ba/b"));
         a.extend(["-x".into(), "--audio-format".into(), "m4a".into()]);
     } else if key == "a:opus" {
-        f("ba[acodec=opus]/ba/b");
+        f(exact("ba[acodec^=opus]/ba/b"));
         a.extend(["-x".into(), "--audio-format".into(), "opus".into()]);
     } else if key == "a:flac" {
-        f("ba/b");
+        f(exact("ba/b"));
         a.extend(["-x".into(), "--audio-format".into(), "flac".into()]);
     } else if let Some(q) = key.strip_prefix("a:mp3:") {
-        f("ba/b");
+        f(exact("ba/b"));
         let q = if q == "0" { "0".to_string() } else { format!("{}K", q.parse::<u32>().unwrap_or(192)) };
         a.extend(["-x".into(), "--audio-format".into(), "mp3".into(), "--audio-quality".into(), q]);
     } else {
-        f("bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b");
-        a.extend(["--merge-output-format".into(), "mp4".into()]);
+        f(exact("bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"));
+        a.extend(["--merge-output-format".into(), "mp4/mkv".into()]);
     }
     if !spec.sub.is_empty() && !spec.is_audio() {
-        a.extend(["--write-subs".into(), "--write-auto-subs".into(), "--sub-langs".into(), spec.sub.clone(), "--convert-subs".into(), "srt".into()]);
+        a.extend(["--sub-langs".into(), spec.sub.clone(), "--convert-subs".into(), "srt".into()]);
+        if spec.sub_auto {
+            a.push("--write-auto-subs".into());
+        }
         if spec.embed {
+            // --embed-subs saja: yt-dlp mengunduh subtitle, memasukkannya ke video, lalu menghapus
+            // berkas .srt-nya. (Dulu --write-subs ikut dipasang sehingga .srt tertinggal terpisah.)
             a.push("--embed-subs".into());
+        } else {
+            a.push("--write-subs".into());
         }
     }
     a
@@ -430,38 +500,56 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
     let best_m4a = audio.iter().filter(|f| f["ext"] == "m4a").max_by(|a, b| a["abr"].as_f64().unwrap_or(0.0).total_cmp(&b["abr"].as_f64().unwrap_or(0.0)));
     let best_opus = audio.iter().filter(|f| f["acodec"].as_str().is_some_and(|c| c.starts_with("opus"))).max_by(|a, b| a["abr"].as_f64().unwrap_or(0.0).total_cmp(&b["abr"].as_f64().unwrap_or(0.0)));
     let a_size = best_m4a.map(|f| size(f)).unwrap_or((128_000.0 / 8.0 * dur) as u64);
-    // Video per tinggi: MP4 diutamakan, yang paling tajam (tbr terbesar).
-    let mut by_h: std::collections::BTreeMap<u64, (u64, bool, bool)> = std::collections::BTreeMap::new();
-    for f in fmts.iter().filter(|f| !is_none(&f["vcodec"])) {
+    let id_of = |f: &serde_json::Value| f["format_id"].as_str().unwrap_or("").to_string();
+    // Audio pasangan video tanpa suara: M4A (AAC) agar hasil MP4 diputar di mana saja.
+    let pair_audio = best_m4a.or_else(|| audio.iter().max_by(|a, b| a["abr"].as_f64().unwrap_or(0.0).total_cmp(&b["abr"].as_f64().unwrap_or(0.0))));
+    // Video per tinggi. Urutan pilihan: unduhan langsung (https, bukan HLS), H.264 (avc1, paling
+    // kompatibel), MP4, lalu yang paling tajam (ukuran terbesar).
+    let rank = |f: &serde_json::Value| -> (bool, bool, bool, u64) {
+        let proto = f["protocol"].as_str().unwrap_or("https");
+        (
+            !proto.contains("m3u8"),
+            f["vcodec"].as_str().is_some_and(|c| c.starts_with("avc1") || c.starts_with("h264")),
+            f["ext"] == "mp4",
+            size(f),
+        )
+    };
+    let mut by_h: std::collections::BTreeMap<u64, &serde_json::Value> = std::collections::BTreeMap::new();
+    for f in fmts.iter().filter(|f| !is_none(&f["vcodec"]) && f["format_id"].is_string()) {
         let Some(h) = f["height"].as_u64().filter(|h| *h >= 100) else { continue };
-        if f["protocol"].as_str().is_some_and(|p| p.contains("m3u8") || p.contains("dash") && false) && f["ext"] != "mp4" {
+        if f["ext"] == "mhtml" {
             continue;
         }
-        let mp4 = f["ext"] == "mp4";
-        let with_audio = !is_none(&f["acodec"]);
-        let sz = size(f) + if with_audio { 0 } else { a_size };
-        let e = by_h.entry(h).or_insert((0, false, false));
-        // Ganti bila lebih baik: MP4 mengalahkan non-MP4, lalu ukuran terbesar.
-        if (mp4 && !e.1) || (mp4 == e.1 && sz > e.0) {
-            *e = (sz, mp4, with_audio);
+        let e = by_h.entry(h).or_insert(f);
+        if rank(f) > rank(e) {
+            *e = f;
         }
     }
     let mut list: Vec<serde_json::Value> = by_h
         .iter()
         .rev()
-        .map(|(h, (sz, _, _))| json!({"key": format!("v:{h}"), "label": format!("{h}p MP4"), "size": sz, "ext": "mp4", "kind": "video"}))
+        .map(|(h, f)| {
+            let with_audio = !is_none(&f["acodec"]);
+            let (fmt, sz) = match (with_audio, pair_audio) {
+                (false, Some(a)) => (format!("{}+{}", id_of(f), id_of(a)), size(f) + size(a)),
+                _ => (id_of(f), size(f)),
+            };
+            let codec = f["vcodec"].as_str().unwrap_or("").split('.').next().unwrap_or("").to_string();
+            json!({"key": format!("v:{h}"), "label": format!("{h}p MP4"), "size": sz, "ext": "mp4", "kind": "video", "fmt": fmt, "codec": codec})
+        })
         .collect();
     if list.is_empty() && !fmts.is_empty() {
         list.push(json!({"key": "v:best", "label": "MP4", "size": fmts.last().map(size).unwrap_or(0), "ext": "mp4", "kind": "video"}));
     }
     let est = |kbps: f64| (kbps * 1000.0 / 8.0 * dur) as u64;
     let m4a_key = if audio.is_empty() { "a:m4ax" } else { "a:m4a" };
-    list.push(json!({"key": m4a_key, "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": if dur > 0.0 || best_m4a.is_some() { a_size } else { 0 }, "ext": "m4a", "kind": "audio"}));
+    let m4a_fmt = best_m4a.map(|f| id_of(f)).unwrap_or_default();
+    list.push(json!({"key": m4a_key, "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": if dur > 0.0 || best_m4a.is_some() { a_size } else { 0 }, "ext": "m4a", "kind": "audio", "fmt": m4a_fmt}));
     list.push(json!({"key": "a:mp3:0", "label": "Audio MP3 VBR", "en": "Audio only MP3 VBR", "size": est(245.0), "ext": "mp3", "kind": "audio", "approx": true}));
     for k in [320, 256, 192, 128] {
         list.push(json!({"key": format!("a:mp3:{k}"), "label": format!("Audio MP3 {k} kbps"), "en": format!("Audio only MP3 {k} kbps"), "size": est(k as f64), "ext": "mp3", "kind": "audio"}));
     }
-    list.push(json!({"key": "a:opus", "label": "Audio OPUS", "en": "Audio only OPUS", "size": best_opus.map(|f| size(f)).unwrap_or(est(160.0)), "ext": "opus", "kind": "audio"}));
+    list.push(json!({"key": "a:opus", "label": "Audio OPUS", "en": "Audio only OPUS", "size": best_opus.map(|f| size(f)).unwrap_or(est(160.0)), "ext": "opus", "kind": "audio", "fmt": best_opus.map(|f| id_of(f)).unwrap_or_default()}));
     list.push(json!({"key": "a:flac", "label": "Audio FLAC", "en": "Audio only FLAC", "size": est(900.0), "ext": "flac", "kind": "audio", "approx": true}));
     // Subtitle: buatan pemilik video dulu, lalu terjemahan otomatis bahasa Indonesia/Inggris.
     let mut subs: Vec<serde_json::Value> = Vec::new();
@@ -504,37 +592,69 @@ pub fn probe(data: &Path, page_url: &str) -> Result<serde_json::Value, String> {
 
 /// Mulai mengunduh sesuai `spec`. `cb` dipanggil dari thread latar.
 pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'static) -> Result<Job, String> {
+    // Nama berkas akhir ditulis ke berkas sementara (--print-to-file), bukan --print: --print
+    // membuat yt-dlp diam sehingga langkah [Merger]/[ExtractAudio]/[EmbedSubtitle] dan format
+    // yang benar-benar dipilih tidak terlihat di log.
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let result_file = std::env::temp_dir().join(format!("ovner-yt-{}-{}.txt", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let _ = std::fs::remove_file(&result_file);
     let mut cmd = Command::new(ytdlp(data));
-    cmd.args(["--newline", "--no-colors", "--no-playlist", "--no-simulate", "--progress", "--no-mtime"])
+    cmd.args(["--newline", "--no-colors", "--no-playlist", "--progress", "--no-mtime"])
         .args(["--progress-template", "download:[ovner] %(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s"])
-        .args(["--print", "before_dl:[ovner-title] %(title)s"])
-        .args(["--print", "before_dl:[ovner-path] %(filename)s"])
-        .args(["--print", "after_move:[ovner-file] %(filepath)s"])
+        .args(["--print-to-file", "after_move:%(filepath)s"])
+        .arg(&result_file)
         .args(args_for(spec))
         .arg("-o")
         .arg(Path::new(&spec.dir).join(format!("{}.%(ext)s", strip_ext(&spec.name).replace('%', "%%"))));
     cmd.args(tool_args(data));
     cmd.arg(&spec.page).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     hide_window(&mut cmd);
+    crate::log(&format!("yt-dlp {} → {}", args_for(spec).join(" "), spec.page));
     let mut child = cmd.spawn().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
     let (out, err) = (child.stdout.take(), child.stderr.take());
     let job = Job(Arc::new(Mutex::new(Some(child))));
     let cb = Arc::new(cb);
-    let last_err = Arc::new(Mutex::new(String::new()));
-    let done = Arc::new(Mutex::new(false));
+    #[derive(Default)]
+    struct Outcome {
+        file: Option<String>,
+        last_err: String,
+        /// Peringatan yang berarti hasilnya tidak sesuai pilihan (ffmpeg tidak ada → video dan
+        /// audio tidak digabung, subtitle/konversi audio tidak dikerjakan).
+        fatal: Option<String>,
+        logged: usize,
+    }
+    let state = Arc::new(Mutex::new(Outcome::default()));
     let mut readers = Vec::new();
     for stream in [out.map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), err.map(|e| Box::new(e) as Box<dyn std::io::Read + Send>)].into_iter().flatten() {
-        let (cb, last_err, done) = (cb.clone(), last_err.clone(), done.clone());
+        let (cb, state) = (cb.clone(), state.clone());
         readers.push(std::thread::spawn(move || {
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
                 match parse_line(&line) {
-                    Some(ev @ Event::Done { .. }) => {
-                        *done.lock().unwrap() = true;
-                        cb(ev);
-                    }
+                    // Selesai baru dilaporkan setelah yt-dlp keluar dan hasilnya diperiksa.
+                    Some(Event::Done { path, .. }) => state.lock().unwrap().file = Some(path),
                     Some(ev) => cb(ev),
-                    None if line.contains("ERROR") => *last_err.lock().unwrap() = line.trim().chars().take(300).collect(),
-                    None => {}
+                    None => {
+                        let l = line.trim();
+                        if std::env::var_os("OVNER_DEBUG_YTDLP").is_some() {
+                            eprintln!("yt-dlp> {l}");
+                        }
+                        let mut st = state.lock().unwrap();
+                        // Catat langkah penting ke ovner.log untuk laporan masalah.
+                        let important = l.starts_with("WARNING") || l.starts_with("ERROR") || l.starts_with("[Merger]") || l.starts_with("[ExtractAudio]")
+                            || l.starts_with("[EmbedSubtitle]") || l.starts_with("[SubtitlesConvertor]") || l.starts_with("[VideoRemuxer]")
+                            || (l.starts_with("[info]") && (l.contains("format(s)") || l.contains("subtitle")));
+                        if important && st.logged < 40 {
+                            st.logged += 1;
+                            crate::log(&format!("yt-dlp: {}", l.chars().take(300).collect::<String>()));
+                        }
+                        let low = l.to_ascii_lowercase();
+                        if low.contains("ffmpeg is not installed") || low.contains("won't be merged") || low.contains("ffprobe and ffmpeg not found") || low.contains("ffmpeg not found") {
+                            st.fatal = Some("ffmpeg tidak terpakai: video dan audio/subtitle tidak bisa digabung".into());
+                        }
+                        if l.starts_with("ERROR") {
+                            st.last_err = l.trim_start_matches("ERROR: ").chars().take(300).collect();
+                        }
+                    }
                 }
             }
         }));
@@ -545,13 +665,43 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
             let _ = r.join();
         }
         let status = j2.0.lock().unwrap().as_mut().and_then(|c| c.wait().ok());
-        if !*done.lock().unwrap() {
-            let ok = status.is_some_and(|s| s.success());
-            let e = last_err.lock().unwrap().clone();
-            cb(Event::Done { ok: false, path: String::new(), error: if ok { "berkas tidak ditemukan".into() } else if e.is_empty() { "dibatalkan".into() } else { e } });
+        let ok = status.is_some_and(|s| s.success());
+        let mut st = state.lock().unwrap();
+        if let Ok(t) = std::fs::read_to_string(&result_file) {
+            if let Some(p) = t.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+                st.file = Some(p.to_string());
+            }
         }
+        let _ = std::fs::remove_file(&result_file);
+        let ev = match (&st.file, &st.fatal) {
+            (_, Some(f)) => Event::Done { ok: false, path: st.file.clone().unwrap_or_default(), error: f.clone() },
+            (Some(p), None) if ok && Path::new(p).exists() => Event::Done { ok: true, path: p.clone(), error: String::new() },
+            (Some(p), None) if ok => Event::Done { ok: false, path: p.clone(), error: "berkas hasil tidak ditemukan".into() },
+            _ => Event::Done {
+                ok: false,
+                path: st.file.clone().unwrap_or_default(),
+                error: if !st.last_err.is_empty() { st.last_err.clone() } else if ok { "berkas tidak ditemukan".into() } else { "dibatalkan".into() },
+            },
+        };
+        cb(ev);
     });
     Ok(job)
+}
+
+/// Resolusi dan codec video hasil unduhan (ffprobe), untuk dicatat dan dibandingkan dengan pilihan.
+pub fn probe_result(data: &Path, file: &Path) -> Option<(u64, String)> {
+    let exe = ffmpeg_dir(data).join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+    let exe = if exe.exists() { exe } else { PathBuf::from("ffprobe") };
+    let mut cmd = Command::new(exe);
+    cmd.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height,codec_name", "-of", "csv=p=0"]).arg(file);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    hide_window(&mut cmd);
+    let o = cmd.output().ok()?;
+    let line = String::from_utf8_lossy(&o.stdout).lines().next()?.trim().to_string();
+    let mut it = line.split(',');
+    let codec = it.next()?.to_string();
+    let h = it.next()?.trim().parse().ok()?;
+    Some((h, codec))
 }
 
 #[cfg(test)]
@@ -574,40 +724,89 @@ mod tests {
         assert_eq!(parse_line("[youtube] abc: Downloading webpage"), None);
     }
 
-    /// Uji ujung ke ujung (tanpa internet): halaman lokal berisi <video>, yt-dlp dan ffmpeg di
-    /// OVNER_VIDEO_E2E_DATA/tools, alamat halaman di OVNER_VIDEO_E2E_URL.
+    /// Uji ujung ke ujung (tanpa internet): yt-dlp dan ffmpeg di OVNER_VIDEO_E2E_DATA/tools.
+    /// OVNER_VIDEO_E2E_DASH = manifest DASH lokal (video 1080p+360p dan audio terpisah, seperti
+    /// YouTube); OVNER_VIDEO_E2E_SUBS = halaman lokal dengan <video> + <track> subtitle.
+    fn run_spec(data: &Path, spec: &Spec) -> Event {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _job = start(data, spec, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(90)).expect("kejadian") {
+                ev @ Event::Done { .. } => return ev,
+                _ => {}
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn video_e2e() {
         let data = PathBuf::from(std::env::var("OVNER_VIDEO_E2E_DATA").unwrap());
-        let url = std::env::var("OVNER_VIDEO_E2E_URL").unwrap();
+        let url = std::env::var("OVNER_VIDEO_E2E_DASH").unwrap();
         let info = probe(&data, &url).expect("probe");
         eprintln!("{info}");
         let out = data.join("out");
         let _ = std::fs::remove_dir_all(&out);
         for c in info["choices"].as_array().unwrap() {
             let key = c["key"].as_str().unwrap().to_string();
-            if !["v:best", "a:m4ax", "a:mp3:192", "a:flac"].contains(&key.as_str()) {
-                continue;
-            }
-            let spec = Spec { page: url.clone(), key: key.clone(), dir: out.display().to_string(), name: format!("tes {key}.mp4").replace(':', "_"), ..Default::default() };
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _job = start(&data, &spec, move |ev| {
-                let _ = tx.send(ev);
-            })
-            .unwrap();
-            let done = loop {
-                match rx.recv_timeout(std::time::Duration::from_secs(60)).expect("kejadian") {
-                    ev @ Event::Done { .. } => break ev,
-                    _ => {}
-                }
+            let spec = Spec {
+                page: url.clone(),
+                key: key.clone(),
+                fmt: c["fmt"].as_str().unwrap_or("").to_string(),
+                dir: out.display().to_string(),
+                name: format!("tes {key}.mp4").replace(':', "_"),
+                ..Default::default()
             };
-            eprintln!("{key}: {done:?}");
+            let done = run_spec(&data, &spec);
+            eprintln!("{key} ({}): {done:?}", spec.fmt);
             let Event::Done { ok, path, .. } = done else { unreachable!() };
             assert!(ok, "{key}");
             assert!(path.ends_with(&format!(".{}", ext_for(&key))), "{key}: {path}");
-            assert!(std::fs::metadata(&path).unwrap().len() > 1000);
+            if let Some(h) = key.strip_prefix("v:").and_then(|h| h.parse::<u64>().ok()) {
+                let (got, codec) = probe_result(&data, Path::new(&path)).expect("ffprobe");
+                assert_eq!(got, h, "{key}: tinggi hasil");
+                // Ada suara (video dan audio tergabung).
+                let o = Command::new(ffmpeg_dir(&data).join("ffprobe")).args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+                assert!(String::from_utf8_lossy(&o.stdout).contains("aac"), "{key}: audio ({codec})");
+            }
         }
+        // Tidak ada sisa berkas potongan (.f0.mp4, .m4a sementara).
+        let left: Vec<String> = std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.split('.').any(|p| p.len() > 1 && p.starts_with('f') && p[1..].chars().all(|c| c.is_ascii_digit()))).collect();
+        assert!(left.is_empty(), "{left:?}");
+
+        // Subtitle dimasukkan ke video, tanpa .srt tertinggal; dan versi berkas terpisah.
+        let page = std::env::var("OVNER_VIDEO_E2E_SUBS").unwrap();
+        let info = probe(&data, &page).expect("probe subs");
+        eprintln!("subs: {}", info["subs"]);
+        let lang = info["subs"][0]["lang"].as_str().expect("ada subtitle").to_string();
+        let sub_out = data.join("out-subs");
+        let _ = std::fs::remove_dir_all(&sub_out);
+        let spec = Spec { page: page.clone(), key: "v:best".into(), dir: sub_out.display().to_string(), name: "sub".into(), sub: lang.clone(), embed: true, ..Default::default() };
+        let Event::Done { ok, path, error } = run_spec(&data, &spec) else { unreachable!() };
+        assert!(ok, "{error}");
+        let o = Command::new(ffmpeg_dir(&data).join("ffprobe")).args(["-v", "error", "-select_streams", "s", "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+        assert!(String::from_utf8_lossy(&o.stdout).contains("mov_text"), "subtitle tertanam: {:?}", String::from_utf8_lossy(&o.stdout));
+        let srt: Vec<_> = std::fs::read_dir(&sub_out).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".srt")).collect();
+        assert!(srt.is_empty(), "srt tertinggal");
+        let spec2 = Spec { embed: false, name: "sub2".into(), ..spec };
+        let Event::Done { ok, .. } = run_spec(&data, &spec2) else { unreachable!() };
+        assert!(ok);
+        assert!(sub_out.join(format!("sub2.{lang}.srt")).exists(), "srt terpisah");
+    }
+
+    /// Tanpa ffmpeg: penggabungan tidak boleh dilaporkan berhasil.
+    #[test]
+    #[ignore]
+    fn video_without_ffmpeg_fails_clearly() {
+        let data = PathBuf::from(std::env::var("OVNER_VIDEO_E2E_NOFF").unwrap());
+        let url = std::env::var("OVNER_VIDEO_E2E_DASH").unwrap();
+        let spec = Spec { page: url, key: "v:1080".into(), fmt: "0+2".into(), dir: data.join("out").display().to_string(), name: "x".into(), ..Default::default() };
+        let Event::Done { ok, error, .. } = run_spec(&data, &spec) else { unreachable!() };
+        assert!(!ok);
+        assert!(error.contains("ffmpeg"), "{error}");
     }
 
     /// Dua penelusuran bersamaan saat yt-dlp belum ada (dulu: "Operation aborted 0x80004004").
@@ -647,18 +846,26 @@ mod tests {
         let list = c["choices"].as_array().unwrap();
         assert_eq!(list[0]["key"], "v:1080");
         assert_eq!(list[0]["size"], 249000000 + 12400000, "MP4 1080p + audio M4A");
+        assert_eq!(list[0]["fmt"], "137+140", "H.264 MP4 + M4A, bukan VP9");
+        assert_eq!(list[1]["fmt"], "18");
         assert_eq!(list[1]["key"], "v:360");
         assert_eq!(list[1]["size"], 44000000, "progresif: sudah ada suara");
         assert!(list.iter().any(|x| x["key"] == "a:opus" && x["size"] == 15320000));
         assert!(list.iter().any(|x| x["key"] == "a:mp3:320" && x["size"] == 30640000));
         let subs = c["subs"].as_array().unwrap();
         assert_eq!(subs.len(), 2, "en asli + id otomatis: {subs:?}");
-        let spec = Spec { page: "u".into(), key: "a:mp3:320".into(), dir: "d".into(), name: "a.mp4".into(), sub: "en".into(), embed: true };
+        let spec = Spec { page: "u".into(), key: "a:mp3:320".into(), dir: "d".into(), name: "a.mp4".into(), sub: "en".into(), embed: true, ..Default::default() };
         let a = args_for(&spec);
         assert!(a.windows(2).any(|w| w[0] == "--audio-quality" && w[1] == "320K"));
         assert!(!a.contains(&"--embed-subs".to_string()), "audio tanpa subtitle");
-        let v = Spec { key: "v:1080".into(), ..spec.clone() };
-        assert!(args_for(&v).contains(&"--embed-subs".to_string()));
+        let v = Spec { key: "v:1080".into(), fmt: "137+140".into(), ..spec.clone() };
+        let va = args_for(&v);
+        assert!(va.contains(&"--embed-subs".to_string()));
+        assert!(!va.contains(&"--write-subs".to_string()), "disematkan: .srt tidak disimpan terpisah");
+        assert!(va[1].starts_with("137+140/"), "{va:?}");
+        assert!(!va[1].contains("height<="), "tidak jatuh ke kualitas lebih rendah: {va:?}");
+        let w = Spec { embed: false, ..v.clone() };
+        assert!(args_for(&w).contains(&"--write-subs".to_string()));
         assert_eq!(strip_ext("Lagu.MP4"), "Lagu");
         assert_eq!(ext_for("a:mp3:0"), "mp3");
         assert!(!Spec { key: "a:m4a".into(), ..spec }.needs_ffmpeg());
