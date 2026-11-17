@@ -63,6 +63,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.7
+
+- **Kartu PDF SIPP tidak lagi membuat mesin WebView2 mati / macet di 0 KB.** PDF yang diubah
+  menjadi unduhan kini langsung diteruskan dari respons yang sudah ada, tanpa ditahan untuk diuji
+  mesin unduh Ovner (pengujian itu membuat server membuat ulang PDF ±20–30 detik).
+- **Saat mesin WebView2 mati, Ovner dibuka ulang sekali saja** (dulu tiap tab membuka ulang
+  sendiri sehingga muncul 5 jendela).
+- **Catatan unduhan disimpan sejak unduhan dimulai** (tidak hilang bila Ovner mati), dan sisa
+  berkas setengah jadi (`.ovnerpart`, `.crdownload`) dari unduhan yang terputus dihapus saat
+  Ovner dibuka lagi.
+
 ## Perbaikan 0.8.6
 
 - **Unduhan Parrot tidak lagi batal di ±2,2 GB.** CDN mirror Parrot (bunny.deb.parrot.sh)

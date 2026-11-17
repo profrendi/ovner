@@ -515,6 +515,8 @@ struct App {
     dl_render_at: Instant,
     dl_page_at: Instant,
     dl_meta: HashMap<u64, DlMeta>,
+    /// Sedang membuka ulang Ovner (setelah mesin WebView2 mati).
+    restarting: bool,
     /// Unduhan yang dibatalkan saat masih menguji server.
     dl_cancelled: HashSet<u64>,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
@@ -805,11 +807,18 @@ fn build_tab_view(
     let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
     // PDF besar langsung diunduh (setelan "pdf_download").
     if tenv.settings.borrow().pdf_download && !private {
-        let st = tenv.settings.clone();
+        let (st, skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
         win::pdf_downloads(&wv, move |url, len| {
             let min = st.borrow().pdf_download_mb as u64 * 1_048_576;
             // Ukuran tidak diketahui (PDF dibuat di server): unduh bila alamatnya jelas unduhan.
-            st.borrow().pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min)
+            let yes = st.borrow().pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min);
+            if yes {
+                // PDF buatan server (mis. kartu SIPP) langsung diteruskan WebView2 dari respons
+                // yang sudah ada. Diuji ulang oleh mesin unduh berarti server membuat ulang PDF
+                // (±20 detik) sementara unduhan ditahan, dan dulu itu membuat mesin WebView2 mati.
+                skip.borrow_mut().insert(url.to_string());
+            }
+            yes
         });
     }
     win::on_download(
@@ -1967,6 +1976,8 @@ impl App {
 
     /// Unduhan baru dimulai: catat waktu dan cari server (IP, negara, kota, jarak) di latar.
     fn download_started(&mut self, id: u64) {
+        // Catat sekarang juga, supaya tidak hilang bila Ovner mati sebelum unduhan selesai.
+        self.save_downloads();
         let meta = self.dl_meta.entry(id).or_default();
         if meta.started.is_none() {
             meta.started = Some(Instant::now());
@@ -5041,6 +5052,11 @@ fn main() {
             for d in &mut v {
                 if d.state == "progress" || d.state == "paused" {
                     d.state = "failed".into();
+                    // Sisa berkas setengah jadi (.ovnerpart/.crdownload) tidak bisa dilanjutkan:
+                    // jangan biarkan memakan ruang disk (mis. 4 GB Parrot).
+                    if !d.path.is_empty() && !Path::new(&d.path).exists() {
+                        delete_download_files(&d.path);
+                    }
                 }
             }
             v
@@ -5051,6 +5067,7 @@ fn main() {
         dl_render_at: Instant::now(),
         dl_page_at: Instant::now(),
         dl_meta: HashMap::new(),
+        restarting: false,
         dl_cancelled: HashSet::new(),
         bm_edit: None,
         bm_edit_from: None,
@@ -5511,11 +5528,17 @@ fn main() {
         if app.quit_requested {
             quit = true;
         }
-        if restart {
+        // Mesin WebView2 mati: semua tab melapor gagal sekaligus. Buka ulang Ovner sekali saja
+        // (dulu tiap tab membuka ulang sendiri sehingga muncul 5 jendela Ovner).
+        if restart && !app.restarting {
+            app.restarting = true;
             app.save_session();
+            app.save_downloads();
             if let Ok(exe) = std::env::current_exe() {
                 let _ = std::process::Command::new(exe).arg("--restarted").spawn();
             }
+            quit = true;
+        } else if restart {
             quit = true;
         }
         if quit {
