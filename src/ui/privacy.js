@@ -8,6 +8,9 @@
   const cfg = window.__ovnerCfg || {};
   const internal = /^(ovner:|https?:\/\/ovner\.)/.test(location.href);
   if (internal) return;
+  // Frame pemeriksaan "bukan robot": jangan samarkan layar/WebView2 (lihat farble.js).
+  if (/(^|\.)(challenges\.cloudflare\.com|hcaptcha\.com|recaptcha\.net)$/.test(location.hostname) ||
+      (/(^|\.)google\.com$/.test(location.hostname) && location.pathname.startsWith("/recaptcha"))) return;
   // Situs video: jangan ubah rasio piksel, ukuran layar, dan timer (pemutar memilih
   // resolusi dan menjadwalkan bingkai dari nilai-nilai ini).
   const media = /(^|\.)(youtube|youtube-nocookie|googlevideo|ytimg|twitch|netflix|primevideo|disneyplus|hotstar|vidio|viu|iq|wetv|dailymotion|vimeo)\.(com|tv|id)$/.test(location.hostname);

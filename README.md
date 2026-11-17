@@ -63,6 +63,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.2
+
+- **Menu klik kanan bookmark** di bilah dan menu folder: Buka di tab baru, Edit…, Ganti nama
+  folder, Potong, Salin, Tempel (juga ke folder lain), Hapus. Tombol **Delete**, Ctrl+X, dan
+  Ctrl+C bekerja pada bookmark yang sedang ditunjuk. Salinan bookmark bisa ada di beberapa folder.
+- **Login dengan pemeriksaan "bukan robot"** (Cloudflare Turnstile, mis. EDABU BPJS Kesehatan;
+  hCaptcha; reCAPTCHA): frame pemeriksaannya tidak lagi diacak sidik jarinya, karena nilai acak
+  dianggap bot sehingga login harus diulang berkali-kali.
+- **Rekam masalah tidak berhenti setelah halaman pertama**: DevTools dihidupkan lagi tiap pindah
+  halaman (Chromium bisa memindah halaman ke proses lain).
+
 ## Perbaikan 0.8.1
 
 - **Rekam masalah lebih lengkap untuk login/logout macet**: mencatat setiap pindah halaman

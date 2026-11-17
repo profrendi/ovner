@@ -7,6 +7,11 @@
   "use strict";
   const cfg = window.__ovnerCfg;
   if (!cfg || cfg.farbling === "off" || window.__ovnerFarbled) return;
+  // Pemeriksaan "bukan robot" (Cloudflare Turnstile, hCaptcha, reCAPTCHA) membaca sidik jari
+  // dan menganggap nilai yang diacak sebagai bot, sehingga login (mis. EDABU BPJS) gagal
+  // berulang kali. Frame pemeriksaan ini dibiarkan apa adanya.
+  if (/(^|\.)(challenges\.cloudflare\.com|hcaptcha\.com|recaptcha\.net)$/.test(location.hostname) ||
+      (/(^|\.)google\.com$/.test(location.hostname) && location.pathname.startsWith("/recaptcha"))) return;
   try { Object.defineProperty(window, "__ovnerFarbled", { value: true }); } catch (e) { return; }
 
   // Situs puncak (tab), juga dari dalam iframe lintas situs.

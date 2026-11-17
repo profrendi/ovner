@@ -821,6 +821,13 @@ mod imp {
                 }
             }
         }
+        record_enable(webview);
+    }
+
+    /// Hidupkan lagi domain DevTools untuk Rekam masalah. Perlu di setiap pindah halaman: saat
+    /// Chromium memindah halaman ke proses lain, domain yang dihidupkan sebelumnya hilang dan
+    /// rekaman berhenti (laporan EDABU hanya berisi baris NAV setelah halaman pertama).
+    pub fn record_enable(webview: &wry::WebView) {
         for m in ["Runtime.enable", "Log.enable", "Network.enable", "Audits.enable"] {
             cdp(webview, m, "{}");
         }
@@ -1339,6 +1346,7 @@ mod imp {
     pub fn on_window_close(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn clip_webview(_webview: &wry::WebView, _rects: &[(i32, i32, i32, i32)]) {}
     pub fn record_problems(_webview: &wry::WebView, _cb: impl Fn(&str, String) + 'static) {}
+    pub fn record_enable(_webview: &wry::WebView) {}
     pub fn read_clipboard() -> Option<String> {
         None
     }

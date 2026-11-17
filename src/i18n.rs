@@ -127,6 +127,7 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         "d.about_check" => ("\n\nPeriksa update sekarang?", "\n\nCheck for updates now?"),
         "d.checking" => ("Memeriksa update…", "Checking for updates…"),
         "d.video_tools" => ("Menyiapkan komponen {t} (sekali saja)…", "Preparing component {t} (one time)…"),
+        "d.bm_folder_del" => ("Hapus folder \"{f}\" beserta {n} bookmark di dalamnya?", "Delete the folder \"{f}\" and the {n} bookmarks inside it?"),
         "sh.record" => ("● Mulai rekam masalah halaman ini", "● Start recording problems on this page"),
         "sh.record_stop" => ("■ Selesai rekam dan salin laporan ({n} kejadian)", "■ Finish recording and copy report ({n} events)"),
         "sh.record_copy" => ("Salin laporan masalah halaman", "Copy page problem report"),

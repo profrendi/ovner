@@ -316,10 +316,26 @@ impl Store {
         scored.into_iter().take(limit).map(|(_, t, u, bm)| (t, u, bm)).collect()
     }
 
+    /// Ganti judul bookmark `url` yang ada di folder `folder`.
+    pub fn rename_bookmark_in(&mut self, url: &str, folder: &str, title: &str) {
+        if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url && b.folder == folder) {
+            b.title = if title.trim().is_empty() { url.to_string() } else { title.trim().to_string() };
+            write(&self.bookmarks_path, &self.bookmarks);
+        }
+    }
+
     pub fn rename_bookmark(&mut self, url: &str, title: &str) {
         if let Some(b) = self.bookmarks.iter_mut().find(|b| b.url == url) {
             b.title = if title.trim().is_empty() { url.to_string() } else { title.trim().to_string() };
             write(&self.bookmarks_path, &self.bookmarks);
+        }
+    }
+
+    /// Hapus satu bookmark: alamat `url` di folder `folder` saja (salinannya di folder lain tetap).
+    pub fn remove_bookmark_in(&mut self, url: &str, folder: &str) {
+        if let Some(i) = self.bookmarks.iter().position(|b| b.url == url && b.folder == folder) {
+            self.bookmarks.remove(i);
+            self.save_bookmarks();
         }
     }
 
@@ -431,14 +447,24 @@ impl Store {
     /// tepat sebelum bookmark `before_url` atau folder `before_folder` di sana; tanpa keduanya
     /// diletakkan di akhir folder itu. Dipakai untuk seret-dan-lepas seperti di Chrome/Brave.
     pub fn move_item(&mut self, url: Option<&str>, folder: Option<&str>, dest: &str, before_url: Option<&str>, before_folder: Option<&str>) {
+        self.relocate(url, None, folder, dest, before_url, before_folder, false);
+    }
+
+    /// Seperti [`Store::move_item`], tetapi bisa memilih bookmark di folder tertentu (`from`, untuk
+    /// alamat yang ada di beberapa folder) dan bisa menyalin (`copy`) alih-alih memindah.
+    #[allow(clippy::too_many_arguments)]
+    pub fn relocate(&mut self, url: Option<&str>, from: Option<&str>, folder: Option<&str>, dest: &str, before_url: Option<&str>, before_folder: Option<&str>, copy: bool) {
         let dest = dest.trim_matches('/');
         let inside = |f: &str, p: &str| f == p || f.starts_with(&format!("{p}/"));
         // Ambil yang dipindah (urutan relatifnya tetap) dan tentukan foldernya yang baru.
         let mut moving: Vec<Bookmark> = Vec::new();
         match (url, folder) {
             (Some(u), _) => {
-                let Some(i) = self.bookmarks.iter().position(|b| b.url == u) else { return };
-                let mut b = self.bookmarks.remove(i);
+                let Some(i) = self.bookmarks.iter().position(|b| b.url == u && from.is_none_or(|f| b.folder == f)) else { return };
+                let mut b = if copy { self.bookmarks[i].clone() } else { self.bookmarks.remove(i) };
+                if copy && b.folder == dest {
+                    return; // salinan di folder yang sama tidak berguna
+                }
                 b.folder = dest.to_string();
                 moving.push(b);
             }
@@ -450,12 +476,18 @@ impl Store {
                 let name = p.rsplit('/').next().unwrap_or(p);
                 let new = if dest.is_empty() { name.to_string() } else { format!("{dest}/{name}") };
                 let re = |f: &str| -> String { format!("{new}{}", &f[p.len()..]) };
+                if copy && new == p {
+                    return;
+                }
                 let mut keep = Vec::new();
                 for b in std::mem::take(&mut self.bookmarks) {
                     if inside(&b.folder, p) {
-                        let mut b = b;
-                        b.folder = re(&b.folder);
-                        moving.push(b);
+                        let mut c = b.clone();
+                        c.folder = re(&b.folder);
+                        moving.push(c);
+                        if copy {
+                            keep.push(b);
+                        }
                     } else {
                         keep.push(b);
                     }
@@ -465,6 +497,9 @@ impl Store {
                 for f in std::mem::take(&mut self.folders) {
                     if inside(&f, p) {
                         fs.push(re(&f));
+                        if copy {
+                            self.folders.push(f);
+                        }
                     } else {
                         self.folders.push(f);
                     }
@@ -716,6 +751,14 @@ mod tests {
         // Folder Kerja ke depan, sebelum folder HR.
         s.move_item(None, Some("Kerja"), "", None, Some("HR"));
         assert_eq!(order(&s), "c@,k1@Kerja,a@Kerja,k2@HR,b@");
+        // Salin (bukan pindah) a ke HR, lalu hapus hanya salinan di Kerja.
+        s.relocate(Some("https://a.id/"), Some("Kerja"), None, "HR", None, None, true);
+        assert_eq!(order(&s), "c@,k1@Kerja,a@Kerja,k2@HR,a@HR,b@");
+        s.remove_bookmark_in("https://a.id/", "Kerja");
+        assert_eq!(order(&s), "c@,k1@Kerja,k2@HR,a@HR,b@");
+        // Salin folder HR ke dalam Kerja.
+        s.relocate(None, None, Some("HR"), "Kerja", None, None, true);
+        assert_eq!(order(&s), "c@,k1@Kerja,k2@Kerja/HR,a@Kerja/HR,k2@HR,a@HR,b@");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

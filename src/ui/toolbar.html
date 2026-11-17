@@ -182,6 +182,16 @@
   .bmm .r.dropT { box-shadow: inset 0 2px 0 var(--accent); }
   .bmm .r.dropB { box-shadow: inset 0 -2px 0 var(--accent); }
   .bm.dragging, .bmm .r.dragging { opacity: .45; }
+  /* Menu klik kanan bookmark (seperti Brave): Edit, Potong, Salin, Tempel, Hapus. */
+  #bmctx { position: absolute; display: none; min-width: 230px; background: var(--bar); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 8px 24px #0006; padding: 5px; color: var(--text); font-size: 13px; z-index: 30; }
+  #bmctx.show { display: block; }
+  #bmctx .ci { display: flex; justify-content: space-between; gap: 24px; height: 30px; align-items: center; padding: 0 14px; border-radius: 5px; cursor: default; }
+  #bmctx .ci:hover { background: var(--field); }
+  #bmctx .ci.off { opacity: .4; pointer-events: none; }
+  #bmctx .ci kbd { font: inherit; color: var(--muted); font-size: 12px; }
+  #bmctx hr { border: 0; border-top: 1px solid var(--line); margin: 5px 2px; }
+  .bm.cut, .bmm .r.cut { opacity: .5; }
   #darkpanel h3 { margin: 0 0 2px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
   #darkpanel .site { color: var(--muted); font-size: 12px; margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #darkpanel .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
@@ -243,7 +253,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="bmdlg"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -257,7 +267,7 @@
       vidMp4: "MP4", vidNote1: "Memakai yt-dlp. Pertama kali, Ovner mengunduh komponen yt-dlp (~18 MB)", vidNote2: " dan ffmpeg (~90 MB) untuk 1080p", vidNoteFf: "Untuk 1080p, Ovner mengunduh ffmpeg (~90 MB) sekali", vidNote3: ". Gunakan hanya untuk video yang boleh Anda simpan.",
       darkTitle: "Mode gelap (seperti Dark Reader)", dark: "Mode gelap", darkSite: "Situs:", darkNoSite: "Buka sebuah situs untuk mengatur per situs.", darkDefault: "Ikut umum", darkOn: "Nyala", darkOff: "Mati",
       darkAll: "Semua situs", darkAllOff: "Mati", darkAllOn: "Nyala", darkAllSys: "Ikut tema Windows", darkEngine: "Cara", engDyn: "Dinamis (Dark Reader)", engFilter: "Filter (cepat)", engChromium: "Chromium (paling ringan)",
-      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", bmAdded: "Bookmark ditambahkan", bmEditT: "Edit bookmark", bmName: "Nama", bmFolder: "Folder", bmDone: "Selesai", bmRemove: "Hapus", bmBar: "Bilah bookmark", dlSpeed: "Kecepatan", dlEta: "Sisa waktu", dlElapsed: "Berjalan", dlConns: "Koneksi", dlConnecting: "Menghubungkan…", dlServer: "Server", dlCalc: "menghitung…", dlVideo: "video", dlWv: "1 (WebView2)", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", cxNewTab: "Buka di tab baru", cxEdit: "Edit…", cxRename: "Ganti nama…", cxCut: "Potong", cxCopy: "Salin", cxPaste: "Tempel", cxDelete: "Hapus", cxFolderName: "Nama folder", cxRenameT: "Ganti nama folder", bmAdded: "Bookmark ditambahkan", bmEditT: "Edit bookmark", bmName: "Nama", bmFolder: "Folder", bmDone: "Selesai", bmRemove: "Hapus", bmBar: "Bilah bookmark", dlSpeed: "Kecepatan", dlEta: "Sisa waktu", dlElapsed: "Berjalan", dlConns: "Koneksi", dlConnecting: "Menghubungkan…", dlServer: "Server", dlCalc: "menghitung…", dlVideo: "video", dlWv: "1 (WebView2)", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
@@ -268,7 +278,7 @@
       vidMp4: "MP4", vidNote1: "Uses yt-dlp. The first time, Ovner downloads the yt-dlp component (~18 MB)", vidNote2: " and ffmpeg (~90 MB) for 1080p", vidNoteFf: "For 1080p, Ovner downloads ffmpeg (~90 MB) once", vidNote3: ". Only use it for videos you are allowed to save.",
       darkTitle: "Dark mode (like Dark Reader)", dark: "Dark mode", darkSite: "Site:", darkNoSite: "Open a site to set it per site.", darkDefault: "Use default", darkOn: "On", darkOff: "Off",
       darkAll: "All sites", darkAllOff: "Off", darkAllOn: "On", darkAllSys: "Follow Windows theme", darkEngine: "Method", engDyn: "Dynamic (Dark Reader)", engFilter: "Filter (fast)", engChromium: "Chromium (lightest)",
-      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", bmAdded: "Bookmark added", bmEditT: "Edit bookmark", bmName: "Name", bmFolder: "Folder", bmDone: "Done", bmRemove: "Remove", bmBar: "Bookmarks bar", dlSpeed: "Speed", dlEta: "Time left", dlElapsed: "Elapsed", dlConns: "Connections", dlConnecting: "Connecting…", dlServer: "Server", dlCalc: "calculating…", dlVideo: "video", dlWv: "1 (WebView2)", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", cxNewTab: "Open in new tab", cxEdit: "Edit…", cxRename: "Rename…", cxCut: "Cut", cxCopy: "Copy", cxPaste: "Paste", cxDelete: "Delete", cxFolderName: "Folder name", cxRenameT: "Rename folder", bmAdded: "Bookmark added", bmEditT: "Edit bookmark", bmName: "Name", bmFolder: "Folder", bmDone: "Done", bmRemove: "Remove", bmBar: "Bookmarks bar", dlSpeed: "Speed", dlEta: "Time left", dlElapsed: "Elapsed", dlConns: "Connections", dlConnecting: "Connecting…", dlServer: "Server", dlCalc: "calculating…", dlVideo: "video", dlWv: "1 (WebView2)", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -530,9 +540,10 @@
   }
   function renderBmDlg() {
     const d = $("bmdlg"), e = state.bmEdit;
-    if (!e) { if (d.classList.contains("show")) { d.classList.remove("show"); bmDlgKey = ""; sendHeight(); } return; }
+    if (!e) { if (d.classList.contains("show") && !d.dataset.folder) { d.classList.remove("show"); bmDlgKey = ""; sendHeight(); } return; }
     const key = JSON.stringify([e.url, e.folders, state.lang]);
     if (key === bmDlgKey) return;
+    d.dataset.folder = "";
     bmDlgKey = key;
     hideOmni(); closeDark(); closeVid(); closeBm();
     d.innerHTML = `<div class="pic"></div><div class="fm"><h3><span></span><button class="x">×</button></h3>
@@ -559,6 +570,84 @@
     sendHeight();
     setTimeout(() => { inp.focus(); inp.select(); }, 30);
   }
+
+  // ---- Menu klik kanan bookmark (bilah dan menu folder) + tombol Delete ----
+  // `it`: {url, title, from} untuk bookmark atau {folder} untuk folder; `after()`: tempat
+  // "Tempel" (sesudah item ini) → {dest, beforeUrl, beforeFolder}; `into`: folder tujuan bila
+  // item ini folder.
+  let clip = null, hoverIt = null;
+  function ctxClose() { const c = $("bmctx"); if (c.classList.contains("show")) { c.classList.remove("show"); sendHeight(); } }
+  function bmDelete(it) {
+    if (it.url) send({ cmd: "bm-delete", url: it.url, from: it.from || "" });
+    else if (it.folder) send({ cmd: "bm-delete", folder: it.folder });
+  }
+  function renameFolder(path) {
+    const d = $("bmdlg");
+    hideOmni(); closeDark(); closeVid(); closeBm();
+    d.dataset.folder = "1";
+    d.innerHTML = `<div class="fm"><h3><span></span><button class="x">×</button></h3><label><span></span><input></label><div class="bb"><button class="pri dn"></button></div></div>`;
+    d.querySelector("h3 span").textContent = W.cxRenameT;
+    d.querySelector("label span").textContent = W.cxFolderName;
+    const inp = d.querySelector("input"); inp.value = path.split("/").pop();
+    const close = () => { d.classList.remove("show"); d.dataset.folder = ""; bmDlgKey = ""; sendHeight(); };
+    const done = () => { send({ cmd: "bm-folder-rename", path, name: inp.value }); close(); };
+    d.querySelector(".dn").textContent = W.bmDone; d.querySelector(".dn").onclick = done;
+    d.querySelector(".x").onclick = close;
+    inp.onkeydown = (ev) => { if (ev.key === "Enter") done(); if (ev.key === "Escape") close(); };
+    const star = $("star").getBoundingClientRect();
+    d.style.right = Math.max(8, innerWidth - star.right - 8) + "px";
+    d.classList.add("show"); sendHeight();
+    setTimeout(() => { inp.focus(); inp.select(); }, 30);
+  }
+  function ctxMenu(ev, it, after, into) {
+    ev.preventDefault(); ev.stopPropagation();
+    const c = $("bmctx"); c.textContent = "";
+    const add = (label, fn, on = true, key = "") => {
+      const r = document.createElement("div"); r.className = "ci" + (on ? "" : " off");
+      r.innerHTML = "<span></span><kbd></kbd>"; r.firstChild.textContent = label; r.lastChild.textContent = key;
+      r.onmousedown = (e) => e.preventDefault();
+      r.onclick = () => { ctxClose(); fn(); };
+      c.append(r);
+    };
+    const sep = () => c.append(document.createElement("hr"));
+    const pasteAt = into ? { dest: into } : after ? after() : { dest: "" };
+    const paste = () => {
+      if (!clip) return;
+      send({ cmd: "bm-paste", mode: clip.mode, url: clip.url || "", from: clip.from || "", folder: clip.folder || "", dest: pasteAt.dest,
+        beforeUrl: pasteAt.beforeUrl || "", beforeFolder: pasteAt.beforeFolder || "" });
+      if (clip.mode === "cut") clip = null;
+    };
+    if (it && it.url) {
+      add(W.cxNewTab, () => send({ cmd: "open", url: it.url, newtab: true }));
+      sep();
+      add(W.cxEdit, () => { closeBm(); send({ cmd: "bm-edit-open", url: it.url, from: it.from || "" }); });
+    } else if (it && it.folder) {
+      add(W.cxRename, () => renameFolder(it.folder));
+    }
+    if (it) {
+      sep();
+      add(W.cxCut, () => { clip = { mode: "cut", ...it }; }, true, "Ctrl+X");
+      add(W.cxCopy, () => { clip = { mode: "copy", ...it }; if (it.url) send({ cmd: "copy-text", text: it.url }); }, true, "Ctrl+C");
+    }
+    add(W.cxPaste, paste, !!clip, "Ctrl+V");
+    if (it) { sep(); add(W.cxDelete, () => bmDelete(it), true, "Del"); }
+    c.classList.add("show");
+    const ovTop = $("ov").getBoundingClientRect().top;
+    const w = c.offsetWidth;
+    c.style.left = Math.max(4, Math.min(ev.clientX, innerWidth - w - 4)) + "px";
+    c.style.top = Math.max(0, ev.clientY - ovTop) + "px";
+    hoverIt = it;
+    sendHeight();
+  }
+  document.addEventListener("mousedown", (e) => { if (!e.target.closest("#bmctx")) ctxClose(); }, true);
+  // Delete/Ctrl+X/Ctrl+C/Ctrl+V pada bookmark yang sedang ditunjuk (di bilah atau menu folder).
+  window.addEventListener("keydown", (e) => {
+    if (!hoverIt || (e.target instanceof HTMLInputElement) || (e.target instanceof HTMLSelectElement)) return;
+    if (e.key === "Delete") { e.preventDefault(); ctxClose(); bmDelete(hoverIt); hoverIt = null; }
+    else if (e.ctrlKey && e.key.toLowerCase() === "x") { e.preventDefault(); clip = { mode: "cut", ...hoverIt }; }
+    else if (e.ctrlKey && e.key.toLowerCase() === "c") { e.preventDefault(); clip = { mode: "copy", ...hoverIt }; if (hoverIt.url) send({ cmd: "copy-text", text: hoverIt.url }); }
+  });
+  window.addEventListener("blur", ctxClose);
 
   // ---- Seret-dan-lepas bookmark di bilah dan menu folder (keluar/masuk folder) ----
   let drag = null, hoverTimer = 0;
@@ -598,6 +687,14 @@
   // Bilah: kiri/kanan item = sebelum/sesudah; tengah folder = masuk ke folder.
   function barDnD(el, item, index) {
     dragItem(el, item);
+    const it = item.url ? { url: item.url, from: "" } : { folder: item.folder };
+    const after = () => {
+      const next = [...$("bmitems").children].filter((c) => c.dataset.i || c.dataset.f)[index + 1];
+      return next ? { dest: "", beforeUrl: next.__item.url, beforeFolder: next.__item.folder } : { dest: "" };
+    };
+    el.addEventListener("contextmenu", (ev) => ctxMenu(ev, it, after, item.folder));
+    el.addEventListener("mouseenter", () => { hoverIt = it; });
+    el.addEventListener("mouseleave", () => { if (hoverIt === it && !$("bmctx").classList.contains("show")) hoverIt = null; });
     dropZone(el, (ev) => {
       const r = el.getBoundingClientRect(), x = (ev.clientX - r.left) / r.width;
       if (item.folder && x > 0.25 && x < 0.75) return { dest: item.folder, cls: "dropIn", open: () => openBmMenu(el, () => folderEntries(item.folder)) };
@@ -611,6 +708,11 @@
   function menuDnD(row, e, parent, list, idx) {
     const item = e.f ? { folder: e.f } : { url: e.b.url };
     dragItem(row, item);
+    const it = e.f ? { folder: e.f } : { url: e.b.url, from: e.b.folder };
+    const after = () => { const n = list[idx + 1]; return n ? { dest: parent, beforeUrl: n.b && n.b.url, beforeFolder: n.f } : { dest: parent }; };
+    row.addEventListener("contextmenu", (ev) => ctxMenu(ev, it, after, e.f));
+    row.addEventListener("mouseenter", () => { hoverIt = it; });
+    row.addEventListener("mouseleave", () => { if (hoverIt === it && !$("bmctx").classList.contains("show")) hoverIt = null; });
     dropZone(row, (ev) => {
       const r = row.getBoundingClientRect(), y = (ev.clientY - r.top) / r.height;
       if (e.f && y > 0.25 && y < 0.75) return { dest: e.f, cls: "dropIn" };
@@ -619,6 +721,7 @@
       return n ? { dest: parent, beforeUrl: n.b && n.b.url, beforeFolder: n.f, cls: "dropB" } : { dest: parent, cls: "dropB" };
     });
   }
+  $("bmitems").addEventListener("contextmenu", (ev) => { if (ev.target === $("bmitems")) ctxMenu(ev, null, null, ""); });
   // Ruang kosong bilah = taruh di akhir bilah.
   dropZone($("bmitems"), (ev) => (ev.target === $("bmitems") ? { dest: "", cls: "dropIn" } : null));
   dropZone($("bmother"), () => ({ dest: "@other", cls: "dropIn", open: () => openBmMenu($("bmother"), () => folderEntries("@other")) }));
@@ -925,13 +1028,14 @@
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
     const dp = Math.max($("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0,
       $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0,
-      $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0);
+      $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
+      $("bmctx").classList.contains("show") ? $("bmctx").offsetTop + $("bmctx").offsetHeight + 12 : 0);
     let bm = 0;
     for (const p of document.querySelectorAll("#bmmenus .bmm")) bm = Math.max(bm, p.offsetTop + p.offsetHeight + 12);
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
     // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
     const rects = [];
-    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), $("bmdlg"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
       if (!el || !el.offsetParent || !el.offsetWidth) continue;
       const r = el.getBoundingClientRect();
       rects.push([r.left, r.top, r.width, r.height + 10]);

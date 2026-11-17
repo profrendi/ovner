@@ -400,6 +400,7 @@ struct Tab {
     popup: bool,
     /// Perekam masalah halaman menyala untuk tab ini.
     recording: bool,
+    rec_hooked: bool,
 }
 
 /// Statistik penghemat tab (seperti Lifetime Stats TabWars), disimpan di tab-stats.json.
@@ -497,6 +498,8 @@ struct App {
     dl_cancelled: HashSet<u64>,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
     bm_edit: Option<(String, bool)>,
+    /// Folder bookmark yang sedang diedit (alamat yang sama bisa ada di beberapa folder).
+    bm_edit_from: Option<String>,
     /// Folder terakhir yang dipilih di kotak bookmark (bookmark baru masuk ke sana).
     last_bm_folder: String,
     record_at: Instant,
@@ -1121,6 +1124,7 @@ impl App {
             recent_urls: Vec::new(),
             popup: false,
             recording: false,
+            rec_hooked: false,
         }
     }
 
@@ -1651,7 +1655,8 @@ impl App {
             "dlBubble": self.dl_bubble,
             "dlV2": self.settings.borrow().dl_box_v2,
             "bmEdit": self.bm_edit.as_ref().and_then(|(u, fresh)| {
-                let b = self.store.bookmarks.iter().find(|b| &b.url == u)?;
+                let from = self.bm_edit_from.as_deref();
+                let b = self.store.bookmarks.iter().find(|b| &b.url == u && from.is_none_or(|f| b.folder == f))?;
                 Some(json!({"url": b.url, "title": b.title, "folder": b.folder, "fresh": fresh, "folders": self.store.all_folders()}))
             }),
             "pwOffer": self.pw_offer.as_ref().map(|(u, user, _, update)| json!({"site": vault::site_of(u), "user": user, "update": update})),
@@ -3672,11 +3677,14 @@ impl App {
                 if let Some((u, _)) = self.bm_edit.take() {
                     let title = msg["title"].as_str().unwrap_or("").to_string();
                     let folder = msg["folder"].as_str().unwrap_or("").to_string();
-                    let moved = self.store.bookmarks.iter().find(|b| b.url == u).is_some_and(|b| b.folder != folder);
-                    if moved {
-                        self.store.move_item(Some(&u), None, &folder, None, None);
+                    let from = self.bm_edit_from.take();
+                    let cur = self.store.bookmarks.iter().find(|b| b.url == u && from.as_deref().is_none_or(|f| b.folder == f)).map(|b| b.folder.clone());
+                    if let Some(cur) = cur {
+                        if cur != folder {
+                            self.store.relocate(Some(&u), Some(&cur), None, &folder, None, None, false);
+                        }
                     }
-                    self.store.rename_bookmark(&u, &title);
+                    self.store.rename_bookmark_in(&u, &folder, &title);
                     self.last_bm_folder = folder;
                     self.bookmarks_changed();
                 }
@@ -3695,6 +3703,43 @@ impl App {
             }
             "bm-move" => {
                 self.move_bookmark(&msg);
+            }
+            // Menu klik kanan bookmark di bilah/menu folder: Edit, Potong/Salin/Tempel, Hapus.
+            "copy-text" => win::set_clipboard(msg["text"].as_str().unwrap_or("")),
+            "bm-edit-open" => {
+                let url = msg["url"].as_str().unwrap_or("").to_string();
+                if !url.is_empty() {
+                    self.bm_edit_from = msg["from"].as_str().map(str::to_string);
+                    self.bm_edit = Some((url, false));
+                    self.dl_bubble = false;
+                    self.last_render_key.clear();
+                    self.render();
+                }
+            }
+            "bm-folder-rename" => {
+                self.store.rename_folder(msg["path"].as_str().unwrap_or(""), msg["name"].as_str().unwrap_or(""));
+                self.bookmarks_changed();
+            }
+            "bm-delete" => {
+                let g = |k: &str| msg[k].as_str().unwrap_or("").to_string();
+                if !g("url").is_empty() {
+                    self.store.remove_bookmark_in(&g("url"), &g("from"));
+                    self.bookmarks_changed();
+                } else if !g("folder").is_empty() {
+                    let f = g("folder");
+                    let n = self.store.bookmarks.iter().filter(|b| b.folder == f || b.folder.starts_with(&format!("{f}/"))).count();
+                    let name = f.rsplit('/').next().unwrap_or(&f).to_string();
+                    if n == 0 || win::confirm(&tf(self.lang, "d.bm_folder_del", &[("f", &name), ("n", &n.to_string())])) {
+                        self.store.remove_folder(&f);
+                        self.bookmarks_changed();
+                    }
+                }
+            }
+            "bm-paste" => {
+                let g = |k: &str| msg[k].as_str().filter(|v| !v.is_empty());
+                let copy = msg["mode"] == "copy";
+                self.store.relocate(g("url"), g("from"), g("folder"), msg["dest"].as_str().unwrap_or(""), g("beforeUrl"), g("beforeFolder"), copy);
+                self.bookmarks_changed();
             }
             "video-dl" => {
                 let choice = msg["fmt"].as_str().unwrap_or("best").to_string();
@@ -4123,6 +4168,7 @@ impl App {
                             self.store.add_bookmark(&ti, &u, &f);
                         }
                         self.bm_edit = Some((u, fresh));
+                        self.bm_edit_from = None;
                         self.dl_bubble = false;
                         self.refresh_pages("bookmarks");
                         self.last_render_key.clear();
@@ -4346,8 +4392,14 @@ impl App {
                     self.tabs[a].recording = true;
                     let (p, id) = (self.proxy.clone(), self.tabs[a].id);
                     let wv = self.tabs[a].webview.as_ref().unwrap();
-                    win::record_problems(wv, move |name, j| send(&p, UserEvent::Problem(id, name.to_string(), j)));
+                    // Langganan kejadian cukup sekali per tab (memulai lagi tidak menggandakan).
+                    if self.tabs[a].rec_hooked {
+                        win::record_enable(wv);
+                    } else {
+                        win::record_problems(wv, move |name, j| send(&p, UserEvent::Problem(id, name.to_string(), j)));
+                    }
                     let _ = wv.reload();
+                    self.tabs[a].rec_hooked = true;
                     win::info(t(self.lang, "d.record_started"));
                 }
             }
@@ -4838,6 +4890,7 @@ fn main() {
         dl_meta: HashMap::new(),
         dl_cancelled: HashSet::new(),
         bm_edit: None,
+        bm_edit_from: None,
         last_bm_folder: String::new(),
         record_at: Instant::now(),
         video_jobs: HashMap::new(),
@@ -5019,6 +5072,12 @@ fn main() {
                         t.loading = started;
                         if started {
                             t.form_dirty = false;
+                        }
+                        // Rekam masalah: hidupkan lagi DevTools di halaman baru (lihat win::record_enable).
+                        if t.recording {
+                            if let Some(wv) = &t.webview {
+                                win::record_enable(wv);
+                            }
                         }
                         if url.starts_with("http") && t.recent_urls.last() != Some(&url) {
                             t.recent_urls.push(url.clone());
