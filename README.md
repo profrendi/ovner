@@ -63,6 +63,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.6
+
+- **Unduhan Parrot tidak lagi batal di ±2,2 GB.** CDN mirror Parrot (bunny.deb.parrot.sh)
+  mulai menjawab HTTP 428 (minta prasyarat) setelah ±6 menit. Ovner kini mengirim `If-Range`
+  (ETag/Last-Modified berkas) saat diminta, dan bila semua koneksi ditolak ia menunggu lalu
+  melanjutkan dengan separuh koneksi (sampai 8 putaran), tanpa membuang yang sudah diunduh.
+- **PDF besar langsung diunduh, tidak dibuka di tab** (Setelan → Unduhan, bisa dimatikan; batas
+  bawaan 5 MB). Contoh: "Download Kartu" SIPP BPJS Ketenagakerjaan (522 kartu, ±19 MB) yang di
+  penampil PDF bawaan sering lama lalu kosong/hitam. Tab pop-up kosong yang memicu unduhan
+  ditutup sendiri dan Ovner kembali ke tab sebelumnya.
+
 ## Perbaikan 0.8.5
 
 - **Unduhan bersegmen tidak lagi gagal di tengah jalan lalu mulai dari nol.** Semua koneksi kini

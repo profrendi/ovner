@@ -189,6 +189,10 @@ pub struct Settings {
     pub dl_box_v2: bool,
     /// Cari lokasi server unduhan (negara/kota/penyedia) lewat ipwho.is.
     pub dl_server_info: bool,
+    /// PDF besar langsung diunduh, tidak dibuka di penampil PDF bawaan.
+    pub pdf_download: bool,
+    /// Batas ukuran PDF (MB) untuk diunduh langsung.
+    pub pdf_download_mb: u32,
 
     // ---------- saat mulai ----------
     pub restore_tabs: bool,
@@ -302,6 +306,8 @@ impl Default for Settings {
             dl_min_mb: 2,
             dl_box_v2: true,
             dl_server_info: true,
+            pdf_download: true,
+            pdf_download_mb: 5,
             sleep_never_sites: Vec::new(),
             sleep_skip_forms: true,
             user_css: String::new(),

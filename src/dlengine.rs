@@ -31,6 +31,9 @@ pub struct Request {
     pub url: String,
     pub user_agent: String,
     pub headers: Vec<(String, String)>,
+    /// Penanda versi berkas (ETag kuat / Last-Modified) untuk tajuk `If-Range`, dikirim bila
+    /// server meminta prasyarat (HTTP 428, mis. CDN Bunny untuk mirror Parrot).
+    pub if_range: Option<String>,
 }
 
 /// Hasil uji server.
@@ -41,6 +44,8 @@ pub struct Probe {
     pub total: u64,
     /// Alamat akhir setelah pengalihan: semua bagian memakai mirror yang sama.
     pub url: Option<String>,
+    /// ETag kuat atau Last-Modified dari server (untuk If-Range).
+    pub validator: Option<String>,
 }
 
 /// Kabar dari unduhan ke Ovner.
@@ -56,6 +61,8 @@ struct Head {
     status: u16,
     /// Alamat akhir setelah pengalihan (mirror yang benar-benar melayani).
     final_url: Option<String>,
+    etag: Option<String>,
+    last_modified: Option<String>,
     /// Ukuran lengkap dari `Content-Range: bytes a-b/TOTAL`.
     range_total: Option<u64>,
     /// Awal rentang yang benar-benar dikirim server.
@@ -79,6 +86,11 @@ fn parse_head(raw: &str) -> Head {
             continue;
         }
         let Some((k, v)) = line.split_once(':') else { continue };
+        if k.trim().eq_ignore_ascii_case("etag") {
+            h.etag = Some(v.trim().to_string());
+        } else if k.trim().eq_ignore_ascii_case("last-modified") {
+            h.last_modified = Some(v.trim().to_string());
+        }
         if k.trim().eq_ignore_ascii_case("content-range") {
             // bytes 0-0/12345
             let v = v.trim().trim_start_matches("bytes").trim();
@@ -99,7 +111,13 @@ pub fn probe(req: &Request) -> Result<Probe, String> {
         got < 4096
     })?;
     match (head.status, head.range_total, head.range_start) {
-        (206, Some(total), Some(0)) if total > 0 => Ok(Probe { status: 206, total, url: head.final_url.clone().filter(|u| u.starts_with("http") && *u != req.url) }),
+        (206, Some(total), Some(0)) if total > 0 => Ok(Probe {
+            status: 206,
+            total,
+            url: head.final_url.clone().filter(|u| u.starts_with("http") && *u != req.url),
+            // If-Range hanya menerima ETag kuat (bukan W/"...") atau tanggal.
+            validator: head.etag.clone().filter(|e| !e.starts_with("W/")).or(head.last_modified.clone()),
+        }),
         (s, _, _) => Err(format!("server tidak mendukung unduhan bersegmen (HTTP {s})")),
     }
 }
@@ -122,7 +140,10 @@ const CANCELLED: u8 = 2;
 struct Shared {
     req: Request,
     total: u64,
-    conns: usize,
+    /// Jumlah koneksi; dikurangi bila server mulai menolak (pembatasan).
+    conns: AtomicUsize,
+    /// Server meminta prasyarat (428): kirim If-Range mulai sekarang.
+    precond: std::sync::atomic::AtomicBool,
     segs: Mutex<Vec<Seg>>,
     file: File,
     received: AtomicU64,
@@ -160,7 +181,7 @@ impl Job {
 
 /// Ambil isi teks sebuah alamat (mis. info lokasi server). Memblokir: panggil dari thread latar.
 pub fn get_text(url: &str) -> Option<String> {
-    let req = Request { url: url.to_string(), user_agent: "Ovner".into(), headers: vec![("Accept".into(), "application/json".into())] };
+    let req = Request { url: url.to_string(), user_agent: "Ovner".into(), headers: vec![("Accept".into(), "application/json".into())], if_range: None };
     let mut body = Vec::new();
     let head = http_get(&req, None, &mut |d| {
         body.extend_from_slice(d);
@@ -250,7 +271,8 @@ pub fn start(req: Request, path: &Path, total: u64, conns: usize, cb: impl Fn(Up
     let shared = Arc::new(Shared {
         req,
         total,
-        conns,
+        conns: AtomicUsize::new(conns),
+        precond: std::sync::atomic::AtomicBool::new(false),
         segs: Mutex::new(segs),
         file,
         received: AtomicU64::new(0),
@@ -267,14 +289,19 @@ pub fn start(req: Request, path: &Path, total: u64, conns: usize, cb: impl Fn(Up
     Ok(job)
 }
 
+/// Berapa kali unduhan dipulihkan (semua bagian diberi kesempatan lagi dengan koneksi lebih
+/// sedikit) sebelum benar-benar dinyatakan gagal.
+const RECOVER_ROUNDS: u32 = 8;
+
 fn controller(sh: Arc<Shared>, part: PathBuf, final_path: PathBuf, cb: impl Fn(Update)) {
     let mut last = (Instant::now(), 0u64);
     let mut speed = 0u64;
+    let mut rounds = 0u32;
     loop {
         let state = sh.state.load(Ordering::SeqCst);
         if state == RUN {
             // Tambah koneksi selama masih ada pekerjaan dan kuota.
-            while sh.active.load(Ordering::SeqCst) < sh.conns {
+            while sh.active.load(Ordering::SeqCst) < sh.conns.load(Ordering::SeqCst) {
                 let Some(idx) = claim(&sh) else { break };
                 sh.active.fetch_add(1, Ordering::SeqCst);
                 let s2 = sh.clone();
@@ -321,6 +348,24 @@ fn controller(sh: Arc<Shared>, part: PathBuf, final_path: PathBuf, cb: impl Fn(U
                 error: (!ok).then(|| "gagal memindahkan berkas".to_string()),
             });
             return;
+        }
+        if failed && active == 0 && rounds < RECOVER_ROUNDS && state == RUN {
+            // Server menolak sementara (pembatasan, 428/429/503, mirror sibuk): jangan buang yang
+            // sudah diunduh. Tunggu, kurangi koneksi separuh, lalu lanjutkan semua bagian.
+            rounds += 1;
+            let c = (sh.conns.load(Ordering::SeqCst) / 2).max(1);
+            sh.conns.store(c, Ordering::SeqCst);
+            for sg in sh.segs.lock().unwrap().iter_mut() {
+                sg.fails = 0;
+            }
+            for _ in 0..(10 + 5 * rounds as u64) * 4 {
+                if sh.state.load(Ordering::SeqCst) == CANCELLED {
+                    break;
+                }
+                cb(Update::Progress { received, total: sh.total, speed: 0, conns: 0, paused: false });
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            continue;
         }
         if failed && active == 0 {
             let err = sh.error.lock().unwrap().clone().unwrap_or_else(|| "koneksi gagal".into());
@@ -384,7 +429,16 @@ fn worker(sh: &Shared, idx: usize) {
             break;
         }
         let mut write_err: Option<String> = None;
-        let r = http_get(&sh.req, Some((pos, end - 1)), &mut |data| {
+        let precond_req;
+        let req = if sh.precond.load(Ordering::SeqCst) && sh.req.if_range.is_some() {
+            let mut r = sh.req.clone();
+            r.headers.push(("If-Range".into(), sh.req.if_range.clone().unwrap_or_default()));
+            precond_req = r;
+            &precond_req
+        } else {
+            &sh.req
+        };
+        let r = http_get(req, Some((pos, end - 1)), &mut |data| {
             // Kunci hanya untuk membaca/memperbarui posisi, tidak selama menulis ke disk: menulis
             // bisa lama (disk lambat) dan kunci yang sama dipakai jendela untuk menggambar peta
             // bagian, sehingga dulu Ovner ikut membeku. Hanya pekerja ini yang memajukan `pos`;
@@ -413,7 +467,12 @@ fn worker(sh: &Shared, idx: usize) {
         let bad = match (&r, &write_err) {
             (_, Some(e)) => Some(e.clone()),
             (Err(e), _) => Some(e.clone()),
-            (Ok(h), _) if h.status != 206 || h.range_start.is_some_and(|s| s != pos) => Some(format!("HTTP {}", h.status)),
+            (Ok(h), _) if h.status != 206 || h.range_start.is_some_and(|s| s != pos) => {
+                if h.status == 428 {
+                    sh.precond.store(true, Ordering::SeqCst);
+                }
+                Some(format!("HTTP {}", h.status))
+            }
             _ => None,
         };
         let mut segs = sh.segs.lock().unwrap();
@@ -669,7 +728,7 @@ mod tests {
         let data: Vec<u8> = (0..3_500_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
         let data = Arc::new(data);
         let port = server(data.clone(), flaky);
-        let req = Request { url: format!("http://127.0.0.1:{port}/berkas.bin"), user_agent: "uji".into(), headers: vec![("Cookie".into(), "a=b".into())] };
+        let req = Request { url: format!("http://127.0.0.1:{port}/berkas.bin"), user_agent: "uji".into(), headers: vec![("Cookie".into(), "a=b".into())], if_range: None };
         let p = probe(&req).expect("probe");
         assert_eq!(p.total, data.len() as u64);
         let dir = std::env::temp_dir().join(format!("ovner-dl-{}-{flaky}", std::process::id()));

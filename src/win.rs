@@ -995,6 +995,61 @@ mod imp {
         unsafe { webview.webview().PostWebMessageAsString(&HSTRING::from(text)).is_ok() }
     }
 
+    /// PDF besar diunduh, tidak dibuka di penampil PDF bawaan (seperti setelan Chrome "Unduh
+    /// berkas PDF"): respons dokumen PDF dicegat lewat DevTools (Fetch, tahap respons) dan diberi
+    /// `Content-Disposition: attachment`, sehingga masuk ke pengunduh Ovner. Penampil bawaan
+    /// sering kosong/hitam untuk PDF ratusan halaman (mis. kartu BPJS 522 peserta, 19 MB).
+    /// `decide(url, content_length)` menentukan PDF mana yang diunduh.
+    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>) -> bool + 'static) {
+        use webview2_com::DevToolsProtocolEventReceivedEventHandler;
+        use wry::WebViewExtWindows;
+        let core = webview.webview();
+        let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+            let mut p = windows::core::PWSTR::null();
+            if unsafe { args.ParameterObjectAsJson(&mut p) }.is_err() {
+                return Ok(());
+            }
+            let v: serde_json::Value = serde_json::from_str(&webview2_com::take_pwstr(p)).unwrap_or_default();
+            let id = v["requestId"].as_str().unwrap_or("").to_string();
+            if id.is_empty() {
+                return Ok(());
+            }
+            let headers = v["responseHeaders"].as_array().cloned().unwrap_or_default();
+            let hv = |name: &str| headers.iter().find(|h| h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name))).and_then(|h| h["value"].as_str()).map(str::to_string);
+            let url = v["request"]["url"].as_str().unwrap_or("");
+            let status = v["responseStatusCode"].as_i64().unwrap_or(0);
+            let is_pdf = hv("content-type").is_some_and(|c| c.to_ascii_lowercase().contains("application/pdf"));
+            let disp = hv("content-disposition").unwrap_or_default();
+            let len = hv("content-length").and_then(|l| l.trim().parse::<u64>().ok());
+            if status == 200 && is_pdf && !disp.to_ascii_lowercase().starts_with("attachment") && decide(url, len) {
+                // Nama berkas: dari Content-Disposition inline bila ada, selain itu dari alamat.
+                let new_disp = if disp.to_ascii_lowercase().contains("filename") {
+                    let rest = disp.split_once(';').map(|(_, r)| r.trim()).unwrap_or("");
+                    format!("attachment; {rest}")
+                } else {
+                    let last = url.split(['?', '#']).next().unwrap_or("").rsplit('/').find(|s| !s.is_empty()).unwrap_or("dokumen");
+                    let base = last.trim_end_matches(".pdf");
+                    format!("attachment; filename=\"{base}.pdf\"")
+                };
+                let mut out: Vec<serde_json::Value> = headers.into_iter().filter(|h| !h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))).collect();
+                out.push(serde_json::json!({"name": "Content-Disposition", "value": new_disp}));
+                let params = serde_json::json!({"requestId": id, "responseCode": status, "responseHeaders": out}).to_string();
+                cdp_core(&sender, "Fetch.continueResponse", &params);
+            } else {
+                cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": id}).to_string());
+            }
+            Ok(())
+        }));
+        unsafe {
+            if let Ok(r) = core.GetDevToolsProtocolEventReceiver(&HSTRING::from("Fetch.requestPaused")) {
+                let mut token = 0i64;
+                let _ = r.add_DevToolsProtocolEventReceived(&handler, &mut token);
+            }
+        }
+        cdp(webview, "Fetch.enable", r#"{"patterns":[{"urlPattern":"*","resourceType":"Document","requestStage":"Response"}]}"#);
+    }
+
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
         use webview2_com::WindowCloseRequestedEventHandler;
         use wry::WebViewExtWindows;
@@ -1320,6 +1375,7 @@ mod imp {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
+    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>) -> bool + 'static) {}
     pub fn post_text(_webview: &wry::WebView, _text: &str) -> bool {
         false
     }

@@ -412,6 +412,9 @@ struct Tab {
     recent_urls: Vec<String>,
     /// Dibuka situs lewat window.open (boleh ditutup lewat window.close).
     popup: bool,
+    /// Tab pop-up yang hanya memicu unduhan (halamannya kosong): ditutup saat unduhannya
+    /// selesai, seperti Chrome.
+    close_after_dl: bool,
     /// Perekam masalah halaman menyala untuk tab ini.
     recording: bool,
     rec_hooked: bool,
@@ -800,6 +803,15 @@ fn build_tab_view(
     win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
     let p_dl = tenv.proxy.clone();
     let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
+    // PDF besar langsung diunduh (setelan "pdf_download").
+    if tenv.settings.borrow().pdf_download && !private {
+        let st = tenv.settings.clone();
+        win::pdf_downloads(&wv, move |url, len| {
+            let min = st.borrow().pdf_download_mb as u64 * 1_048_576;
+            // Ukuran tidak diketahui (PDF dibuat di server): unduh bila alamatnya jelas unduhan.
+            st.borrow().pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min)
+        });
+    }
     win::on_download(
         &wv,
         move |ev| send(&p_dl, UserEvent::Download(id, ev)),
@@ -1146,6 +1158,7 @@ impl App {
             form_dirty: false,
             recent_urls: Vec::new(),
             popup: false,
+            close_after_dl: false,
             recording: false,
             rec_hooked: false,
             downloads_live: 0,
@@ -1788,6 +1801,7 @@ impl App {
     fn on_download(&mut self, tab: u64, ev: win::DlEvent) {
         match ev {
             win::DlEvent::Offer { id, url, path, total, cookie } => {
+                self.popup_started_download(tab, &url);
                 // Uji server di latar: Range didukung → mesin unduh Ovner, selain itu WebView2.
                 let (ua, referer) = self
                     .tab_index(tab)
@@ -1826,7 +1840,7 @@ impl App {
                 self.download_started(id);
                 self.last_render_key.clear();
                 self.render();
-                let req = dlengine::Request { url, user_agent: ua, headers };
+                let req = dlengine::Request { url, user_agent: ua, headers, if_range: None };
                 let p = self.proxy.clone();
                 std::thread::spawn(move || {
                     let mut req = req;
@@ -1836,6 +1850,7 @@ impl App {
                         if let Some(u) = pr.url {
                             req.url = u;
                         }
+                        req.if_range = pr.validator;
                         pr.total
                     });
                     send(&p, UserEvent::DlProbe(id, tab, req, path, r));
@@ -1846,6 +1861,7 @@ impl App {
                 if let Some(i) = self.tab_index(tab) {
                     self.tabs[i].downloads_live += 1;
                 }
+                self.popup_started_download(tab, &url);
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.tab = tab;
                 }
@@ -1904,6 +1920,7 @@ impl App {
                 if let Some(i) = self.tab_index(tab) {
                     self.tabs[i].downloads_live = self.tabs[i].downloads_live.saturating_sub(1);
                 }
+                self.close_finished_popup(tab);
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     d.state = if ok { "done".into() } else { "failed".into() };
                     d.received = received;
@@ -1918,6 +1935,34 @@ impl App {
         self.refresh_pages("downloads");
         self.last_render_key.clear();
         self.render();
+    }
+
+    /// Unduhan dimulai dari tab pop-up yang tidak menampilkan halaman (mis. tombol "Download
+    /// Kartu" SIPP yang membuka tab baru): kembali ke tab sebelumnya, dan tutup tab kosong itu
+    /// setelah unduhannya selesai (menutupnya sekarang membatalkan unduhan WebView2).
+    fn popup_started_download(&mut self, tab: u64, url: &str) {
+        let Some(i) = self.tab_index(tab) else { return };
+        let t = &self.tabs[i];
+        let blank = t.url.is_empty() || t.url == "about:blank" || t.url == url || t.title.is_empty();
+        if !t.popup || !blank || t.close_after_dl {
+            return;
+        }
+        self.tabs[i].close_after_dl = true;
+        if self.active == i {
+            let prev = (0..self.tabs.len()).filter(|&j| j != i).max_by_key(|&j| self.tabs[j].last_active);
+            if let Some(j) = prev {
+                self.activate(j);
+            }
+        }
+    }
+
+    /// Tutup tab pop-up kosong yang unduhannya sudah tidak berjalan lagi.
+    fn close_finished_popup(&mut self, tab: u64) {
+        if let Some(i) = self.tab_index(tab) {
+            if self.tabs[i].close_after_dl && self.tabs[i].downloads_live == 0 && self.tabs.len() > 1 {
+                self.close_tab(i);
+            }
+        }
     }
 
     /// Unduhan baru dimulai: catat waktu dan cari server (IP, negara, kota, jarak) di latar.
@@ -2098,6 +2143,7 @@ impl App {
         match dlengine::start(req.clone(), &target, total, conns, move |u| send(&p, UserEvent::DlUpdate(id, u))) {
             Ok(job) => {
                 win::resolve_download(id, true);
+                self.close_finished_popup(tab);
                 log(&format!("mesin unduh Ovner: {} ({} MB, {conns} koneksi)", req.url, total / 1_048_576));
                 let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| req.url.clone());
                 self.dl_meta.entry(id).or_default().connecting = false;
