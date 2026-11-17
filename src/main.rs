@@ -110,6 +110,8 @@ struct DlMeta {
     resumable: Option<bool>,
     /// Alamat untuk mencari lokasi server (mirror hasil pengalihan), kosong = alamat unduhan.
     lookup_url: String,
+    /// PDF yang dibaca Ovner langsung dari respons halaman (bukan unduhan WebView2).
+    pdf: bool,
 }
 const PAGE_CSS: &str = include_str!("ui/page.css");
 /// Halaman internal disajikan lewat protokol `ovner://`. Di Windows, wry memetakannya ke
@@ -164,6 +166,47 @@ fn my_location() -> Option<(f64, f64)> {
 /// Hapus berkas unduhan beserta sisa-sisanya (.ovnerpart mesin Ovner, .crdownload, dan
 /// .part/.ytdl/potongan format yt-dlp). Dicoba ulang sebentar di latar karena pegangan berkas
 /// bisa baru saja dilepas.
+/// Catat laporan crash WebView2 terbaru (Crashpad) ke log, sekali saja per jalannya Ovner.
+/// Berkas .dmp itu bisa dikirim untuk mencari penyebab mesin WebView2 mati.
+fn log_crash_report() {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let dir = data_dir().join("WebView2").join("EBWebView").join("Crashpad").join("reports");
+    let newest = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path(), e.metadata().ok()?.len())))
+        .max_by_key(|(t, _, _)| *t);
+    match newest {
+        Some((t, p, len)) if t.elapsed().map_or(false, |e| e.as_secs() < 300) => log(&format!("laporan crash WebView2: {} ({} KB)", p.display(), len / 1024)),
+        _ => log(&format!("laporan crash WebView2: tidak ada yang baru di {}", dir.display())),
+    }
+}
+
+/// Path unduhan yang belum dipakai: berkasnya maupun sisa `.ovnerpart`/`.crdownload`-nya
+/// belum ada (dua unduhan tidak menulis ke berkas yang sama).
+fn free_download_path(path: &Path) -> PathBuf {
+    let used = |p: &Path| {
+        let s = p.display().to_string();
+        p.exists() || Path::new(&format!("{s}.ovnerpart")).exists() || Path::new(&format!("{s}.crdownload")).exists()
+    };
+    if !used(path) {
+        return path.to_path_buf();
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    for n in 1..1000 {
+        let p = path.with_file_name(format!("{stem} ({n}){ext}"));
+        if !used(&p) {
+            return p;
+        }
+    }
+    path.to_path_buf()
+}
+
 fn delete_download_files(path: &str) {
     let p = PathBuf::from(path);
     if path.is_empty() {
@@ -317,7 +360,7 @@ enum UserEvent {
     /// Navigasi ulang dengan JavaScript dinyalakan/dimatikan (shields per situs).
     ScriptNav(u64, String, bool),
     /// Proses WebView2 tab ini crash/macet.
-    ProcFailed(u64, win::ProcFail),
+    ProcFailed(u64, win::ProcFail, String),
     /// Hasil CDP Performance.getMetrics untuk satu tab (JSON).
     TabMetrics(u64, String),
     /// Sampel pemakaian semua proses dari thread pemantau (tiap detik).
@@ -519,6 +562,8 @@ struct App {
     restarting: bool,
     /// Unduhan yang dibatalkan saat masih menguji server.
     dl_cancelled: HashSet<u64>,
+    /// Unduhan WebView2 yang dibatalkan paksa (WebView2 tidak menanggapi Cancel).
+    dl_forced: HashSet<u64>,
     /// Kotak "Bookmark ditambahkan" yang terbuka: (alamat, baru ditambahkan).
     bm_edit: Option<(String, bool)>,
     /// Folder bookmark yang sedang diedit (alamat yang sama bisa ada di beberapa folder).
@@ -800,26 +845,38 @@ fn build_tab_view(
         netfilter::on_navigation_completed(&wv, move |ok, status| send(&p_done, UserEvent::NavDone(id, ok, status)));
     }
     let p_fail = tenv.proxy.clone();
-    win::on_process_failed(&wv, move |k| send(&p_fail, UserEvent::ProcFailed(id, k)));
+    win::on_process_failed(&wv, move |k, d| send(&p_fail, UserEvent::ProcFailed(id, k, d)));
     let p_close = tenv.proxy.clone();
     win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
     let p_dl = tenv.proxy.clone();
     let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
-    // PDF besar langsung diunduh (setelan "pdf_download").
+    // PDF besar langsung diunduh (setelan "pdf_download"): dibaca Ovner dari respons yang sudah
+    // ada, bukan lewat unduhan WebView2 (lihat win::pdf_downloads).
     if tenv.settings.borrow().pdf_download && !private {
-        let (st, skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
-        win::pdf_downloads(&wv, move |url, len| {
-            let min = st.borrow().pdf_download_mb as u64 * 1_048_576;
-            // Ukuran tidak diketahui (PDF dibuat di server): unduh bila alamatnya jelas unduhan.
-            let yes = st.borrow().pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min);
-            if yes {
-                // PDF buatan server (mis. kartu SIPP) langsung diteruskan WebView2 dari respons
-                // yang sudah ada. Diuji ulang oleh mesin unduh berarti server membuat ulang PDF
-                // (±20 detik) sementara unduhan ditahan, dan dulu itu membuat mesin WebView2 mati.
-                skip.borrow_mut().insert(url.to_string());
-            }
-            yes
-        });
+        let st = tenv.settings.clone();
+        let p_pdf = tenv.proxy.clone();
+        win::pdf_downloads(
+            &wv,
+            move |url, len, name| {
+                let s = st.borrow();
+                let min = s.pdf_download_mb as u64 * 1_048_576;
+                // Ukuran tidak diketahui (PDF dibuat di server): unduh bila alamatnya jelas unduhan.
+                let yes = s.pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min);
+                if !yes {
+                    return None;
+                }
+                let dir = if s.download_dir.trim().is_empty() {
+                    std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
+                } else {
+                    PathBuf::from(s.download_dir.trim())
+                };
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join(name);
+                let path = if s.dl_box_v2 { dlengine::categorized(&path) } else { path };
+                Some(free_download_path(&path).display().to_string())
+            },
+            move |ev| send(&p_pdf, UserEvent::Download(id, ev)),
+        );
     }
     win::on_download(
         &wv,
@@ -1793,6 +1850,7 @@ impl App {
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
             "engine": d.engine, "speed": d.speed, "conns": d.conns, "video": d.video,
             "connecting": meta.is_some_and(|m| m.connecting),
+            "pdf": meta.is_some_and(|m| m.pdf),
             "resumable": meta.and_then(|m| m.resumable),
             "eta": eta, "elapsed": meta.and_then(|m| m.started).map(|t| t.elapsed().as_secs()).unwrap_or(0),
             "server": meta.map(|m| m.server.clone()).unwrap_or(Value::Null), "segs": segs,
@@ -1875,7 +1933,14 @@ impl App {
                     d.tab = tab;
                 }
                 let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| url.clone());
-                self.dl_meta.entry(id).or_default().connecting = false;
+                {
+                    let m = self.dl_meta.entry(id).or_default();
+                    m.connecting = false;
+                    if win::is_pdf_stream(id) {
+                        m.pdf = true;
+                        m.resumable = Some(false);
+                    }
+                }
                 if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
                     // Sudah ditampilkan saat menguji server: lanjut dengan WebView2.
                     d.path = path;
@@ -1926,6 +1991,13 @@ impl App {
             }
             win::DlEvent::Done { id, ok, path, received } => {
                 self.trim_after_download();
+                if self.dl_forced.remove(&id) {
+                    // Sudah ditandai batal paksa (jumlah unduhan tab sudah dikurangi).
+                    self.refresh_pages("downloads");
+                    self.last_render_key.clear();
+                    self.render();
+                    return;
+                }
                 if let Some(i) = self.tab_index(tab) {
                     self.tabs[i].downloads_live = self.tabs[i].downloads_live.saturating_sub(1);
                 }
@@ -2282,7 +2354,27 @@ impl App {
                     self.save_downloads();
                     self.refresh_pages("downloads");
                 }
-                _ => win::cancel_download(id),
+                _ => {
+                    let stream = win::is_pdf_stream(id);
+                    win::cancel_download(id);
+                    // Unduhan WebView2 yang macet (mis. 0 KB) kadang tidak menanggapi Cancel:
+                    // tetap tandai batal di Ovner, supaya tidak "calculating…" selamanya dan bisa
+                    // dihapus dari daftar.
+                    if !stream && self.downloads[pos].state == "progress" {
+                        let d = &mut self.downloads[pos];
+                        d.state = "failed".into();
+                        d.speed = 0;
+                        let (tab, path) = (d.tab, d.path.clone());
+                        self.dl_forced.insert(id);
+                        if let Some(i) = self.tab_index(tab) {
+                            self.tabs[i].downloads_live = self.tabs[i].downloads_live.saturating_sub(1);
+                        }
+                        delete_download_files(&path);
+                        self.save_downloads();
+                        self.refresh_pages("downloads");
+                        self.close_finished_popup(tab);
+                    }
+                }
             },
             "dl-pause" => {
                 if let Some((job, _)) = self.dl_jobs.get(&id) {
@@ -5069,6 +5161,7 @@ fn main() {
         dl_meta: HashMap::new(),
         restarting: false,
         dl_cancelled: HashSet::new(),
+        dl_forced: HashSet::new(),
         bm_edit: None,
         bm_edit_from: None,
         last_bm_folder: String::new(),
@@ -5414,8 +5507,11 @@ fn main() {
                         }
                     }
                 }
-                UserEvent::ProcFailed(id, kind) => {
-                    log(&format!("proses tab {id} gagal: {kind:?}"));
+                UserEvent::ProcFailed(id, kind, detail) => {
+                    log(&format!("proses tab {id} gagal: {kind:?} ({detail})"));
+                    if kind == win::ProcFail::Browser && !app.restarting {
+                        log_crash_report();
+                    }
                     match kind {
                         win::ProcFail::Browser => {
                             // Seluruh mesin berhenti: buka ulang Ovner dengan tab yang sama.

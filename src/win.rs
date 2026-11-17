@@ -471,14 +471,27 @@ mod imp {
         }
     }
 
-    pub fn cancel_download(id: u64) {
+    /// Unduhan `id` adalah PDF yang dibaca Ovner sendiri (bukan unduhan WebView2).
+    pub fn is_pdf_stream(id: u64) -> bool {
+        STREAMS.with(|m| m.borrow().contains_key(&id))
+    }
+
+    /// Batalkan unduhan WebView2 / PDF `id`. Mengembalikan true bila unduhan itu dikenal.
+    pub fn cancel_download(id: u64) -> bool {
+        if STREAMS.with(|m| m.borrow().contains_key(&id)) {
+            finish_stream(id, false);
+            return true;
+        }
         DOWNLOADS.with(|d| {
             if let Some(op) = d.borrow().get(&id) {
                 unsafe {
                     let _ = op.Cancel();
                 }
+                true
+            } else {
+                false
             }
-        });
+        })
     }
 
     /// Buka berkas dengan aplikasinya, atau tampilkan di Explorer.
@@ -995,15 +1008,150 @@ mod imp {
         unsafe { webview.webview().PostWebMessageAsString(&HSTRING::from(text)).is_ok() }
     }
 
-    /// PDF besar diunduh, tidak dibuka di penampil PDF bawaan (seperti setelan Chrome "Unduh
-    /// berkas PDF"): respons dokumen PDF dicegat lewat DevTools (Fetch, tahap respons) dan diberi
-    /// `Content-Disposition: attachment`, sehingga masuk ke pengunduh Ovner. Penampil bawaan
-    /// sering kosong/hitam untuk PDF ratusan halaman (mis. kartu BPJS 522 peserta, 19 MB).
-    /// `decide(url, content_length)` menentukan PDF mana yang diunduh.
-    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>) -> bool + 'static) {
+    thread_local! {
+        /// Unduhan PDF yang dibaca langsung dari respons lewat DevTools (IO.read).
+        static STREAMS: std::cell::RefCell<std::collections::HashMap<u64, PdfStream>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    struct PdfStream {
+        core: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+        request: String,
+        handle: String,
+        file: Option<std::fs::File>,
+        part: std::path::PathBuf,
+        path: String,
+        received: i64,
+        total: i64,
+        last: std::time::Instant,
+        cb: std::rc::Rc<dyn Fn(DlEvent)>,
+    }
+
+    /// Panggil metode DevTools pada `core` dan terima hasilnya (`None` = gagal).
+    fn cdp_then(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, method: &str, params: &str, cb: impl FnOnce(Option<serde_json::Value>) + 'static) {
+        use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+        let cb: std::rc::Rc<std::cell::RefCell<Option<Box<dyn FnOnce(Option<serde_json::Value>)>>>> = std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(cb))));
+        let cb2 = cb.clone();
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |r, json| {
+            let f = cb2.borrow_mut().take();
+            if let Some(f) = f {
+                f(if r.is_ok() { serde_json::from_str(&json).ok() } else { None });
+            }
+            Ok(())
+        }));
+        let sent = unsafe { core.CallDevToolsProtocolMethod(&HSTRING::from(method), &HSTRING::from(params), &handler) };
+        if sent.is_err() {
+            // Tidak terkirim (mis. tab sudah ditutup): handler tidak akan dipanggil.
+            let f = cb.borrow_mut().take();
+            if let Some(f) = f {
+                f(None);
+            }
+        }
+    }
+
+    /// Akhiri unduhan PDF `id`: `ok` = selesai utuh. Halaman (yang menunggu) diberi halaman
+    /// kecil "tersimpan" atau dibatalkan, lalu `Done` dikirim.
+    fn finish_stream(id: u64, ok: bool) {
+        let Some(mut st) = STREAMS.with(|m| m.borrow_mut().remove(&id)) else { return };
+        drop(st.file.take());
+        if !st.handle.is_empty() {
+            cdp_core(&st.core, "IO.close", &serde_json::json!({"handle": st.handle}).to_string());
+        }
+        // Aliran berakhir lebih pendek dari Content-Length: koneksi putus, berkas tidak utuh.
+        let mut ok = ok && (st.total <= 0 || st.received == st.total);
+        if ok {
+            let _ = std::fs::remove_file(&st.path);
+            ok = std::fs::rename(&st.part, &st.path).is_ok();
+        }
+        if ok {
+            use base64::Engine as _;
+            let name = Path::new(&st.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let html = format!(
+                "<!doctype html><meta charset=utf-8><title>{n}</title><body style=\"font:15px Segoe UI,sans-serif;background:#202124;color:#e8eaed;padding:40px\">&#10003; PDF disimpan: <b>{n}</b><br><small style=\"color:#9aa0a6\">{p}</small></body>",
+                n = html_escape(&name),
+                p = html_escape(&st.path)
+            );
+            let params = serde_json::json!({
+                "requestId": st.request,
+                "responseCode": 200,
+                "responseHeaders": [{"name": "Content-Type", "value": "text/html; charset=utf-8"}],
+                "body": base64::prelude::BASE64_STANDARD.encode(html.as_bytes()),
+            });
+            cdp_core(&st.core, "Fetch.fulfillRequest", &params.to_string());
+        } else {
+            let _ = std::fs::remove_file(&st.part);
+            cdp_core(&st.core, "Fetch.failRequest", &serde_json::json!({"requestId": st.request, "errorReason": "Aborted"}).to_string());
+        }
+        (st.cb)(DlEvent::Done { id, ok, path: st.path.clone(), received: st.received });
+    }
+
+    fn html_escape(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    }
+
+    /// Baca potongan berikutnya dari aliran respons PDF `id` dan tulis ke berkas.
+    fn read_stream(id: u64) {
+        let Some((core, handle)) = STREAMS.with(|m| m.borrow().get(&id).map(|s| (s.core.clone(), s.handle.clone()))) else { return };
+        let params = serde_json::json!({"handle": handle, "size": 1 << 20}).to_string();
+        cdp_then(&core, "IO.read", &params, move |v| {
+            use base64::Engine as _;
+            use std::io::Write as _;
+            let Some(v) = v else { return finish_stream(id, false) };
+            let data = v["data"].as_str().unwrap_or("");
+            let bytes = if v["base64Encoded"].as_bool().unwrap_or(false) {
+                match base64::prelude::BASE64_STANDARD.decode(data) {
+                    Ok(b) => b,
+                    Err(_) => return finish_stream(id, false),
+                }
+            } else {
+                data.as_bytes().to_vec()
+            };
+            let eof = v["eof"].as_bool().unwrap_or(false);
+            let progress = STREAMS.with(|m| {
+                let mut m = m.borrow_mut();
+                let st = m.get_mut(&id)?;
+                let f = st.file.as_mut()?;
+                if !bytes.is_empty() && f.write_all(&bytes).is_err() {
+                    return None;
+                }
+                st.received += bytes.len() as i64;
+                let due = st.last.elapsed() >= std::time::Duration::from_millis(300);
+                if due {
+                    st.last = std::time::Instant::now();
+                }
+                Some((due, st.received, st.total, st.cb.clone()))
+            });
+            let Some((due, received, total, cb)) = progress else {
+                // Dibatalkan (sudah dihapus dari daftar) atau gagal menulis.
+                return finish_stream(id, false);
+            };
+            if eof {
+                return finish_stream(id, true);
+            }
+            if due {
+                cb(DlEvent::Progress { id, received, total: total.max(received) });
+            }
+            read_stream(id);
+        });
+    }
+
+    /// PDF diunduh, tidak dibuka di penampil PDF bawaan (seperti setelan Chrome "Unduh berkas
+    /// PDF"). Respons dokumen PDF dicegat lewat DevTools (Fetch, tahap respons); isinya dibaca
+    /// langsung dari respons yang sudah ada (Fetch.takeResponseBodyAsStream + IO.read) dan
+    /// ditulis Ovner sendiri ke berkas.
+    ///
+    /// Dulu tajuknya diganti menjadi `Content-Disposition: attachment` agar WebView2 yang
+    /// mengunduh. Pada kartu SIPP (PDF buatan server, dari tab pop-up) itu membuat mesin WebView2
+    /// mati, atau unduhannya macet di 0 KB dan tidak bisa dibatalkan. Cara ini tidak membuat
+    /// unduhan WebView2 sama sekali, dan server tidak perlu membuat PDF dua kali.
+    ///
+    /// `decide(alamat, ukuran, nama)` = path tujuan bila PDF ini diunduh. `cb` menerima
+    /// Started/Progress/Done seperti unduhan lain.
+    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>, &str) -> Option<String> + 'static, cb: impl Fn(DlEvent) + 'static) {
         use webview2_com::DevToolsProtocolEventReceivedEventHandler;
         use wry::WebViewExtWindows;
         let core = webview.webview();
+        let cb: std::rc::Rc<dyn Fn(DlEvent)> = std::rc::Rc::new(cb);
         let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |sender, args| {
             let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
             let mut p = windows::core::PWSTR::null();
@@ -1011,34 +1159,74 @@ mod imp {
                 return Ok(());
             }
             let v: serde_json::Value = serde_json::from_str(&webview2_com::take_pwstr(p)).unwrap_or_default();
-            let id = v["requestId"].as_str().unwrap_or("").to_string();
-            if id.is_empty() {
+            let req = v["requestId"].as_str().unwrap_or("").to_string();
+            if req.is_empty() {
                 return Ok(());
             }
             let headers = v["responseHeaders"].as_array().cloned().unwrap_or_default();
             let hv = |name: &str| headers.iter().find(|h| h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name))).and_then(|h| h["value"].as_str()).map(str::to_string);
-            let url = v["request"]["url"].as_str().unwrap_or("");
+            let url = v["request"]["url"].as_str().unwrap_or("").to_string();
             let status = v["responseStatusCode"].as_i64().unwrap_or(0);
             let is_pdf = hv("content-type").is_some_and(|c| c.to_ascii_lowercase().contains("application/pdf"));
             let disp = hv("content-disposition").unwrap_or_default();
             let len = hv("content-length").and_then(|l| l.trim().parse::<u64>().ok());
-            if status == 200 && is_pdf && !disp.to_ascii_lowercase().starts_with("attachment") && decide(url, len) {
-                // Nama berkas: dari Content-Disposition inline bila ada, selain itu dari alamat.
-                let new_disp = if disp.to_ascii_lowercase().contains("filename") {
-                    let rest = disp.split_once(';').map(|(_, r)| r.trim()).unwrap_or("");
-                    format!("attachment; {rest}")
-                } else {
-                    let last = url.split(['?', '#']).next().unwrap_or("").rsplit('/').find(|s| !s.is_empty()).unwrap_or("dokumen");
-                    let base = last.trim_end_matches(".pdf");
-                    format!("attachment; filename=\"{base}.pdf\"")
-                };
-                let mut out: Vec<serde_json::Value> = headers.into_iter().filter(|h| !h["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case("content-disposition"))).collect();
-                out.push(serde_json::json!({"name": "Content-Disposition", "value": new_disp}));
-                let params = serde_json::json!({"requestId": id, "responseCode": status, "responseHeaders": out}).to_string();
-                cdp_core(&sender, "Fetch.continueResponse", &params);
+            // Isi yang dibaca sudah dibuka kompresinya: Content-Length (ukuran terkompresi) tidak
+            // bisa dipakai sebagai total.
+            let encoded = hv("content-encoding").is_some_and(|e| !e.trim().is_empty() && !e.trim().eq_ignore_ascii_case("identity"));
+            let total = if encoded { 0 } else { len.map_or(0, |l| l as i64) };
+            let target = if status == 200 && is_pdf && !disp.to_ascii_lowercase().starts_with("attachment") {
+                decide(&url, len, &crate::dlengine::pdf_name(&disp, &url))
             } else {
-                cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": id}).to_string());
-            }
+                None
+            };
+            let Some(path) = target else {
+                cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+                return Ok(());
+            };
+            let part = std::path::PathBuf::from(format!("{path}.ovnerpart"));
+            let file = match std::fs::File::create(&part) {
+                Ok(f) => f,
+                Err(_) => {
+                    // Tidak bisa menulis: tampilkan PDF seperti biasa.
+                    cdp_core(&sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+                    return Ok(());
+                }
+            };
+            let id = next_download_id();
+            STREAMS.with(|m| {
+                m.borrow_mut().insert(
+                    id,
+                    PdfStream {
+                        core: sender.clone(),
+                        request: req.clone(),
+                        handle: String::new(),
+                        file: Some(file),
+                        part,
+                        path: path.clone(),
+                        received: 0,
+                        total,
+                        last: std::time::Instant::now(),
+                        cb: cb.clone(),
+                    },
+                )
+            });
+            cb(DlEvent::Started { id, url, path, total });
+            cdp_then(&sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
+                let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
+                let known = STREAMS.with(|m| {
+                    m.borrow_mut().get_mut(&id).map(|s| {
+                        s.handle = handle.clone();
+                    })
+                });
+                if known.is_none() {
+                    // Dibatalkan sebelum aliran didapat.
+                    return;
+                }
+                if handle.is_empty() {
+                    return finish_stream(id, false);
+                }
+                read_stream(id);
+            });
             Ok(())
         }));
         unsafe {
@@ -1232,7 +1420,9 @@ mod imp {
     }
 
     /// Panggil `cb` bila proses WebView2 tab ini crash atau macet.
-    pub fn on_process_failed(webview: &wry::WebView, cb: impl Fn(ProcFail) + 'static) {
+    /// `cb(jenis, rincian)`; rincian = alasan, kode keluar, proses dan modul penyebab dari
+    /// WebView2 (untuk mencari akar masalah crash di log).
+    pub fn on_process_failed(webview: &wry::WebView, cb: impl Fn(ProcFail, String) + 'static) {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
         use webview2_com::ProcessFailedEventHandler;
         use wry::WebViewExtWindows;
@@ -1242,15 +1432,47 @@ mod imp {
                 unsafe {
                     a.ProcessFailedKind(&mut kind)?;
                 }
-                cb(if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
-                    ProcFail::Browser
-                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
-                    ProcFail::Render
-                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE {
-                    ProcFail::Unresponsive
-                } else {
-                    ProcFail::Other
-                });
+                let mut detail = format!("kind={}", kind.0);
+                if let Ok(a2) = a.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                    unsafe {
+                        let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+                        if a2.Reason(&mut reason).is_ok() {
+                            detail.push_str(&format!(" reason={}", reason.0));
+                        }
+                        let mut code = 0i32;
+                        if a2.ExitCode(&mut code).is_ok() {
+                            detail.push_str(&format!(" exit=0x{:08X}", code as u32));
+                        }
+                        let mut p = windows::core::PWSTR::null();
+                        if a2.ProcessDescription(&mut p).is_ok() {
+                            let d = webview2_com::take_pwstr(p);
+                            if !d.is_empty() {
+                                detail.push_str(&format!(" proses=\"{d}\""));
+                            }
+                        }
+                    }
+                }
+                if let Ok(a3) = a.cast::<ICoreWebView2ProcessFailedEventArgs3>() {
+                    let mut p = windows::core::PWSTR::null();
+                    if unsafe { a3.FailureSourceModulePath(&mut p) }.is_ok() {
+                        let m = webview2_com::take_pwstr(p);
+                        if !m.is_empty() {
+                            detail.push_str(&format!(" modul={m}"));
+                        }
+                    }
+                }
+                cb(
+                    if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED {
+                        ProcFail::Browser
+                    } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED {
+                        ProcFail::Render
+                    } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE {
+                        ProcFail::Unresponsive
+                    } else {
+                        ProcFail::Other
+                    },
+                    detail,
+                );
             }
             Ok(())
         }));
@@ -1375,7 +1597,7 @@ mod imp {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
-    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>) -> bool + 'static) {}
+    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>, &str) -> Option<String> + 'static, _cb: impl Fn(DlEvent) + 'static) {}
     pub fn post_text(_webview: &wry::WebView, _text: &str) -> bool {
         false
     }
@@ -1383,7 +1605,12 @@ mod imp {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
-    pub fn cancel_download(_id: u64) {}
+    pub fn is_pdf_stream(_id: u64) -> bool {
+        false
+    }
+    pub fn cancel_download(_id: u64) -> bool {
+        false
+    }
     pub fn open_path(path: &str, reveal: bool) {
         let p = if reveal { std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default() } else { path.to_string() };
         let _ = std::process::Command::new("xdg-open").arg(p).spawn();
@@ -1400,7 +1627,7 @@ mod imp {
     pub fn try_suspend(_webview: &wry::WebView) {}
     pub fn resume(_webview: &wry::WebView) {}
     pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}
-    pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail) + 'static) {}
+    pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail, String) + 'static) {}
     pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
     pub fn cname_of(_host: &str) -> Option<String> {
         None

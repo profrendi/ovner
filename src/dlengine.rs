@@ -228,6 +228,55 @@ pub fn categorized(path: &Path) -> PathBuf {
     }
 }
 
+/// Nama berkas PDF dari `Content-Disposition` (filename*= UTF-8, filename=) atau dari alamat.
+/// Karakter yang dilarang Windows diganti, dan selalu berakhiran `.pdf`.
+pub fn pdf_name(disposition: &str, url: &str) -> String {
+    fn pct(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() {
+                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    out.push(v);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(b[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).to_string()
+    }
+    let mut name = String::new();
+    for part in disposition.split(';').map(str::trim) {
+        let Some((k, v)) = part.split_once('=') else { continue };
+        let (k, v) = (k.trim().to_ascii_lowercase(), v.trim());
+        if k == "filename*" {
+            let v = v.rsplit("''").next().unwrap_or(v).trim_matches('"');
+            name = pct(v);
+            break;
+        }
+        if k == "filename" && name.is_empty() {
+            name = v.trim_matches('"').to_string();
+        }
+    }
+    if name.trim().is_empty() {
+        let path = url.split(['?', '#']).next().unwrap_or("");
+        let path = path.split_once("://").map(|(_, r)| r).unwrap_or(path);
+        name = path.split_once('/').map(|(_, p)| p).unwrap_or("").rsplit('/').find(|s| !s.is_empty()).map(pct).unwrap_or_default();
+    }
+    let mut name: String = name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { '_' } else { c }).collect();
+    name = name.trim().trim_matches('.').to_string();
+    if name.is_empty() {
+        name = "dokumen".into();
+    }
+    if !name.to_ascii_lowercase().ends_with(".pdf") {
+        name.push_str(".pdf");
+    }
+    name
+}
+
 pub fn unique_path(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
@@ -670,6 +719,15 @@ fn http_get(req: &Request, range: Option<(u64, u64)>, on_data: &mut dyn FnMut(&[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_names() {
+        assert_eq!(pdf_name("", "https://sipp.bpjsketenagakerjaan.go.id/kartu/download"), "download.pdf");
+        assert_eq!(pdf_name("inline; filename=\"kartu peserta.pdf\"", "https://x/y"), "kartu peserta.pdf");
+        assert_eq!(pdf_name("inline; filename=a.pdf; filename*=UTF-8''Kartu%20BPJS%3A1.pdf", "https://x/y"), "Kartu BPJS_1.pdf");
+        assert_eq!(pdf_name("inline", "https://x/dok/laporan%202026?id=3"), "laporan 2026.pdf");
+        assert_eq!(pdf_name("", "https://x/"), "dokumen.pdf");
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 

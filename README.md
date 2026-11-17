@@ -63,6 +63,21 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.8
+
+- **Akar masalah crash saat mengunduh kartu PDF SIPP diperbaiki.** Sejak 0.8.6, PDF diubah menjadi
+  unduhan WebView2 dengan mengganti tajuk respons (`Content-Disposition: attachment`) lewat
+  DevTools. Pada PDF buatan server yang dibuka dari tab pop-up, cara itu membuat mesin WebView2
+  mati (semua tab ikut mati) atau unduhannya macet di 0 KB dan tidak bisa dibatalkan. Kini isi PDF
+  dibaca Ovner langsung dari respons yang sudah ada (`Fetch.takeResponseBodyAsStream` + `IO.read`)
+  dan ditulis sendiri ke folder Unduhan (Documents): tidak ada unduhan WebView2, server tidak
+  membuat PDF dua kali. Tab pop-up menampilkan "PDF disimpan" lalu ditutup otomatis.
+- **Unduhan yang macet selalu bisa dibatalkan**: bila WebView2 tidak menanggapi, Ovner tetap
+  menandainya batal dan menghapus sisa berkasnya, sehingga bisa dihapus dari daftar.
+- **Log crash lebih rinci**: saat proses WebView2 mati, log mencatat alasan, kode keluar, proses
+  dan modul penyebab, serta nama laporan crash (`EBWebView\Crashpad\reports\*.dmp`).
+- Kolom koneksi PDF tertulis "1 (Ovner, PDF)"; satuan waktu mengikuti bahasa (s/h untuk English).
+
 ## Perbaikan 0.8.7
 
 - **Kartu PDF SIPP tidak lagi membuat mesin WebView2 mati / macet di 0 KB.** PDF yang diubah
