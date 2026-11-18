@@ -208,6 +208,24 @@ pub struct Settings {
     pub sleep_never_sites: Vec<String>,
     /// Jangan tidurkan tab yang formulirnya sedang diisi.
     pub sleep_skip_forms: bool,
+    /// Tetap hidupkan N tab yang terakhir dipakai (per jendela); tab lain langsung ditidurkan
+    /// begitu pengguna pindah tab. 0 = mati (hanya pakai `sleep_tabs_minutes`).
+    pub keep_live_tabs: u32,
+    /// Saat jendela diminimalkan/di tray, tab di belakang ditidurkan setelah `sleep_minimized_secs`.
+    pub sleep_minimized: bool,
+    pub sleep_minimized_secs: u32,
+    /// Daftar tab (seperti OneTab): item dihapus dari daftar begitu dibuka.
+    pub list_remove_on_open: bool,
+    /// Penjaga tab membengkak: tab di belakang yang memakai lebih dari `bloat_mb` ditidurkan;
+    /// tab yang sedang dilihat hanya diberi pemberitahuan.
+    pub bloat_guard: bool,
+    pub bloat_mb: u32,
+    /// Saat Windows melaporkan memori hampir habis, tab di belakang yang paling lama tidak
+    /// dipakai ditidurkan satu per satu.
+    pub low_mem_sleep: bool,
+    /// Pendaftaran sebagai browser default diminta pengguna (dipakai juga oleh versi portabel
+    /// supaya alamat exe-nya diperbarui setiap mulai).
+    pub default_browser_registered: bool,
     pub suspend_hidden_tabs: bool,
     pub close_to_tray: bool,
     pub low_memory_when_hidden: bool,
@@ -391,6 +409,14 @@ impl Default for Settings {
             restore_tabs: true,
             autostart: false,
             sleep_tabs_minutes: 15,
+            keep_live_tabs: 3,
+            sleep_minimized: true,
+            sleep_minimized_secs: 60,
+            list_remove_on_open: true,
+            bloat_guard: true,
+            bloat_mb: 700,
+            low_mem_sleep: true,
+            default_browser_registered: false,
             suspend_hidden_tabs: true,
             close_to_tray: true,
             low_memory_when_hidden: true,
@@ -677,6 +703,9 @@ impl Settings {
         }
         self.default_zoom = self.default_zoom.clamp(25, 500);
         self.sleep_tabs_minutes = self.sleep_tabs_minutes.min(24 * 60);
+        self.keep_live_tabs = self.keep_live_tabs.min(30);
+        self.sleep_minimized_secs = self.sleep_minimized_secs.clamp(30, 60 * 60);
+        self.bloat_mb = self.bloat_mb.clamp(200, 16_000);
         self.trim_every_minutes = self.trim_every_minutes.min(24 * 60);
         self.renderer_process_limit = self.renderer_process_limit.min(64);
         for list in [

@@ -304,23 +304,47 @@ mod imp {
         out
     }
 
-    /// Rapikan working set semua proses (RAM di Task Manager langsung turun; halaman yang
-    /// masih dipakai dimuat lagi dari page file saat dibutuhkan). Mengembalikan jumlah proses.
-    pub fn trim_process_tree() -> u32 {
+    /// Private working set satu proses (byte), 0 bila tidak terbaca.
+    fn private_ws(h: windows::Win32::Foundation::HANDLE) -> u64 {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2};
+        let mut pmc = PROCESS_MEMORY_COUNTERS_EX2 { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32, ..Default::default() };
+        unsafe {
+            if GetProcessMemoryInfo(h, &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS, pmc.cb).is_ok() {
+                return (if pmc.PrivateWorkingSetSize > 0 { pmc.PrivateWorkingSetSize } else { pmc.WorkingSetSize }) as u64;
+            }
+        }
+        0
+    }
+
+    /// Rapikan working set proses tertentu saja; hasil (pid, sebelum, sesudah) dalam byte.
+    pub fn trim_pids(pids: &[u32]) -> Vec<(u32, u64, u64)> {
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
-        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA};
-        let mut n = 0;
-        for pid in tree_pids() {
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_VM_READ};
+        let mut out = Vec::new();
+        for &pid in pids {
             unsafe {
-                let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA, false, pid) else { continue };
+                let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA | PROCESS_VM_READ, false, pid)
+                    .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA, false, pid))
+                else {
+                    continue;
+                };
+                let before = private_ws(h);
                 if EmptyWorkingSet(h).is_ok() {
-                    n += 1;
+                    out.push((pid, before, private_ws(h)));
                 }
                 let _ = CloseHandle(h);
             }
         }
-        n
+        out
+    }
+
+    /// RAM fisik Windows: (total, tersedia) dalam byte.
+    pub fn mem_status() -> Option<(u64, u64)> {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut m = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+        unsafe { GlobalMemoryStatusEx(&mut m).ok()? };
+        Some((m.ullTotalPhys, m.ullAvailPhys))
     }
 
     /// Mode efisiensi Windows (EcoQoS), prioritas CPU di bawah normal, dan prioritas memori
@@ -623,6 +647,12 @@ mod imp {
                 false
             }
         })
+    }
+
+    /// Buka URI Windows (mis. ms-settings:…) lewat Explorer.
+    pub fn open_uri(uri: &str) {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer.exe").raw_arg(format!("\"{uri}\"")).spawn();
     }
 
     /// Buka berkas dengan aplikasinya, atau tampilkan di Explorer.
@@ -1934,8 +1964,11 @@ mod imp {
             * 4096;
         vec![Proc { pid: std::process::id(), working: rss, commit: rss, is_self: true }]
     }
-    pub fn trim_process_tree() -> u32 {
-        0
+    pub fn trim_pids(_pids: &[u32]) -> Vec<(u32, u64, u64)> {
+        Vec::new()
+    }
+    pub fn mem_status() -> Option<(u64, u64)> {
+        None
     }
     pub fn set_background_mode(_background: bool) -> u32 {
         0
@@ -1979,6 +2012,9 @@ mod imp {
     }
     pub fn cancel_download(_id: u64) -> bool {
         false
+    }
+    pub fn open_uri(uri: &str) {
+        let _ = std::process::Command::new("xdg-open").arg(uri).spawn();
     }
     pub fn open_path(path: &str, reveal: bool) {
         let p = if reveal { std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default() } else { path.to_string() };

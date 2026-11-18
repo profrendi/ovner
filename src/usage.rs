@@ -197,6 +197,11 @@ pub fn start_monitor(cb: impl Fn(Vec<ProcStat>) + Send + 'static) {
 }
 
 /// PID semua proses Ovner (ovner.exe + WebView2), untuk perapian RAM dan mode hemat.
+/// Satu kali ukur semua proses Ovner/WebView2 (tanpa CPU), untuk rapikan RAM dan penjaga tab.
+pub fn snapshot() -> Vec<ProcStat> {
+    imp::snapshot()
+}
+
 pub fn ovner_pids() -> Vec<u32> {
     imp::processes().into_iter().map(|(pid, _)| pid).collect()
 }

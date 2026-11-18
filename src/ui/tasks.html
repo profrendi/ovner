@@ -5,7 +5,7 @@
 <title>Task manager</title>
 <link rel="stylesheet" href="ovner://page/page.css">
 <style>
-  .sum { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0 4px; }
+  .sum { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 12px 0 4px; }
   .sum div { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .sum b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
   .sum span { color: var(--muted); font-size: 12px; }
@@ -27,6 +27,7 @@
 <h1 id="h1"></h1>
 <div class="sum">
   <div><b id="sRam">—</b><span id="lRam"></span></div>
+  <div><b id="sCommit">—</b><span id="lCommit"></span></div>
   <div><b id="sCpu">—</b><span>CPU</span></div>
   <div><b id="sGpu">—</b><span>GPU</span></div>
   <div><b id="sProc">—</b><span id="lProc"></span></div>
@@ -52,7 +53,8 @@
   const W = {
     id: { h1: "Task manager Ovner", trim: "Rapikan RAM sekarang", sleepall: "Tidurkan semua tab lain", tabs: "Tab", procs: "Proses", name: "Nama", exe: "Nama proses", mem: "Memori",
       title: "Judul", state: "Keadaan", js: "RAM JS", page: "Tab", blocked: "Diblokir", kind: "Jenis", ws: "RAM", gmem: "Memori GPU",
-      lRam: "RAM total (seperti kolom Memory Task Manager)", lProc: "proses",
+      lRam: "RAM aktif (seperti kolom Memory Task Manager)", lProc: "proses",
+      lCommit: "Memori terpakai sebenarnya (commit; tidak turun saat dirapikan)",
       active: "aktif", sleep: "tidur", susp: "ditangguhkan", bg: "latar", priv: "privat", media: "memutar media", close: "Tutup", doSleep: "Tidurkan",
       kinds: { ovner: "Ovner", browser: "Browser", renderer: "Halaman", gpu: "GPU", network: "Jaringan", storage: "Penyimpanan", audio: "Audio", utility: "Utilitas", crashpad: "Crashpad", lain: "Lain" },
       note2: "Diperbarui tiap detik.", shared: "berbagi proses dengan {n} tab", mapOff: "RAM per tab dimatikan otomatis karena Ovner pernah tertutup saat mengukurnya; hapus berkas .proses-tab-mati di folder data untuk mencoba lagi.",
@@ -60,7 +62,8 @@
       note: "RAM dan CPU per tab = proses halaman (renderer) tab itu, sama dengan baris \"WebView2: judul\" di Task Manager Windows (private working set). Tab dari situs yang sama bisa berbagi satu proses. RAM JS = memori JavaScript halaman. GPU hanya bisa diukur per proses karena Chromium memakai satu proses GPU untuk semua tab. Tab yang tidur tidak memakai proses." },
     en: { h1: "Ovner task manager", trim: "Trim memory now", sleepall: "Sleep all other tabs", tabs: "Tabs", procs: "Processes", name: "Name", exe: "Process name", mem: "Memory",
       title: "Title", state: "State", js: "JS RAM", page: "Tab", blocked: "Blocked", kind: "Type", ws: "RAM", gmem: "GPU memory",
-      lRam: "Total RAM (like Task Manager's Memory column)", lProc: "processes",
+      lRam: "Active RAM (like Task Manager's Memory column)", lProc: "processes",
+      lCommit: "Memory actually in use (commit; doesn't drop when trimmed)",
       active: "active", sleep: "sleeping", susp: "suspended", bg: "background", priv: "private", media: "playing media", close: "Close", doSleep: "Sleep",
       kinds: { ovner: "Ovner", browser: "Browser", renderer: "Page", gpu: "GPU", network: "Network", storage: "Storage", audio: "Audio", utility: "Utility", crashpad: "Crashpad", lain: "Other" },
       note2: "Refreshes every second.", shared: "shares its process with {n} tabs", mapOff: "Per-tab RAM was turned off automatically because Ovner once closed while measuring it; delete .proses-tab-mati in the data folder to try again.",
@@ -72,7 +75,7 @@
     const w = W[s.lang] || W.id;
     document.documentElement.lang = s.lang;
     document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
-    for (const [id, k] of [["h1", "h1"], ["trim", "trim"], ["sleepall", "sleepall"], ["hTabs", "tabs"], ["hProcs", "procs"], ["note", "note"], ["note2", "note2"], ["lRam", "lRam"], ["lProc", "lProc"]]) document.getElementById(id).textContent = w[k];
+    for (const [id, k] of [["h1", "h1"], ["trim", "trim"], ["sleepall", "sleepall"], ["hTabs", "tabs"], ["hProcs", "procs"], ["note", "note"], ["note2", "note2"], ["lRam", "lRam"], ["lCommit", "lCommit"], ["lProc", "lProc"]]) document.getElementById(id).textContent = w[k];
     for (const th of document.querySelectorAll("th[data-k]")) th.textContent = w[th.dataset.k];
     const tb = document.querySelector("#tabs tbody"); tb.textContent = "";
     const fill = (txt, map) => txt.replace(/\{(\w+)\}/g, (_, k) => map[k]);
@@ -96,9 +99,9 @@
     }
     LOC = s.lang === "en" ? "en-US" : "id-ID";
     const pb = document.querySelector("#procs tbody"); pb.textContent = "";
-    let ram = 0, cpu = 0, gpu = 0;
+    let ram = 0, cpu = 0, gpu = 0, commit = 0;
     const procs = [...s.procs];
-    for (const p of procs) { ram += p.working; cpu += p.cpu; gpu += p.gpu; }
+    for (const p of procs) { ram += p.working; cpu += p.cpu; gpu += p.gpu; commit += p.commit || 0; }
     // Nama baris sama dengan Task Manager Windows.
     const util = { network: "WebView2 Utility: Network Service", storage: "WebView2 Utility: Storage Service", audio: "WebView2 Utility: Audio Service" };
     const nameOf = (p) => p.kind === "browser" ? "WebView2 Manager"
@@ -127,6 +130,7 @@
     document.getElementById("statsline").textContent = (s.mapOff ? w.mapOff + " " : "") +
       fill(w.stats, { s: st.slept || 0, r: mb(st.ram_freed || 0), d: st.duplicates || 0, sv: st.sessions_saved || 0 });
     document.getElementById("sRam").textContent = procs.length ? mb1(ram) : "—";
+    document.getElementById("sCommit").textContent = procs.length && commit ? mb1(commit) : "—";
     document.getElementById("sCpu").textContent = procs.length ? pct(Math.min(cpu, 100)) : "—";
     document.getElementById("sGpu").textContent = procs.length ? pct(Math.min(gpu, 100)) : "—";
     document.getElementById("sProc").textContent = procs.length || "—";

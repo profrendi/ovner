@@ -179,6 +179,7 @@
     ["startup", ["Saat mulai", "On startup"], [
       ["restore_tabs", "bool", yes("Buka lagi tab terakhir", "Reopen last tabs"), yes("Semua tab tidur sampai diklik.", "All tabs sleep until clicked.")],
       ["autostart", "bool", yes("Mulai bersama Windows (di tray)", "Start with Windows (in tray)"), ""],
+      ["default-browser", "defaultbrowser", yes("Browser default", "Default browser"), yes("Tautan http/https dari aplikasi lain (Outlook, WhatsApp, Excel…) serta berkas .html dan .pdf dibuka di Ovner, sebagai tab baru di jendela yang sedang terbuka. Windows meminta kamu menekan \"Set default\" sendiri di halaman Aplikasi default; tidak perlu admin. Di PC kantor, kebijakan IT bisa mengembalikannya ke Edge saat login.", "Links (http/https) from other apps (Outlook, WhatsApp, Excel…) and .html and .pdf files open in Ovner, as a new tab in the open window. Windows asks you to press \"Set default\" yourself on the Default apps page; no admin needed. On a work PC, IT policy may switch it back to Edge at sign-in.")],
     ]],
     ["usage", ["Pemakaian dan media", "Usage and media"], [
       ["usage_overlay_app", "bool", yes("Tampilkan RAM/CPU/GPU Ovner di toolbar", "Show Ovner RAM/CPU/GPU in the toolbar"), yes("Total Ovner + semua proses WebView2, diperbarui tiap detik seperti Task Manager, di ujung kanan baris tab (dekat tombol minimize).", "Ovner + all WebView2 processes, refreshed every second like Task Manager, at the right end of the tab row (near minimize).")],
@@ -187,14 +188,21 @@
       ["background_media_minutes", "number", yes("Berhenti setelah (menit)", "Stop after (minutes)"), yes("Untuk pilihan \"Berhenti setelah beberapa menit\".", "For \"Stop after some minutes\".")],
     ]],
     ["ram", ["Hemat RAM", "Save memory"], [
-      ["sleep_tabs_minutes", "number", yes("Tidurkan tab setelah (menit)", "Sleep tabs after (minutes)"), yes("0 = tidak pernah. Tab yang memutar suara tidak ditidurkan. Simpan/buka sesi tab: ☰ → Alat → Sesi tab.", "0 = never. Tabs playing audio are not slept. Save/open tab sessions: ☰ → Tools → Tab sessions.")],
+      ["sleep_tabs_minutes", "number", yes("Tidurkan tab setelah (menit)", "Sleep tabs after (minutes)"), yes("Tab yang tidak dibuka selama ini ditidurkan (RAM-nya hampir 0, dimuat ulang saat diklik). Saran: 5–15. 0 = tidak pernah (aturan di bawah tetap berlaku). Tab yang memutar suara, mengunduh, atau formulirnya sedang diisi tidak ditidurkan.", "Tabs not opened for this long are slept (almost no RAM, reloaded when clicked). Suggested: 5–15. 0 = never (the rules below still apply). Tabs playing audio, downloading or with a form being filled are not slept.")],
+      ["keep_live_tabs", "number", yes("Tetap hidupkan N tab terakhir", "Keep the last N tabs alive"), yes("Tab lain langsung ditidurkan begitu kamu pindah tab (per jendela). Saran: 2–4; makin kecil makin hemat RAM, tapi tab lebih sering dimuat ulang. N tab ini tetap ikut \"Tidurkan tab setelah\". Tab yang dibuka di belakang dan belum pernah dilihat hanya ikut aturan menit. 0 = mati.", "Other tabs are slept as soon as you switch tabs (per window). Suggested: 2–4; smaller saves more RAM but tabs reload more often. These N tabs still follow \"Sleep tabs after\". Tabs opened in the background and never viewed only follow the minutes rule. 0 = off.")],
+      ["sleep_minimized", "bool", yes("Tidurkan tab lebih cepat saat diminimalkan/di tray", "Sleep tabs sooner when minimized/in tray"), yes("Hanya tab di belakang; halaman yang terakhir dilihat cukup dibekukan sehingga langsung tampil lagi tanpa dimuat ulang. Mati = ikut \"Tidurkan tab setelah\".", "Background tabs only; the page you were last viewing is just frozen so it reappears without reloading. Off = follow \"Sleep tabs after\".")],
+      ["sleep_minimized_secs", "number", yes("…setelah diminimalkan (detik)", "…after being minimized (seconds)"), yes("Saran: 30–120. Paling cepat 30 detik supaya meminimalkan sebentar tidak membuat tab tertidur.", "Suggested: 30–120. At least 30 seconds so minimizing briefly doesn't put tabs to sleep.")],
       ["sleep_never_sites", "list", yes("Situs yang tidak pernah ditidurkan", "Sites never slept"), yes("Seperti whitelist TabWars. Juga lewat tameng → Jangan tidurkan situs ini.", "Like TabWars' whitelist. Also via shield → Never sleep this site.")],
       ["sleep_skip_forms", "bool", yes("Jangan tidurkan tab yang formulirnya sedang diisi", "Don't sleep tabs with a form being filled"), yes("Teks yang sudah diketik tidak hilang.", "Text you've typed is not lost.")],
       ["suspend_hidden_tabs", "bool", yes("Tangguhkan tab di belakang", "Suspend background tabs"), ""],
       ["close_to_tray", "bool", yes("Tombol X menyembunyikan Ovner ke tray", "Close button hides Ovner to the tray"), ""],
       ["low_memory_when_hidden", "bool", yes("Mode memori rendah saat diminimalkan/di tray", "Low memory mode when minimized/in tray"), ""],
       ["trim_when_hidden", "bool", yes("Rapikan RAM saat diminimalkan/di tray", "Trim memory when minimized/in tray"), ""],
-      ["trim_every_minutes", "number", yes("Rapikan ulang tiap (menit)", "Trim again every (minutes)"), yes("0 = sekali saja.", "0 = once.")],
+      ["trim_every_minutes", "number", yes("Rapikan RAM cerdas tiap (menit)", "Smart memory trim every (minutes)"), yes("Hanya proses yang diam dan sudah bertambah besar yang dirapikan: tab yang sedang dilihat, GPU saat video/jendela terbuka, dan proses jaringan saat mengunduh tidak disentuh. Proses yang memorinya selalu cepat naik lagi dilewati makin lama (5 → 10 → 20 menit). Saran: 5. 0 = hanya saat diminimalkan/selesai mengunduh.", "Only idle processes that have grown are trimmed: the tab you're viewing, the GPU while video plays or the window is open, and the network process while downloading are left alone. Processes whose memory keeps bouncing back are skipped for longer (5 → 10 → 20 minutes). Suggested: 5. 0 = only when minimized/after downloads.")],
+      ["bloat_guard", "bool", yes("Penjaga tab membengkak", "Bloated tab guard"), yes("Tab di belakang yang memakai RAM melebihi batas ditidurkan (kecuali yang memutar suara, mengunduh, atau formulirnya diisi). Tab yang sedang dilihat tidak dimuat ulang sendiri, hanya diberi pemberitahuan.", "Background tabs using more RAM than the limit are slept (except those playing audio, downloading or with a form being filled). The tab you're viewing is never reloaded by itself; you just get a notice.")],
+      ["bloat_mb", "number", yes("…batas per tab (MB)", "…limit per tab (MB)"), yes("Saran: 500–1000. Situs biasa 50–300 MB; YouTube atau aplikasi web berat bisa lebih.", "Suggested: 500–1000. Ordinary sites use 50–300 MB; YouTube or heavy web apps can use more.")],
+      ["low_mem_sleep", "bool", yes("Tidurkan tab saat RAM Windows hampir habis", "Sleep tabs when Windows is low on memory"), yes("Begitu Windows memberi tanda memori hampir habis, tab di belakang yang paling lama tidak dipakai ditidurkan satu per satu sampai aman. Hanya bertindak saat darurat.", "When Windows signals low memory, the least recently used background tabs are slept one by one until it's safe. Only acts in an emergency.")],
+      ["list_remove_on_open", "bool", yes("Daftar tab: hapus item begitu dibuka", "Tab list: remove an item once opened"), yes("Seperti OneTab. Mati = item tetap tersimpan sampai kamu hapus sendiri. Daftar tab: tombol tidur di toolbar → Pindahkan ke daftar.", "Like OneTab. Off = items stay saved until you delete them. Tab list: the sleep button in the toolbar → Move to list.")],
       ["efficiency_mode", "bool", yes("Mode efisiensi Windows saat tersembunyi", "Windows efficiency mode when hidden"), ""],
       ["simulate_memory_pressure", "bool", yes("Tekanan memori simulasi untuk tab tidak aktif", "Simulated memory pressure for inactive tabs"), "", null, [R]],
       ["low_end_mode", "bool", yes("Mode perangkat RAM kecil", "Low-end device mode"), "", null, [R]],
@@ -232,7 +240,7 @@
     ]],
   ];
 
-  let state = {}, browsers = [];
+  let state = {}, browsers = [], defStatus = {};
   const form = document.getElementById("form");
   const h = (tag, attrs, ...kids) => { const e = document.createElement(tag); for (const k in attrs) if (k === "html") e.innerHTML = attrs[k]; else e[k] = attrs[k]; e.append(...kids); return e; };
   const known = ["google", "duckduckgo", "brave", "bing", "qwant", "startpage", "leta", "ecosia", "mojeek"];
@@ -240,6 +248,26 @@
   function control(key, kind, opts) {
     const v = state[key];
     const set = (value) => post({ t: "set", key, value });
+    if (kind === "defaultbrowser") {
+      const d = defStatus || {};
+      const on = (x) => (x ? "✓" : "✗");
+      const all = d.http && d.https && d.html && d.pdf;
+      const txt = h("span", { className: "muted" });
+      txt.textContent = !d.registered
+        ? (L === "id" ? "Belum terdaftar" : "Not registered")
+        : (all ? (L === "id" ? "Ovner adalah browser default ✓" : "Ovner is the default browser ✓") : (L === "id" ? "Terdaftar" : "Registered"))
+          + ` — http ${on(d.http)} · https ${on(d.https)} · HTML ${on(d.html)} · PDF ${on(d.pdf)}`;
+      const set = h("button", { className: "primary", textContent: L === "id" ? (all ? "Buka Aplikasi default" : "Jadikan browser default") : (all ? "Open Default apps" : "Make default browser") });
+      set.onclick = () => post({ t: "action", name: "default-browser-set" });
+      const box = h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end" }, txt, set);
+      if (d.registered) {
+        const rm = h("button", { textContent: L === "id" ? "Lepas" : "Unregister" });
+        rm.title = L === "id" ? "Hapus pendaftaran Ovner sebagai browser" : "Remove Ovner's browser registration";
+        rm.onclick = () => post({ t: "action", name: "default-browser-remove" });
+        box.append(rm);
+      }
+      return box;
+    }
     if (kind === "action") {
       const b = h("button", { textContent: T(opts) });
       if (key === "uninstall") b.className = "danger";
@@ -368,7 +396,7 @@
 
   window.ovnerPage = (s) => {
     const langChanged = L !== s.lang;
-    L = s.lang; state = s.settings; browsers = s.browsers || []; catalog = s.catalog || [];
+    L = s.lang; state = s.settings; browsers = s.browsers || []; defStatus = s.defaultStatus || {}; catalog = s.catalog || [];
     document.documentElement.lang = L;
     document.documentElement.dataset.theme = state.theme === "system" ? "" : state.theme;
     document.getElementById("h1").textContent = T(UI.h1);
@@ -399,6 +427,8 @@
   };
   document.getElementById("q").oninput = filter;
   document.getElementById("update").onclick = () => post({ t: "check-update" });
+  // Kembali dari Pengaturan Windows (Aplikasi default): perbarui status browser default.
+  window.addEventListener("focus", () => post({ t: "action", name: "default-browser-refresh" }));
   post({ t: "page-ready" });
 })();
 </script>

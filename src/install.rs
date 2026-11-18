@@ -141,6 +141,7 @@ pub fn remove_machine_integration() {
     for l in machine_shortcuts() {
         let _ = std::fs::remove_file(l);
     }
+    crate::defaults::unregister();
     imp::remove_machine_entry();
 }
 
@@ -218,6 +219,7 @@ pub fn remove_integration() {
         let _ = std::fs::remove_file(l);
     }
     imp::remove_registry();
+    crate::defaults::unregister();
 }
 
 /// Salin exe ini ke folder instalasi (bila versinya lebih baru atau belum ada) dan buat ikon.

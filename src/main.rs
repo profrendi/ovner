@@ -28,6 +28,8 @@ mod store;
 mod update;
 mod versions;
 mod win;
+mod memtrim;
+mod defaults;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -101,6 +103,10 @@ struct Download {
     /// Alasan gagal (ditampilkan di daftar unduhan; dulu ditempel ke nama berkas).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     error: String,
+    /// Video tersimpan tetapi subtitlenya gagal: pilihan subtitle disimpan untuk tombol
+    /// "Coba unduh subtitle lagi".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subs_retry: Option<video::Spec>,
 }
 
 /// Kabar jalur koneksi Ovner untuk PDF (nomor jalur, isi).
@@ -197,7 +203,9 @@ const INTERNAL_PREFIX: &str = "ovner://";
 const INSTANCE_PORT: u16 = 47893;
 const MAGIC: &str = "OVNER-1";
 const TICK: Duration = Duration::from_secs(1);
-const SLEEP_CHECK: Duration = Duration::from_secs(30);
+/// Jarak pemeriksaan tab tidur: cukup rapat supaya "N tab terakhir" dan "tidurkan setelah 30 detik
+/// saat diminimalkan" tepat waktu; pemeriksaannya sendiri hanya membaca daftar tab (murah).
+const SLEEP_CHECK: Duration = Duration::from_secs(5);
 const DIAG_EVERY: Duration = Duration::from_secs(5 * 60);
 const ZOOM_STEPS: &[u32] = &[25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500];
 
@@ -494,6 +502,8 @@ enum UserEvent {
     DlServer(u64, Value),
     /// Kabar unduhan video (yt-dlp).
     Video(u64, video::Event),
+    /// Hasil "Coba unduh subtitle lagi" untuk unduhan `.0`.
+    VideoSubs(u64, Result<String, String>),
     VideoJob(u64, video::Job),
     /// Hasil penelusuran format video (nomor penelusuran, data dialog).
     VideoInfo(u64, Result<Value, String>),
@@ -515,6 +525,11 @@ struct Tab {
     suspended: bool,
     /// Kapan tab ini terakhir aktif (dipakai untuk menidurkan tab).
     last_active: Instant,
+    /// Tab ini pernah dibuka/dilihat pengguna. Tab yang dibuka di belakang (Ctrl+klik) dan belum
+    /// pernah dilihat tidak ikut aturan "N tab terakhir", hanya aturan menit.
+    viewed: bool,
+    /// Penjaga tab membengkak sudah memberi tahu untuk ukuran ini (MB); dikosongkan saat tidur.
+    bloat_noted: u64,
     blocked: Rc<Cell<u32>>,
     page: Rc<RefCell<String>>,
     cos_exceptions: HashSet<String>,
@@ -577,6 +592,9 @@ struct SavedSession {
     /// Detik sejak 1970.
     saved: u64,
     tabs: Vec<SessionTab>,
+    /// Dibuat lewat "Pindahkan ke daftar" (seperti OneTab): item bisa dihapus begitu dibuka.
+    #[serde(default)]
+    list: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -731,6 +749,20 @@ struct App {
     /// Sedang dalam keadaan hemat (tray atau diminimalkan).
     background: bool,
     next_trim: Option<Instant>,
+    /// Rapikan berikutnya diminta pengguna/diminimalkan (abaikan jarak dan syarat bertambah).
+    trim_force: bool,
+    /// Rapikan RAM cerdas: status per proses dan penilaian hasil.
+    trimmer: memtrim::Trimmer,
+    /// RAM Windows sedang hampir habis (dengan histeresis) dan kapan terakhir bertindak.
+    mem_low: bool,
+    mem_low_at: Instant,
+    /// Penjaga tab membengkak: kapan terakhir memeriksa, dan menunggu peta proses→tab.
+    bloat_at: Instant,
+    bloat_pending: bool,
+    /// Pemberitahuan tab yang sedang dilihat memakai RAM besar: (id tab, MB).
+    mem_note: Option<(u64, u64)>,
+    /// Pilihan unduhan video yang meminta subtitle (untuk "Coba unduh subtitle lagi").
+    video_specs: HashMap<u64, video::Spec>,
     find_open: bool,
     /// Nomor jendela yang sedang dipegang App. Jendela lain disimpan di `others` dan ditukar
     /// masuk (lihat `switch_to`) saat ada kejadian untuknya, sehingga semua fungsi tab tetap
@@ -1457,6 +1489,8 @@ impl App {
             zoom: self.settings.borrow().default_zoom,
             suspended: false,
             last_active: Instant::now(),
+            viewed: false,
+            bloat_noted: 0,
             blocked: Rc::new(Cell::new(0)),
             page: Rc::new(RefCell::new(String::new())),
             cos_exceptions: HashSet::new(),
@@ -1688,6 +1722,7 @@ impl App {
         let low = self.settings.borrow().low_memory_when_hidden;
         let media_policy = self.settings.borrow().background_media.clone();
         let rects: Vec<Rect> = (0..self.tabs.len()).map(|j| self.rect_for(j)).collect();
+        let can_suspend: Vec<bool> = self.tabs.iter().map(|t| self.may_suspend(t)).collect();
         for (j, t) in self.tabs.iter_mut().enumerate() {
             if let Some(wv) = &t.webview {
                 let on = j == i || Some(j) == partner;
@@ -1709,7 +1744,7 @@ impl App {
                         if media_policy == "timer" && t.media_hidden_at.is_none() {
                             t.media_hidden_at = Some(now);
                         }
-                    } else if suspend && !t.loading && t.downloads_live == 0 {
+                    } else if suspend && can_suspend[j] && !t.loading && t.downloads_live == 0 {
                         if playing {
                             pause_media(wv);
                         }
@@ -1729,6 +1764,7 @@ impl App {
         }
         let t = &mut self.tabs[i];
         t.last_active = now;
+        t.viewed = true;
         if let Some(wv) = &t.webview {
             let _ = wv.focus();
         }
@@ -1787,6 +1823,7 @@ impl App {
         t.loading = false;
         t.suspended = false;
         t.form_dirty = false;
+        t.bloat_noted = 0;
         // Perkiraan RAM yang dibebaskan (statistik seperti TabWars).
         let freed = if t.proc_pid != 0 { t.proc_ram / t.proc_shared.max(1) as u64 } else { t.js_heap };
         t.proc_pid = 0;
@@ -1886,6 +1923,7 @@ impl App {
         if s.trim_when_hidden {
             // Beri waktu WebView2 membuang cache dulu, baru working set dikosongkan.
             self.next_trim = Some(Instant::now() + Duration::from_secs(3));
+            self.trim_force = true;
         }
         log(&format!("mode hemat: {}", if self.in_tray { "tray" } else { "diminimalkan" }));
     }
@@ -1903,9 +1941,10 @@ impl App {
             return;
         }
         let mut n = 0;
-        for t in &mut self.tabs {
+        let can_suspend: Vec<bool> = self.tabs.iter().map(|t| self.may_suspend(t)).collect();
+        for (k, t) in self.tabs.iter_mut().enumerate() {
             let Some(wv) = &t.webview else { continue };
-            if t.suspended || t.downloads_live > 0 || t.loading {
+            if t.suspended || t.downloads_live > 0 || t.loading || !can_suspend[k] {
                 continue;
             }
             if playing_audio(wv) && s.background_media != "pause" {
@@ -2014,47 +2053,361 @@ impl App {
         let busy = self.downloads.iter().filter(|d| d.state == "progress" || d.state == "paused").count();
         if busy <= 1 {
             self.next_trim = Some(Instant::now() + Duration::from_secs(3));
+            self.trim_force = true;
         }
     }
 
-    fn trim_now(&self) -> u32 {
-        let n = win::trim_process_tree();
-        log(&format!("RAM dirapikan ({n} proses)"));
+    /// Rapikan RAM sekarang atas permintaan (menu, tidurkan semua): tetap cerdas, tetapi
+    /// tanpa menunggu jarak/syarat bertambah.
+    fn trim_now(&mut self) -> u32 {
+        self.trim_smart(true)
+    }
+
+    /// Rapikan RAM cerdas: hanya proses yang tidak sedang dipakai (lihat memtrim.rs).
+    fn trim_smart(&mut self, force: bool) -> u32 {
+        let now = Instant::now();
+        let procs = usage::snapshot();
+        let all_bg = self.all_background();
+        let user_idle = win::idle_secs() >= 30;
+        let net_busy = self.downloading() || !self.pdf_race.is_empty() || !self.video_jobs.is_empty();
+        // Peta proses → tab dianggap segar bila diminta dalam 30 detik terakhir.
+        let map_fresh = self.frames_ok && !self.renderer_frames.is_empty() && self.frames_at.elapsed() < Duration::from_secs(30);
+        let (mut shown, mut busy, mut known) = (HashSet::new(), HashSet::new(), HashSet::new());
+        let (mut audio, mut loading) = (false, false);
+        let mut look = |tabs: &[Tab], active: usize, split: Option<u64>, background: bool| {
+            for (j, t) in tabs.iter().enumerate() {
+                let Some(wv) = &t.webview else { continue };
+                let playing = playing_audio(wv);
+                audio |= playing;
+                loading |= t.loading;
+                if t.proc_pid == 0 {
+                    continue;
+                }
+                known.insert(t.proc_pid);
+                if (j == active || split == Some(t.id)) && !background {
+                    shown.insert(t.proc_pid);
+                }
+                if playing || t.loading || t.downloads_live > 0 {
+                    busy.insert(t.proc_pid);
+                }
+            }
+        };
+        look(&self.tabs, self.active, self.split, self.background || self.in_tray);
+        for w in &self.others {
+            look(&w.tabs, w.active, w.split, w.background || self.in_tray);
+        }
+        let fresh_cpu: HashMap<u32, f64> = if self.stats_at.elapsed() < Duration::from_secs(5) { self.stats.iter().map(|p| (p.pid, p.cpu)).collect() } else { HashMap::new() };
+        let cands: Vec<memtrim::Candidate> = procs
+            .iter()
+            .filter(|p| p.kind != "crashpad")
+            .map(|p| {
+                let pid = p.pid;
+                let blocked = match p.kind.as_str() {
+                    "renderer" if self.ui_pids.contains(&pid) => (!all_bg).then_some("toolbar dipakai"),
+                    "renderer" if !map_fresh => (!all_bg).then_some("peta tab belum ada"),
+                    "renderer" if shown.contains(&pid) => Some("tab terlihat"),
+                    "renderer" if busy.contains(&pid) => Some("tab memutar suara/memuat/mengunduh"),
+                    "renderer" if !known.contains(&pid) => (!(all_bg || user_idle)).then_some("sedang dipakai"),
+                    "renderer" => None,
+                    "gpu" if !all_bg => Some("jendela terbuka (GPU menggambar)"),
+                    "gpu" if audio => Some("video/suara diputar"),
+                    "gpu" => None,
+                    "network" => (net_busy || loading).then_some("jaringan dipakai"),
+                    "audio" => audio.then_some("suara diputar"),
+                    _ => (!(all_bg || user_idle)).then_some("sedang dipakai"),
+                };
+                let blocked = blocked.or_else(|| fresh_cpu.get(&pid).filter(|c| **c > 5.0).map(|_| "CPU sibuk"));
+                memtrim::Candidate { pid, kind: p.kind.clone(), working: p.working, blocked }
+            })
+            .collect();
+        let every = self.settings.borrow().trim_every_minutes.max(1) as u64;
+        let (pick, skipped) = self.trimmer.choose(now, &cands, Duration::from_secs(every * 60), force);
+        let kind_of: HashMap<u32, String> = procs.iter().map(|p| (p.pid, p.kind.clone())).collect();
+        let done: Vec<memtrim::Trimmed> = win::trim_pids(&pick)
+            .into_iter()
+            .map(|(pid, before, after)| memtrim::Trimmed { pid, kind: kind_of.get(&pid).cloned().unwrap_or_default(), before, after })
+            .collect();
+        let n = done.len() as u32;
+        let (before, after) = done.iter().fold((0u64, 0u64), |(b, a), t| (b + t.before, a + t.after));
+        let mut why: Vec<String> = skipped.iter().map(|(k, w)| format!("{k}: {w}")).collect();
+        why.dedup();
+        if n > 0 || force {
+            log(&format!(
+                "RAM dirapikan ({n} proses{}): {} → {} MB{}",
+                if force { ", diminta" } else { "" },
+                before / 1_048_576,
+                after / 1_048_576,
+                if why.is_empty() { String::new() } else { format!("; dilewati: {}", why.join(", ")) }
+            ));
+        }
+        let alive: Vec<u32> = procs.iter().map(|p| p.pid).collect();
+        self.trimmer.retain(&alive);
+        self.trimmer.record(now, done);
         n
     }
 
-    /// Tidurkan tab yang lama tidak dibuka.
-    fn sleep_idle_tabs(&mut self) {
-        let mins = self.settings.borrow().sleep_tabs_minutes;
-        if mins == 0 {
+    /// 60 detik setelah dirapikan: apakah hasilnya bertahan?
+    fn check_trim_result(&mut self) {
+        if !self.trimmer.check_due(Instant::now()) {
             return;
         }
-        let mut limit = Duration::from_secs(mins * 60);
-        // Jendela diminimalkan/di tray: tab latarnya ditidurkan 3x lebih cepat (minimal 2 menit).
-        if self.background {
-            limit = (limit / 3).max(Duration::from_secs(120));
+        let cur: HashMap<u32, u64> = usage::snapshot().into_iter().map(|p| (p.pid, p.working)).collect();
+        if let Some(v) = self.trimmer.evaluate(&cur) {
+            let mb = |b: u64| b / 1_048_576;
+            let bounced: Vec<String> = v.bounced.iter().map(|(k, x)| format!("{k} (jeda ×{x})")).collect();
+            log(&format!(
+                "hasil rapikan 1 menit kemudian: {} → {} → {} MB, bertahan {}%{}",
+                mb(v.before),
+                mb(v.after),
+                mb(v.now),
+                v.held_pct(),
+                if bounced.is_empty() { String::new() } else { format!("; memantul: {}", bounced.join(", ")) }
+            ));
         }
-        let mut changed = false;
-        for j in 0..self.tabs.len() {
-            let t = &self.tabs[j];
-            if self.is_shown(j) || t.webview.is_none() || t.last_active.elapsed() < limit || t.downloads_live > 0 {
-                continue;
+    }
+
+    /// RAM Windows hampir habis: tidurkan tab di belakang yang paling lama tidak dipakai,
+    /// satu tiap 5 detik, sampai tersedia lagi 1,5× batas.
+    fn check_low_memory(&mut self) {
+        if !self.settings.borrow().low_mem_sleep {
+            return;
+        }
+        let Some((total, avail)) = win::mem_status() else { return };
+        let th = memtrim::low_memory_threshold(total);
+        if avail >= th {
+            if self.mem_low && avail > th / 2 * 3 {
+                self.mem_low = false;
+                log(&format!("RAM Windows kembali aman: tersedia {} MB", avail / 1_048_576));
             }
-            if t.webview.as_ref().is_some_and(playing_audio) && self.settings.borrow().background_media != "pause" {
-                continue;
+            if !self.mem_low {
+                return;
             }
-            {
-                // Situs yang tidak boleh ditidurkan, dan formulir yang sedang diisi.
-                let s = self.settings.borrow();
-                let host = host_of(&t.url).map(|h| settings::norm_host(&h)).unwrap_or_default();
-                if host_in(&s.sleep_never_sites, &host) || (s.sleep_skip_forms && t.form_dirty) {
+        } else if !self.mem_low {
+            self.mem_low = true;
+            log(&format!("RAM Windows hampir habis: tersedia {} dari {} MB", avail / 1_048_576, total / 1_048_576));
+        }
+        if self.mem_low_at.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.mem_low_at = Instant::now();
+        let mut oldest: Option<(u32, u64, Instant)> = None;
+        self.each_window(|a| {
+            for j in 0..a.tabs.len() {
+                let t = &a.tabs[j];
+                if t.webview.is_none() || a.sleep_guard(j).is_some() {
                     continue;
                 }
+                if oldest.is_none_or(|(_, _, at)| t.last_active < at) {
+                    oldest = Some((a.win_no, t.id, t.last_active));
+                }
             }
-            self.sleep_tab(j);
-            changed = true;
+        });
+        let Some((no, id, _)) = oldest else { return };
+        let cur = self.win_no;
+        if self.switch_to(no) {
+            if let Some(j) = self.tab_index(id) {
+                log(&format!("RAM Windows sesak: tab {} ditidurkan", display_url(&self.tabs[j].url)));
+                self.sleep_tab(j);
+                self.render();
+            }
+            self.switch_to(cur);
         }
-        if changed {
+    }
+
+    /// Penjaga tab membengkak (tiap 60 detik): minta peta proses → tab; hasilnya diperiksa di
+    /// `check_bloat` saat peta itu tiba.
+    fn bloat_tick(&mut self) {
+        // Di tray/diminimalkan tab di belakang sudah dibekukan atau tidur: tidak perlu diukur.
+        if !self.settings.borrow().bloat_guard || self.bloat_at.elapsed() < Duration::from_secs(60) || self.all_background() {
+            return;
+        }
+        self.bloat_at = Instant::now();
+        if self.stats_at.elapsed() > Duration::from_secs(5) {
+            self.stats = usage::snapshot();
+        }
+        self.bloat_pending = true;
+        self.request_renderer_frames(true);
+    }
+
+    fn check_bloat(&mut self) {
+        let limit = self.settings.borrow().bloat_mb as u64 * 1_048_576;
+        let mut note: Option<(u64, u64)> = None;
+        self.each_window(|a| {
+            let mut changed = false;
+            for j in 0..a.tabs.len() {
+                let t = &a.tabs[j];
+                // Proses yang dipakai beberapa tab tidak bisa dibebankan ke satu tab.
+                if t.webview.is_none() || t.proc_pid == 0 || t.proc_shared > 1 || t.proc_ram < limit {
+                    continue;
+                }
+                let mb = t.proc_ram / 1_048_576;
+                if a.is_shown(j) {
+                    // Tab yang sedang dilihat tidak dimuat ulang sendiri: cukup diberi tahu (lagi
+                    // bila tumbuh 50% sejak pemberitahuan terakhir).
+                    if !a.background && (t.bloat_noted == 0 || mb >= t.bloat_noted * 3 / 2) {
+                        a.tabs[j].bloat_noted = mb;
+                        note = Some((a.tabs[j].id, mb));
+                    }
+                    continue;
+                }
+                if a.sleep_guard(j).is_some() {
+                    continue;
+                }
+                log(&format!("penjaga tab: {} memakai {mb} MB (batas {} MB), ditidurkan", display_url(&t.url), limit / 1_048_576));
+                a.sleep_tab(j);
+                changed = true;
+            }
+            if changed {
+                a.render();
+            }
+        });
+        if let Some((id, mb)) = note {
+            log(&format!("penjaga tab: tab yang dilihat memakai {mb} MB, pemberitahuan ditampilkan"));
+            self.mem_note = Some((id, mb));
+            self.last_render_key.clear();
+            self.render();
+        }
+    }
+
+    /// Alasan tab `j` tidak boleh ditidurkan (None = boleh). Dipakai tidur otomatis, menu
+    /// "Tidurkan semua tab lain", pindah ke daftar, penjaga tab membengkak, dan RAM sesak.
+    fn sleep_guard(&self, j: usize) -> Option<&'static str> {
+        let t = self.tabs.get(j)?;
+        // Halaman yang terakhir dilihat di jendela ini tidak ditidurkan (saat diminimalkan/di tray
+        // cukup dibekukan), supaya muncul lagi tanpa dimuat ulang.
+        if self.is_shown(j) {
+            return Some("terlihat");
+        }
+        let wv = t.webview.as_ref()?;
+        if t.downloads_live > 0 {
+            return Some("mengunduh");
+        }
+        if playing_audio(wv) && self.settings.borrow().background_media != "pause" {
+            return Some("memutar suara");
+        }
+        let s = self.settings.borrow();
+        if s.sleep_skip_forms && t.form_dirty {
+            return Some("formulir sedang diisi");
+        }
+        let host = host_of(&t.url).map(|h| settings::norm_host(&h)).unwrap_or_default();
+        if !host.is_empty() && host_in(&s.sleep_never_sites, &host) {
+            return Some("situs tidak pernah ditidurkan");
+        }
+        None
+    }
+
+    /// "Pindahkan ke daftar" (seperti OneTab): tab jendela ini ditutup dan disimpan sebagai satu
+    /// kelompok di halaman Daftar & sesi tab. `all` = termasuk tab yang sedang dilihat.
+    /// Tab privat, halaman internal, dan tab yang dilindungi (memutar suara, mengunduh,
+    /// formulir sedang diisi) tetap terbuka.
+    fn move_to_list(&mut self, all: bool) {
+        let mut ids = Vec::new();
+        let mut tabs = Vec::new();
+        let mut kept = 0;
+        for j in 0..self.tabs.len() {
+            let t = &self.tabs[j];
+            if t.private || is_newtab(&t.url) || internal_page(&t.url).is_some() {
+                continue;
+            }
+            let shown = self.is_shown(j);
+            if shown && !all {
+                continue;
+            }
+            // Untuk tab yang sedang dilihat (pilihan "semua"), hanya unduhan/suara/formulir yang
+            // menahannya; untuk tab lain, pengaman tidur yang sama.
+            let guard = if shown { t.downloads_live > 0 || t.form_dirty || t.webview.as_ref().is_some_and(playing_audio) } else { self.sleep_guard(j).is_some_and(|g| g != "situs tidak pernah ditidurkan") };
+            if guard {
+                kept += 1;
+                continue;
+            }
+            let url = t.webview.as_ref().and_then(|w| w.url().ok()).filter(|u| !u.is_empty()).unwrap_or_else(|| t.url.clone());
+            tabs.push(SessionTab { url, title: t.title.clone() });
+            ids.push(t.id);
+        }
+        if tabs.is_empty() {
+            log(&format!("pindahkan ke daftar: tidak ada tab yang bisa dipindah ({kept} dilindungi)"));
+            if all {
+                self.open_internal("sessions");
+            }
+            return;
+        }
+        let saved = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let name = format!("{} {}", t(self.lang, "p.tablist"), self.sessions.iter().filter(|x| x.list).count() + 1);
+        log(&format!("pindahkan ke daftar: {} tab ditutup dan disimpan, {kept} dilindungi", tabs.len()));
+        self.sessions.insert(0, SavedSession { name, saved, tabs, list: true });
+        self.tab_stats.sessions_saved += 1;
+        self.save_sessions();
+        self.save_tab_stats();
+        // Halaman daftar dibuka dulu (supaya jendela tidak pernah kosong), lalu tab ditutup.
+        let list_url = internal_url("sessions");
+        if let Some(k) = self.tabs.iter().position(|t| t.url == list_url) {
+            if all {
+                self.activate(k);
+            }
+        } else {
+            self.open_tab(&list_url, all, false);
+        }
+        let active_id = self.tabs.get(self.active).map(|t| t.id);
+        self.tabs.retain(|t| !ids.contains(&t.id));
+        if self.split.is_some_and(|id| ids.contains(&id)) {
+            self.split = None;
+        }
+        self.active = active_id.and_then(|id| self.tab_index(id)).or_else(|| self.tabs.iter().position(|t| t.url == list_url)).unwrap_or(0).min(self.tabs.len().saturating_sub(1));
+        let a = self.active;
+        self.activate(a);
+        self.save_session();
+        if let Some(k) = self.tabs.iter().position(|t| t.url == list_url) {
+            self.push_page_state(k);
+        }
+    }
+
+    /// Tab di belakang boleh ditangguhkan (dibekukan)? Situs "tidak pernah ditidurkan" juga
+    /// tidak dibekukan, supaya notifikasi dan sesi loginnya tetap jalan.
+    fn may_suspend(&self, t: &Tab) -> bool {
+        let s = self.settings.borrow();
+        let host = host_of(&t.url).map(|h| settings::norm_host(&h)).unwrap_or_default();
+        host.is_empty() || !host_in(&s.sleep_never_sites, &host)
+    }
+
+    /// Tab mana yang perlu ditidurkan sekarang. Aturan (tab tidur bila salah satu terpenuhi):
+    /// - tidak dibuka lebih lama dari `sleep_tabs_minutes` (atau `sleep_minimized_secs` bila
+    ///   jendela diminimalkan/di tray dan setelan itu menyala; yang lebih cepat yang dipakai);
+    /// - berada di luar `keep_live_tabs` tab yang terakhir dipakai (tab terlindung tidak memakai
+    ///   jatah; tab yang belum pernah dilihat hanya ikut aturan waktu).
+    fn sleep_plan(&self) -> Vec<usize> {
+        let (mins, keep, fast, fast_secs) = {
+            let s = self.settings.borrow();
+            (s.sleep_tabs_minutes, s.keep_live_tabs as usize, s.sleep_minimized, s.sleep_minimized_secs as u64)
+        };
+        let mut limit = (mins > 0).then(|| Duration::from_secs(mins * 60));
+        if self.background && fast {
+            let f = Duration::from_secs(fast_secs);
+            limit = Some(limit.map_or(f, |l| l.min(f)));
+        }
+        let mut free: Vec<usize> = (0..self.tabs.len()).filter(|&j| self.sleep_guard(j).is_none()).collect();
+        let mut out: Vec<usize> = free.iter().copied().filter(|&j| limit.is_some_and(|l| self.tabs[j].last_active.elapsed() >= l)).collect();
+        if keep > 0 {
+            // Urutkan dari yang paling baru dipakai; tab yang baru saja ditinggal (<3 detik)
+            // dibiarkan dulu supaya bolak-balik cepat tidak memuat ulang halaman.
+            free.retain(|&j| self.tabs[j].viewed && !self.tabs[j].loading);
+            free.sort_by_key(|&j| std::cmp::Reverse(self.tabs[j].last_active));
+            for &j in free.iter().skip(keep) {
+                if self.tabs[j].last_active.elapsed() >= Duration::from_secs(3) && !out.contains(&j) {
+                    out.push(j);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// Tidurkan tab yang lama tidak dibuka atau di luar "N tab terakhir".
+    fn sleep_idle_tabs(&mut self) {
+        let plan = self.sleep_plan();
+        for &j in &plan {
+            self.sleep_tab(j);
+        }
+        if !plan.is_empty() {
             self.render();
         }
     }
@@ -2144,6 +2497,12 @@ impl App {
             "toolbarCss": s.toolbar_css,
             "dark": dark,
             "codec": self.codec_state(&s),
+            "sleepInfo": {
+                "live": self.tabs.iter().filter(|t| t.webview.is_some()).count(),
+                "asleep": self.tabs.iter().filter(|t| t.webview.is_none()).count(),
+                "lists": self.sessions.iter().filter(|x| x.list).map(|x| x.tabs.len()).sum::<usize>(),
+            },
+            "memNote": self.mem_note.and_then(|(id, mb)| self.tab_index(id).filter(|&j| j == self.active).map(|_| json!({"mb": mb, "limit": s.bloat_mb}))),
             "video": tab.is_some_and(|t| video::is_video_page(&t.url)),
             "pageTitle": tab.map(|t| t.title.clone()).unwrap_or_default(),
             "videoTools": [video::ytdlp(data_dir()).exists(), video::ffmpeg(data_dir()).exists()],
@@ -2216,7 +2575,7 @@ impl App {
             Vec::new()
         };
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
-            "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(), "error": d.error,
+            "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(), "error": d.error, "subRetry": d.subs_retry.is_some() && d.state == "done",
             "note": self.dl_meta.get(&d.id).map(|m| m.note.clone()).unwrap_or_default(),
             "conns": if meta.is_some_and(|m| m.pdf) {
                 // PDF: respons halaman + koneksi kedua Ovner yang masih berjalan.
@@ -2355,6 +2714,7 @@ impl App {
                     video: false,
                     vspec: None,
                     error: String::new(),
+                    subs_retry: None,
                     tab: 0,
                 });
                 self.dl_meta.entry(id).or_default().connecting = true;
@@ -2429,6 +2789,7 @@ impl App {
                     video: false,
                     vspec: None,
                     error: String::new(),
+                    subs_retry: None,
                     tab: 0,
                 });
                 self.dl_bubble = true;
@@ -2853,6 +3214,7 @@ impl App {
                 video: false,
                 vspec: None,
                 error: String::new(),
+                subs_retry: None,
                 tab: 0,
             });
             let started = self.dl_waiting.get(&id).map(|w| w.2);
@@ -3076,6 +3438,7 @@ impl App {
             tab: 0,
             vspec: later.then(|| spec.clone()),
             error: String::new(),
+            subs_retry: None,
         });
         self.dl_bubble = true;
         if later {
@@ -3105,6 +3468,9 @@ impl App {
         let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
         let lang = self.lang;
         log(&format!("unduh video ({}): {}", spec.key, spec.page));
+        if video::wants_subs(&spec) {
+            self.video_specs.insert(id, spec.clone());
+        }
         std::thread::spawn(move || {
             let note = |what: &str| send(&p, UserEvent::Video(id, video::Event::Note(tf(lang, "d.video_tools", &[("t", what)]))));
             if let Err(e) = video::ensure_tools(&data, spec.needs(), &note) {
@@ -3117,12 +3483,12 @@ impl App {
             let on_ev = move |ev: video::Event| {
                 // Periksa hasil: resolusi sebenarnya dibanding pilihan (dicatat untuk laporan).
                 let ev = match ev {
-                    video::Event::Done { ok: true, path, .. } => {
-                        let mut warn = String::new();
+                    video::Event::Done { ok: true, path, error } => {
+                        let mut warn = error;
                         if let Some((h, codec)) = video::probe_result(&data2, Path::new(&path)) {
                             log(&format!("hasil video: {h}p {codec}, {} MB: {path}", std::fs::metadata(&path).map(|m| m.len() / 1_048_576).unwrap_or(0)));
                             if let Some(w) = want_h.filter(|w| h * 10 < w * 9) {
-                                warn = format!("{h}p (dipilih {w}p)");
+                                warn = if warn.is_empty() { format!("{h}p (dipilih {w}p)") } else { format!("{h}p (dipilih {w}p) · {warn}") };
                                 log(&format!("PERINGATAN: kualitas hasil {h}p lebih rendah dari pilihan {w}p"));
                             }
                         }
@@ -3153,6 +3519,9 @@ impl App {
                 self.last_render_key.clear();
             }
             video::Event::Path(p) => d.path = p,
+            video::Event::SubsFailed(_) => {
+                d.subs_retry = self.video_specs.get(&id).cloned();
+            }
             video::Event::Progress { received, total, speed, eta } => {
                 self.dl_meta.entry(id).or_default().note.clear();
                 d.received = received as i64;
@@ -3181,6 +3550,7 @@ impl App {
                     self.dl_meta.entry(id).or_default().note.clear();
                 }
                 self.video_jobs.remove(&id);
+                self.video_specs.remove(&id);
                 self.trim_after_download();
                 self.save_downloads();
                 self.last_render_key.clear();
@@ -3193,6 +3563,51 @@ impl App {
             self.last_render_key.clear();
             self.render();
         }
+    }
+
+    /// "Coba unduh subtitle lagi": ambil subtitle untuk video yang sudah tersimpan.
+    fn retry_video_subs(&mut self, id: u64) {
+        let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) else { return };
+        let Some(spec) = d.subs_retry.clone() else { return };
+        if self.dl_meta.get(&id).is_some_and(|m| m.note == "subtitle…") {
+            return;
+        }
+        let path = PathBuf::from(&d.path);
+        self.dl_meta.entry(id).or_default().note = "subtitle…".into();
+        log(&format!("coba unduh subtitle lagi: {}", d.name));
+        let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
+        std::thread::spawn(move || {
+            let r = video::retry_subs(&data, &spec, &path);
+            send(&p, UserEvent::VideoSubs(id, r));
+        });
+        self.last_render_key.clear();
+        self.render();
+        self.refresh_pages("downloads");
+    }
+
+    fn on_video_subs(&mut self, id: u64, r: Result<String, String>) {
+        self.dl_meta.entry(id).or_default().note.clear();
+        if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
+            match r {
+                Ok(m) => {
+                    log(&format!("subtitle berhasil: {m}"));
+                    d.subs_retry = None;
+                    d.error.clear();
+                    if let Ok(meta) = std::fs::metadata(&d.path) {
+                        d.received = meta.len() as i64;
+                        d.total = meta.len() as i64;
+                    }
+                }
+                Err(e) => {
+                    log(&format!("subtitle masih gagal: {e}"));
+                    d.error = format!("subtitle gagal: {e}");
+                }
+            }
+        }
+        self.save_downloads();
+        self.last_render_key.clear();
+        self.render();
+        self.refresh_pages("downloads");
     }
 
     /// Jawaban uji server: ambil alih dengan mesin unduh Ovner, atau biarkan WebView2.
@@ -3252,6 +3667,7 @@ impl App {
                         video: false,
                         vspec: None,
                         error: String::new(),
+                        subs_retry: None,
                         tab: 0,
                     }),
                 }
@@ -3357,6 +3773,7 @@ impl App {
         match kind {
             "dl-open" if Path::new(&path).exists() => win::open_path(&path, false),
             "dl-show" if Path::new(&path).exists() => win::open_path(&path, true),
+            "video-sub-retry" => self.retry_video_subs(id),
             "dl-cancel" => match (self.dl_jobs.get(&id), self.video_jobs.get(&id)) {
                 (Some((job, _)), _) => job.cancel(),
                 (_, Some(v)) => v.cancel(),
@@ -3550,6 +3967,7 @@ impl App {
                     "data": data_dir().display().to_string(),
                     "browsers": browsers,
                     "catalog": catalog_view,
+                    "defaultStatus": defaults::status(),
                 })
             }
             "newtab" => json!({ "theme": theme, "lang": lang }),
@@ -3623,6 +4041,7 @@ impl App {
                 let dups = self.tabs.iter().filter(|t| !is_newtab(&t.url) && !seen.insert(t.url.trim_end_matches('/').to_string())).count();
                 let urls = self.sessions.iter().flat_map(|x| x.tabs.iter().map(|t| t.url.as_str())).chain(self.tabs.iter().map(|t| t.url.as_str()));
                 json!({ "theme": theme, "lang": lang, "sessions": self.sessions, "open": open, "dups": dups,
+                        "removeOnOpen": self.settings.borrow().list_remove_on_open,
                         "closed": self.closed.iter().rev().take(15).collect::<Vec<_>>(), "stats": self.tab_stats,
                         "icons": self.store.icons_for(urls) })
             }
@@ -3782,13 +4201,20 @@ impl App {
                 self.next_trim = Some(Instant::now() + Duration::from_secs(30));
             }
         }
+        let every = self.settings.borrow().trim_every_minutes as u64;
         if let Some(due) = self.next_trim.filter(|_| !self.downloading()) {
             if Instant::now() >= due {
-                self.trim_now();
-                let every = self.settings.borrow().trim_every_minutes;
-                self.next_trim = if self.all_background() && every > 0 { Some(Instant::now() + Duration::from_secs(every as u64 * 60)) } else { None };
+                let force = std::mem::take(&mut self.trim_force);
+                self.trim_smart(force);
+                self.next_trim = (every > 0).then(|| Instant::now() + Duration::from_secs(every * 60));
             }
+        } else if self.next_trim.is_none() && every > 0 {
+            // Rapikan cerdas berkala juga saat jendela terbuka: hanya proses diam yang disentuh.
+            self.next_trim = Some(Instant::now() + Duration::from_secs(every * 60));
         }
+        self.check_trim_result();
+        self.check_low_memory();
+        self.bloat_tick();
         self.sample_usage();
         if self.icons_due.is_some_and(|d| Instant::now() >= d) {
             self.icons_due = None;
@@ -4011,6 +4437,26 @@ impl App {
                 win::open_path(&p.display().to_string(), false);
             }
             "diagnostics" => self.open_internal("diagnostics"),
+            "default-browser-set" => {
+                match defaults::register(&exe) {
+                    Ok(_) => {
+                        log("browser default: didaftarkan, membuka Aplikasi default Windows");
+                        self.settings.borrow_mut().default_browser_registered = true;
+                        self.settings.borrow().save(data_dir());
+                        defaults::open_settings();
+                    }
+                    Err(e) => win::info(&format!("Ovner: {e}")),
+                }
+                self.push_page_state(i);
+            }
+            "default-browser-remove" => {
+                defaults::unregister();
+                log("browser default: pendaftaran Ovner dilepas");
+                self.settings.borrow_mut().default_browser_registered = false;
+                self.settings.borrow().save(data_dir());
+                self.push_page_state(i);
+            }
+            "default-browser-refresh" => self.push_page_state(i),
             "update-filters" => {
                 start_filter_update_forced(self.proxy.clone(), self.settings.borrow().clone());
                 win::info(t(self.lang, "d.filters"));
@@ -4842,7 +5288,7 @@ impl App {
                     }
                 }
             }
-            "dl-open" | "dl-show" | "dl-remove" | "dl-delete" | "dl-cancel" | "dl-pause" | "dl-resume" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
+            "dl-open" | "dl-show" | "dl-remove" | "dl-delete" | "dl-cancel" | "dl-pause" | "dl-resume" | "video-sub-retry" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
             "dl-clear" => {
                 if msg["files"].as_bool() == Some(true) {
                     for d in self.downloads.iter().filter(|d| d.state != "progress" && d.state != "paused") {
@@ -4999,8 +5445,8 @@ impl App {
                     .collect();
                 if !tabs.is_empty() {
                     let saved = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    let name = if name.is_empty() { format!("{} {}", t(self.lang, "p.sessions"), self.sessions.len() + 1) } else { name };
-                    self.sessions.insert(0, SavedSession { name, saved, tabs });
+                    let name = if name.is_empty() { format!("{} {}", t(self.lang, "p.session_name"), self.sessions.len() + 1) } else { name };
+                    self.sessions.insert(0, SavedSession { name, saved, tabs, list: false });
                     self.tab_stats.sessions_saved += 1;
                     self.save_sessions();
                     self.save_tab_stats();
@@ -5023,8 +5469,34 @@ impl App {
                     }
                     self.tab_stats.restored += sess.tabs.len() as u64;
                     self.save_tab_stats();
+                    // Daftar tab (OneTab): kelompok yang sudah dibuka semua dihapus dari daftar.
+                    if sess.list && self.settings.borrow().list_remove_on_open {
+                        if let Some(k) = msg["idx"].as_u64().map(|k| k as usize).filter(|k| *k < self.sessions.len()) {
+                            self.sessions.remove(k);
+                            self.save_sessions();
+                        }
+                    }
                     self.render();
                     self.save_session();
+                }
+                if let Some(k) = self.tabs.iter().position(|t| internal_page(&t.url) == Some("sessions")) {
+                    self.push_page_state(k);
+                }
+            }
+            // Satu item di daftar/sesi diklik: buka sebagai tab (langsung dimuat dan ditampilkan).
+            "session-item" => {
+                let (k, n) = (msg["idx"].as_u64().unwrap_or(u64::MAX) as usize, msg["item"].as_u64().unwrap_or(u64::MAX) as usize);
+                if let Some(st) = self.sessions.get(k).and_then(|x| x.tabs.get(n)).cloned() {
+                    if self.sessions[k].list && self.settings.borrow().list_remove_on_open {
+                        self.sessions[k].tabs.remove(n);
+                        if self.sessions[k].tabs.is_empty() {
+                            self.sessions.remove(k);
+                        }
+                        self.save_sessions();
+                    }
+                    self.tab_stats.restored += 1;
+                    self.save_tab_stats();
+                    self.open_tab(&st.url, true, false);
                 }
                 if let Some(k) = self.tabs.iter().position(|t| internal_page(&t.url) == Some("sessions")) {
                     self.push_page_state(k);
@@ -5163,7 +5635,7 @@ impl App {
                     self.clip_toolbar(&rects);
                 }
             }
-            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-delete" | "dl-pause" | "dl-resume" => self.download_action(&cmd, id),
+            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-delete" | "dl-pause" | "dl-resume" | "video-sub-retry" => self.download_action(&cmd, id),
             "dl-toggle" => {
                 self.dl_bubble = !self.dl_bubble;
                 self.last_render_key.clear();
@@ -5356,6 +5828,28 @@ impl App {
                 self.render();
             }
             "codec-now" => self.query_codec_now(),
+            // ---- Tombol tidur/daftar tab ----
+            "sleep-all" => {
+                let _ = self.on_menu("sleep-all");
+            }
+            "tablist-move" => self.move_to_list(msg["all"].as_bool().unwrap_or(false)),
+            "tablist-open" => self.open_internal("sessions"),
+            // ---- Pemberitahuan tab membengkak ----
+            "mem-reload" => {
+                if let Some((id, _)) = self.mem_note.take() {
+                    if let Some(j) = self.tab_index(id) {
+                        log(&format!("tab membengkak dimuat ulang di proses baru: {}", display_url(&self.tabs[j].url)));
+                        self.rebuild_tab(j);
+                    }
+                }
+                self.last_render_key.clear();
+                self.render();
+            }
+            "mem-dismiss" => {
+                self.mem_note = None;
+                self.last_render_key.clear();
+                self.render();
+            }
             "pick" => {
                 let _ = self.on_menu("pick");
             }
@@ -5937,22 +6431,41 @@ impl App {
                 }
             }
             "sleep-all" => {
+                // Sama pengamannya dengan tidur otomatis: tab yang memutar suara, mengunduh,
+                // formulirnya sedang diisi, atau situs "jangan pernah tidur" tetap hidup.
+                let (mut slept, mut kept) = (0, 0);
                 self.each_window(|a| {
                     for j in 0..a.tabs.len() {
-                        a.sleep_tab(j);
+                        if a.tabs[j].webview.is_none() || a.is_shown(j) {
+                            continue;
+                        }
+                        if a.sleep_guard(j).is_some() {
+                            kept += 1;
+                        } else {
+                            a.sleep_tab(j);
+                            slept += 1;
+                        }
                     }
                     a.render();
                 });
+                log(&format!("tidurkan semua tab lain: {slept} ditidurkan, {kept} dilindungi"));
                 self.trim_now();
                 self.render();
             }
             "trim" => {
-                for t in self.all_tabs() {
-                    if let Some(wv) = &t.webview {
-                        set_memory_low(wv, true);
+                // Tab di belakang diminta membuang cache dulu (tab yang sedang dilihat tidak,
+                // supaya tetap lancar), lalu dirapikan cerdas 2 detik kemudian.
+                self.each_window(|a| {
+                    for j in 0..a.tabs.len() {
+                        if let Some(wv) = &a.tabs[j].webview {
+                            if !a.is_shown(j) || a.background {
+                                set_memory_low(wv, true);
+                            }
+                        }
                     }
-                }
+                });
                 self.next_trim = Some(Instant::now() + Duration::from_secs(2));
+                self.trim_force = true;
             }
             "filters" => {
                 start_filter_update_forced(self.proxy.clone(), self.settings.borrow().clone());
@@ -6244,7 +6757,10 @@ fn serve_lock(listener: TcpListener, proxy: EventLoopProxy<UserEvent>) {
                 "show" => Some(Remote::Show),
                 "newwin" => Some(Remote::NewWindow),
                 "exit" => Some(Remote::Exit),
-                _ => line.strip_prefix("open ").filter(|u| u.starts_with("http://") || u.starts_with("https://")).map(|u| Remote::Open(u.to_string())),
+                _ => line
+                    .strip_prefix("open ")
+                    .filter(|u| u.starts_with("http://") || u.starts_with("https://") || u.starts_with("file:///"))
+                    .map(|u| Remote::Open(u.to_string())),
             };
             if let Some(c) = cmd {
                 send(&proxy, UserEvent::Remote(c));
@@ -6720,6 +7236,14 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut a = Args { portable: false, uninstall: false, restarted: false, tray: false, install_machine: false, desktop: false, apply_update: false, new_window: false, urls: Vec::new() };
+    // Dibuka Windows sebagai browser default: seluruh sisa baris perintah = satu alamat/berkas,
+    // tidak ada opsi lain yang dibaca (tautan berbahaya tidak bisa menyelipkan --uninstall dsb.).
+    if let Some(v) = defaults::single_argument(&defaults::raw_command_line()) {
+        if let Some(u) = defaults::external_target(&v) {
+            a.urls.push(u);
+        }
+        return a;
+    }
     for v in std::env::args().skip(1) {
         match v.as_str() {
             "--portable" => a.portable = true,
@@ -6732,7 +7256,12 @@ fn parse_args() -> Args {
             "--new-window" => a.new_window = true,
             s if s.starts_with("http://") || s.starts_with("https://") => a.urls.push(s.to_string()),
             s if s.starts_with("ovner://") => a.urls.push(internal_url(s.trim_start_matches("ovner://").trim_end_matches('/'))),
-            _ => {}
+            // Berkas .html/.pdf atau file:/// (mis. "Buka dengan" Ovner).
+            s => {
+                if let Some(u) = defaults::external_target(s) {
+                    a.urls.push(u);
+                }
+            }
         }
     }
     a
@@ -6961,6 +7490,16 @@ fn main() {
     let settings = Settings::load(data_dir());
     // Simpan selalu: menulis versi skema setelah migrasi.
     settings.save(data_dir());
+    // Browser default: versi terpasang selalu didaftarkan (muncul di Aplikasi default Windows);
+    // versi portabel hanya bila pengguna pernah menekan "Jadikan browser default". Alamat exe
+    // diperbarui bila berubah (dipindah/diperbarui).
+    if cfg!(windows) && (install::is_installed_copy(&exe) || install::is_machine_copy(&exe) || settings.default_browser_registered) {
+        match defaults::register(&exe) {
+            Ok(true) => log("browser default: pendaftaran Ovner diperbarui"),
+            Ok(false) => {}
+            Err(e) => log(&format!("browser default: gagal mendaftar ({e})")),
+        }
+    }
     let lang = i18n::resolve(&settings.language);
     let cached = blocker::load_cached(data_dir());
     let full = cached.is_some();
@@ -7155,6 +7694,14 @@ fn main() {
         in_tray: args.tray,
         background: false,
         next_trim: None,
+        trim_force: false,
+        trimmer: memtrim::Trimmer::new(),
+        mem_low: false,
+        mem_low_at: Instant::now(),
+        bloat_at: Instant::now(),
+        bloat_pending: false,
+        mem_note: None,
+        video_specs: HashMap::new(),
         find_open: false,
         win_no: 0,
         others: Vec::new(),
@@ -7413,6 +7960,7 @@ fn main() {
                     app.render();
                 }
                 UserEvent::Video(id, ev) => app.on_video(id, ev),
+                UserEvent::VideoSubs(id, r) => app.on_video_subs(id, r),
                 UserEvent::VideoInfo(req, r) => app.on_video_info(req, r),
                 UserEvent::VideoJob(id, job) => {
                     app.video_jobs.insert(id, job);
@@ -7512,6 +8060,10 @@ fn main() {
                     app.frames_pending = false;
                     app.renderer_frames = frames;
                     app.assign_tab_procs();
+                    if app.bloat_pending {
+                        app.bloat_pending = false;
+                        app.check_bloat();
+                    }
                 }
                 UserEvent::PopupReady => app.adopt_popups(),
                 UserEvent::CodecNow(no, r) => {

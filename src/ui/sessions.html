@@ -42,15 +42,17 @@
   const post = (o) => window.ipc.postMessage(JSON.stringify(o));
   const $ = (id) => document.getElementById(id);
   const W = {
-    id: { h1: "Sesi tab", save: "Simpan semua tab", name: "Nama sesi (mis. Kerja BPJS)", dups: "Tutup tab duplikat", saved: "Sesi tersimpan", closed: "Baru saja ditutup",
+    id: { h1: "Daftar & sesi tab", save: "Simpan semua tab", name: "Nama sesi (mis. Kerja BPJS)", dups: "Tutup tab duplikat", saved: "Sesi tersimpan", closed: "Baru saja ditutup",
       open: "Buka", replace: "Ganti tab", del: "Hapus", rename: "Ubah nama", tabs: "tab", none: "Belum ada sesi. Simpan tab yang sedang terbuka untuk dibuka lagi kapan saja.",
       noneClosed: "Tidak ada.", openinfo: "{n} tab terbuka ({s} tidur){d}.", dupsInfo: ", {n} duplikat", confirmDel: "Hapus sesi ini?", confirmReplace: "Tutup semua tab lain lalu buka sesi ini?",
       lSlept: "tab ditidurkan", lRam: "RAM dibebaskan (perkiraan)", lDup: "duplikat ditutup", lSaved: "sesi disimpan", askName: "Nama baru:",
+      listTag: "Daftar tab", listRemove: "item hilang dari daftar begitu dibuka", listKeep: "item tetap tersimpan setelah dibuka", openAll: "Buka semua",
       note: "Seperti TabWars: tab sesi dibuka dalam keadaan tidur dan baru dimuat saat diklik, jadi membuka sesi besar tetap hemat RAM. Tab yang memutar suara, formulir yang sedang diisi, dan situs di daftar \"Jangan tidurkan\" (tameng → Jangan tidurkan situs ini) tidak ditidurkan otomatis.", loc: "id-ID" },
-    en: { h1: "Tab sessions", save: "Save all tabs", name: "Session name (e.g. BPJS work)", dups: "Close duplicate tabs", saved: "Saved sessions", closed: "Recently closed",
+    en: { h1: "Tab list & sessions", save: "Save all tabs", name: "Session name (e.g. BPJS work)", dups: "Close duplicate tabs", saved: "Saved sessions", closed: "Recently closed",
       open: "Open", replace: "Replace tabs", del: "Delete", rename: "Rename", tabs: "tabs", none: "No sessions yet. Save the open tabs to reopen them any time.",
       noneClosed: "None.", openinfo: "{n} tabs open ({s} sleeping){d}.", dupsInfo: ", {n} duplicates", confirmDel: "Delete this session?", confirmReplace: "Close all other tabs and open this session?",
       lSlept: "tabs slept", lRam: "RAM freed (estimate)", lDup: "duplicates closed", lSaved: "sessions saved", askName: "New name:",
+      listTag: "Tab list", listRemove: "items leave the list once opened", listKeep: "items stay saved after opening", openAll: "Open all",
       note: "Like TabWars: session tabs open asleep and only load when clicked, so opening a big session stays light on RAM. Tabs playing audio, forms being filled and sites on the \"Never sleep\" list (shield → Never sleep this site) are not slept automatically.", loc: "en-US" },
   };
   const fill = (t, m) => t.replace(/\{(\w+)\}/g, (_, k) => m[k]);
@@ -87,19 +89,27 @@
     }
     s.sessions.forEach((x, k) => {
       const d = document.createElement("details"); d.className = "card sess";
+      // Kelompok "Pindahkan ke daftar" langsung terbuka supaya tabnya bisa diklik satu per satu.
+      if (x.list) d.open = true;
       const sm = document.createElement("summary");
       const dot = document.createElement("span"); dot.className = "dot"; dot.style.background = COLORS[k % COLORS.length];
       const n = document.createElement("span"); n.className = "n"; n.textContent = x.name;
+      if (x.list) { const tg = document.createElement("span"); tg.className = "c"; tg.textContent = w.listTag + " · " + (s.removeOnOpen ? w.listRemove : w.listKeep); n.append(" "); n.append(tg); }
       const c = document.createElement("span"); c.className = "c";
       c.textContent = `${x.tabs.length} ${w.tabs} · ${new Date(x.saved * 1000).toLocaleString(w.loc, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
       const mk = (label, fn, cls) => { const b = document.createElement("button"); b.textContent = label; if (cls) b.className = cls; b.onclick = (e) => { e.preventDefault(); fn(); }; return b; };
       sm.append(dot, n, c,
-        mk(w.open, () => post({ t: "session-open", idx: k }), "primary"),
+        mk(x.list ? w.openAll : w.open, () => post({ t: "session-open", idx: k }), "primary"),
         mk(w.replace, () => { if (confirm(w.confirmReplace)) post({ t: "session-replace", idx: k }); }),
         mk(w.rename, () => { const v = prompt(w.askName, x.name); if (v) post({ t: "session-rename", idx: k, name: v }); }),
         mk(w.del, () => { if (confirm(w.confirmDel)) post({ t: "session-delete", idx: k }); }, "danger"));
       const body = document.createElement("div"); body.className = "list";
-      for (const t of x.tabs) body.append(linkRow(t, s.icons));
+      x.tabs.forEach((t, item) => {
+        const r = linkRow(t, s.icons);
+        // Klik = buka sebagai tab (bukan membuka alamatnya di halaman ini).
+        r.querySelector("a").onclick = (e) => { e.preventDefault(); post({ t: "session-item", idx: k, item }); };
+        body.append(r);
+      });
       d.append(sm, body);
       list.append(d);
     });

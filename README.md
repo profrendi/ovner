@@ -71,6 +71,47 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.19
+
+- **Ovner bisa jadi browser default** untuk tautan http/https serta berkas .html/.htm dan .pdf,
+  tanpa admin (didaftarkan khusus pengguna ini). Pengaturan → Saat mulai → Browser default →
+  "Jadikan browser default" membuka halaman Aplikasi default Windows; tekan "Set default".
+  Tautan dari Outlook/WhatsApp/Excel dibuka sebagai tab baru di jendela Ovner yang terbuka.
+  Seperti Chrome, alamat dari Windows dibaca dengan `--single-argument`, jadi tautan berbahaya
+  tidak bisa menyelipkan opsi baris perintah. Uninstall menghapus pendaftarannya.
+- **Subtitle tidak lagi menggagalkan unduhan video.** Penyebab 0.8.18: YouTube menolak unduhan
+  subtitle (HTTP 429 Too Many Requests) dan yt-dlp lalu membatalkan videonya juga. Kini video
+  diunduh dulu, subtitle diambil terpisah dengan percobaan ulang (jeda 5 lalu 15 detik), lalu
+  dimasukkan ke video oleh ffmpeg (trek default, bahasa tertulis, mis. "ind"). Bila tetap
+  ditolak, video tetap tersimpan dengan catatan, dan tombol **CC↻ Coba unduh subtitle lagi**
+  mengambil subtitlenya saja tanpa mengunduh ulang video.
+- **Tidur tab lebih cerdas:**
+  - **Tetap hidupkan N tab terakhir** (bawaan 3): tab lain langsung ditidurkan begitu kamu pindah
+    tab. N tab itu tetap ikut "Tidurkan tab setelah … menit". Tab yang dibuka di belakang dan
+    belum pernah dilihat hanya ikut aturan menit.
+  - **Tidurkan tab lebih cepat saat diminimalkan/di tray** (on/off, bawaan 60 detik, paling
+    cepat 30 detik). Halaman yang terakhir dilihat cukup dibekukan, jadi langsung tampil lagi.
+    Bug lama: dengan setelan 1 menit, tab justru tidur lebih lambat saat diminimalkan.
+  - Pemeriksaan tidur tiap 5 detik (dulu 30), supaya waktunya tepat.
+  - Situs "tidak pernah ditidurkan" juga tidak dibekukan (notifikasi dan sesi login tetap jalan).
+- **Tombol tidur/daftar tab di toolbar** (ikon zZ): Tidurkan semua tab lain · Pindahkan tab lain
+  ke daftar · Pindahkan semua tab ke daftar · Buka daftar tab (seperti OneTab). Item daftar
+  diklik untuk membuka tabnya; opsi **"Daftar tab: hapus item begitu dibuka"** bisa
+  dinyalakan/dimatikan. "Tidurkan semua tab lain" kini memakai pengaman yang sama dengan tidur
+  otomatis (tab yang memutar suara, mengunduh, atau formulirnya sedang diisi tidak ikut).
+- **Rapikan RAM cerdas** (menggantikan "rapikan semua proses"): hanya proses yang diam dan sudah
+  bertambah ≥20 MB yang dirapikan. Tab yang sedang dilihat, GPU saat jendela terbuka/video
+  diputar, jaringan saat mengunduh, dan proses yang CPU-nya sibuk tidak disentuh. Hasilnya diukur
+  1 menit kemudian; proses yang selalu memantul dilewati makin lama (5 → 10 → 20 → 40 menit).
+  Berjalan berkala juga saat jendela terbuka. Log mencatat sebelum/sesudah/1 menit kemudian.
+- **Penjaga tab membengkak** (bawaan 700 MB): tab di belakang yang melewati batas ditidurkan; tab
+  yang sedang dilihat tidak dimuat ulang sendiri, hanya diberi pemberitahuan dengan tombol
+  "Muat ulang" (proses baru) atau "Nanti".
+- **Tidurkan tab saat RAM Windows hampir habis** (tersedia < 6% RAM, minimal 512 MB): tab di
+  belakang yang paling lama tidak dipakai ditidurkan satu per satu sampai aman.
+- **Task manager Ovner** menampilkan dua angka: RAM aktif (seperti Task Manager Windows) dan
+  memori terpakai sebenarnya (commit, tidak turun hanya karena dirapikan).
+
 ## Perbaikan 0.8.18
 
 - **Codec video YouTube seperti enhanced-h264ify** — tombol chip baru di kanan atas (di sebelah

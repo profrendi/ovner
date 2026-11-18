@@ -157,6 +157,22 @@
   #codecpanel { position: absolute; right: 48px; top: 4px; width: 372px; max-height: 600px; overflow-y: auto; display: none; background: var(--bar); border: 1px solid var(--line);
     border-radius: 12px; box-shadow: 0 10px 28px #0005; padding: 12px 14px; font-size: 13px; }
   #codecpanel.show { display: block; }
+  #sleeppanel { position: absolute; right: 84px; top: 4px; width: 300px; display: none; background: var(--bar); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 10px 28px #0005; padding: 8px; font-size: 13px; }
+  #sleeppanel.show { display: block; }
+  #sleeppanel .it { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; border: 0; background: none; color: var(--text);
+    padding: 8px 10px; border-radius: 8px; font: inherit; cursor: pointer; }
+  #sleeppanel .it:hover { background: var(--field); }
+  #sleeppanel .it b { font-weight: 600; display: block; }
+  #sleeppanel .it span { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+  #sleeppanel .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+  #sleeppanel .info { color: var(--muted); font-size: 11.5px; padding: 4px 10px 2px; }
+  #memnote { position: absolute; right: 12px; top: 6px; width: 340px; display: none; background: var(--bar); border: 1px solid #d9822b;
+    border-radius: 12px; box-shadow: 0 10px 28px #0005; padding: 10px 12px; font-size: 13px; line-height: 1.4; }
+  #memnote.show { display: block; }
+  #memnote .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  #memnote button { border: 1px solid var(--line); background: var(--field); color: var(--text); border-radius: 8px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  #memnote button.p { background: var(--accent); border-color: var(--accent); color: #fff; }
   #codecpanel h3 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
   #codecpanel h3 button { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
   #codecpanel .now { background: var(--field); border-radius: 8px; padding: 7px 9px; font-size: 12px; margin-bottom: 10px; line-height: 1.45; }
@@ -296,6 +312,7 @@
   <button id="upd"></button>
   <button class="b" id="vidbtn" hidden><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-2.5v9L17 14M10 9v6M7.5 12.5 10 15l2.5-2.5"/></svg></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+  <button class="b" id="sleepbtn"><svg viewBox="0 0 24 24"><path d="M4 7h7l-7 7h7"/><path d="M14 4h6l-6 6h6"/><path d="M13 16h4l-4 4h4"/></svg></button>
   <button class="b" id="codecbtn"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 10h4v4h-4zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg></button>
   <button class="b" id="darkbtn"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
@@ -310,7 +327,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="sleeppanel"></div><div id="memnote"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -324,7 +341,7 @@
       vidMp4: "MP4", vidNote1: "Memakai yt-dlp. Pertama kali, Ovner mengunduh komponen yt-dlp (~18 MB)", vidNote2: " dan ffmpeg (~90 MB) untuk 1080p", vidNoteFf: "Untuk 1080p, Ovner mengunduh ffmpeg (~90 MB) sekali", vidNote3: ". Gunakan hanya untuk video yang boleh Anda simpan.",
       darkTitle: "Mode gelap (seperti Dark Reader)", dark: "Mode gelap", darkSite: "Situs:", darkNoSite: "Buka sebuah situs untuk mengatur per situs.", darkDefault: "Ikut umum", darkOn: "Nyala", darkOff: "Mati",
       darkAll: "Semua situs", darkAllOff: "Mati", darkAllOn: "Nyala", darkAllSys: "Ikut tema Windows", darkEngine: "Cara", engDyn: "Dinamis (Dark Reader)", engFilter: "Filter (cepat)", engChromium: "Chromium (paling ringan)",
-      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlPaused: "dijeda", dlShow: "Tampilkan di folder", cxNewTab: "Buka di tab baru", cxEdit: "Edit…", cxRename: "Ganti nama…", cxCut: "Potong", cxCopy: "Salin", cxPaste: "Tempel", cxDelete: "Hapus", cxFolderName: "Nama folder", cxRenameT: "Ganti nama folder", bmAdded: "Bookmark ditambahkan", bmEditT: "Edit bookmark", bmName: "Nama", bmFolder: "Folder", bmDone: "Selesai", bmRemove: "Hapus", bmBar: "Bilah bookmark", dlSpeed: "Kecepatan", dlEta: "Sisa waktu", dlElapsed: "Berjalan", dlConns: "Koneksi", dlConnecting: "Menghubungkan…", dlServer: "Server", dlCalc: "menghitung…", dlVideo: "video", dlWv: "1 (WebView2)", dlPdf: "(Ovner, PDF)", uH: "j", uS: "d", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
+      bright: "Kecerahan", contrast: "Kontras", gray: "Abu-abu", darkNote: "Dinamis menghitung ulang warna seperti Dark Reader (paling rapi). Filter membalik warna (cepat, cocok untuk situs rewel). Chromium memakai mode gelap bawaan mesin (paling hemat, tanpa slider). Berlaku langsung tanpa muat ulang.", more: "Bookmark lainnya", searchWith: "Cari", dlTitle: "Unduhan", bmFolderEmpty: "(kosong)", dlAll: "Lihat semua unduhan", dlFailed: "Gagal / dibatalkan", dlDeleted: "Dihapus", dlCancel: "Batalkan", dlPause: "Jeda", dlResume: "Lanjutkan", dlSubRetry: "Coba unduh subtitle lagi (video tidak diunduh ulang)", dlPaused: "dijeda", dlShow: "Tampilkan di folder", cxNewTab: "Buka di tab baru", cxEdit: "Edit…", cxRename: "Ganti nama…", cxCut: "Potong", cxCopy: "Salin", cxPaste: "Tempel", cxDelete: "Hapus", cxFolderName: "Nama folder", cxRenameT: "Ganti nama folder", bmAdded: "Bookmark ditambahkan", bmEditT: "Edit bookmark", bmName: "Nama", bmFolder: "Folder", bmDone: "Selesai", bmRemove: "Hapus", bmBar: "Bilah bookmark", dlSpeed: "Kecepatan", dlEta: "Sisa waktu", dlElapsed: "Berjalan", dlConns: "Koneksi", dlConnecting: "Menghubungkan…", dlServer: "Server", dlCalc: "menghitung…", dlVideo: "video", dlWv: "1 (WebView2)", dlPdf: "(Ovner, PDF)", uH: "j", uS: "d", pwSave: "Simpan sandi untuk", pwUpdate: "Perbarui sandi untuk", pwUser: "Nama pengguna", pwPass: "Sandi", pwNever: "Jangan untuk situs ini", pwDoSave: "Simpan", pwDoUpdate: "Perbarui", unsplit: "Tutup tampilan terbagi", shOff: "Pemblokir iklan dimatikan di pengaturan", shSite: "Shields MATI di situs ini. Klik untuk mengatur.",
       shOn: (n, r) => `${n} iklan/pelacak diblokir di halaman ini${r ? "" : " (daftar lengkap sedang diunduh)"}.\nKlik untuk mengatur Shields situs ini.`, bm: "★ " },
     en: { newtab: "New tab", newtabK: "New tab (Ctrl+T)", priv: " (private)", sleep: "\n(Sleeping tab: uses no RAM, reloads when opened)", close: "Close tab (Ctrl+W)",
       back: "Back (Alt+←)", fwd: "Forward (Alt+→)", reload: "Reload (F5)", stop: "Stop (Esc)", home: "Home", addr: "Search or type an address",
@@ -335,7 +352,7 @@
       vidMp4: "MP4", vidNote1: "Uses yt-dlp. The first time, Ovner downloads the yt-dlp component (~18 MB)", vidNote2: " and ffmpeg (~90 MB) for 1080p", vidNoteFf: "For 1080p, Ovner downloads ffmpeg (~90 MB) once", vidNote3: ". Only use it for videos you are allowed to save.",
       darkTitle: "Dark mode (like Dark Reader)", dark: "Dark mode", darkSite: "Site:", darkNoSite: "Open a site to set it per site.", darkDefault: "Use default", darkOn: "On", darkOff: "Off",
       darkAll: "All sites", darkAllOff: "Off", darkAllOn: "On", darkAllSys: "Follow Windows theme", darkEngine: "Method", engDyn: "Dynamic (Dark Reader)", engFilter: "Filter (fast)", engChromium: "Chromium (lightest)",
-      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlPaused: "paused", dlShow: "Show in folder", cxNewTab: "Open in new tab", cxEdit: "Edit…", cxRename: "Rename…", cxCut: "Cut", cxCopy: "Copy", cxPaste: "Paste", cxDelete: "Delete", cxFolderName: "Folder name", cxRenameT: "Rename folder", bmAdded: "Bookmark added", bmEditT: "Edit bookmark", bmName: "Name", bmFolder: "Folder", bmDone: "Done", bmRemove: "Remove", bmBar: "Bookmarks bar", dlSpeed: "Speed", dlEta: "Time left", dlElapsed: "Elapsed", dlConns: "Connections", dlConnecting: "Connecting…", dlServer: "Server", dlCalc: "calculating…", dlVideo: "video", dlWv: "1 (WebView2)", dlPdf: "(Ovner, PDF)", uH: "h", uS: "s", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
+      bright: "Brightness", contrast: "Contrast", gray: "Grayscale", darkNote: "Dynamic recalculates colours like Dark Reader (neatest). Filter inverts colours (fast, good for fussy sites). Chromium uses the engine's built-in dark mode (lightest, no sliders). Applies instantly without reloading.", more: "More bookmarks", searchWith: "Search", dlTitle: "Downloads", bmFolderEmpty: "(empty)", dlAll: "See all downloads", dlFailed: "Failed / cancelled", dlDeleted: "Deleted", dlCancel: "Cancel", dlPause: "Pause", dlResume: "Resume", dlSubRetry: "Try downloading the subtitles again (the video isn't downloaded again)", dlPaused: "paused", dlShow: "Show in folder", cxNewTab: "Open in new tab", cxEdit: "Edit…", cxRename: "Rename…", cxCut: "Cut", cxCopy: "Copy", cxPaste: "Paste", cxDelete: "Delete", cxFolderName: "Folder name", cxRenameT: "Rename folder", bmAdded: "Bookmark added", bmEditT: "Edit bookmark", bmName: "Name", bmFolder: "Folder", bmDone: "Done", bmRemove: "Remove", bmBar: "Bookmarks bar", dlSpeed: "Speed", dlEta: "Time left", dlElapsed: "Elapsed", dlConns: "Connections", dlConnecting: "Connecting…", dlServer: "Server", dlCalc: "calculating…", dlVideo: "video", dlWv: "1 (WebView2)", dlPdf: "(Ovner, PDF)", uH: "h", uS: "s", pwSave: "Save password for", pwUpdate: "Update password for", pwUser: "Username", pwPass: "Password", pwNever: "Never for this site", pwDoSave: "Save", pwDoUpdate: "Update", unsplit: "Close split view", shOff: "Ad blocking is turned off in settings", shSite: "Shields are DOWN for this site. Click to adjust.",
       shOn: (n, r) => `${n} ads/trackers blocked on this page${r ? "" : " (full lists are downloading)"}.\nClick to adjust Shields for this site.`, bm: "★ " },
   };
   let W = D.id;
@@ -934,6 +951,8 @@
       renderBubble();
       renderDark();
       renderCodec();
+      renderSleep();
+      renderMemNote();
       renderVid();
       renderBmDlg();
       const dl = $("dlbtn");
@@ -1126,6 +1145,10 @@
             : '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.6" fill="none"/></svg>';
           pz.title = d.state === "paused" ? W.dlResume : W.dlPause;
           pz.onclick = () => send({ cmd: d.state === "paused" ? "dl-resume" : "dl-pause", id: d.id });
+        } else if (d.subRetry) {
+          // Video tersimpan tetapi subtitle gagal (mis. YouTube 429): ambil subtitle saja.
+          pz.textContent = "CC↻"; pz.title = W.dlSubRetry;
+          pz.onclick = () => send({ cmd: "video-sub-retry", id: d.id });
         } else pz.remove();
         const act = it.querySelector(".db:not(.pz)");
         if (live) { act.textContent = "✕"; act.title = W.dlCancel; act.onclick = () => send({ cmd: "dl-cancel", id: d.id }); }
@@ -1202,6 +1225,8 @@
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
     const dp = Math.max($("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0,
       $("codecpanel").classList.contains("show") ? $("codecpanel").offsetHeight + 12 : 0,
+      $("sleeppanel").classList.contains("show") ? $("sleeppanel").offsetHeight + 12 : 0,
+      $("memnote").classList.contains("show") ? $("memnote").offsetHeight + 14 : 0,
       $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0,
       $("viddlg").classList.contains("show") ? $("viddlg").offsetHeight + 12 : 0,
       $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
@@ -1211,7 +1236,7 @@
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
     // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
     const rects = [];
-    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("codecpanel"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("codecpanel"), $("sleeppanel"), $("memnote"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
       if (!el || !el.offsetParent || !el.offsetWidth) continue;
       const r = el.getBoundingClientRect();
       rects.push([r.left, r.top, r.width, r.height + 10]);
@@ -1219,7 +1244,7 @@
     send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm), rects });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeCodec(); closeVid(); closeVidDlg(); closeBm(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeCodec(); closeSleep(); closeVid(); closeVidDlg(); closeBm(); send({ cmd: "bubble-close" }); } });
   // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
   let darkOpen = false, darkKey = "";
   function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }
@@ -1279,7 +1304,7 @@
   }
   $("darkbtn").onclick = () => {
     if (darkOpen) { closeDark(); return; }
-    hideOmni(); closeCodec(); send({ cmd: "bubble-close" });
+    hideOmni(); closeCodec(); closeSleep(); send({ cmd: "bubble-close" });
     darkOpen = true; darkKey = "";
     $("darkpanel").classList.add("show");
     renderDark();
@@ -1407,7 +1432,7 @@
   }
   $("codecbtn").onclick = () => {
     if (codecOpen) { closeCodec(); return; }
-    hideOmni(); closeDark(); send({ cmd: "bubble-close" });
+    hideOmni(); closeDark(); closeSleep(); send({ cmd: "bubble-close" });
     codecOpen = true; codecKey = ""; codecNow = undefined;
     $("codecpanel").classList.add("show");
     renderCodec();
@@ -1415,6 +1440,71 @@
     clearInterval(codecTimer);
     codecTimer = setInterval(() => { if (codecOpen && state.codec && state.codec.yt) send({ cmd: "codec-now" }); }, 2000);
   };
+  // ---- Tombol tidur/daftar tab (seperti OneTab + "Tidurkan semua tab lain") ----
+  const SW = {
+    id: { btn: "Tidurkan / pindahkan tab ke daftar", sleep: "Tidurkan semua tab lain", sleepD: "Tab tetap di bilah tab, RAM-nya hampir 0; dimuat ulang saat diklik.",
+      moveOthers: "Pindahkan tab lain ke daftar", moveOthersD: "Tab selain yang sedang dilihat ditutup dan disimpan di Daftar tab.",
+      moveAll: "Pindahkan semua tab ke daftar", moveAllD: "Semua tab ditutup dan disimpan; tinggal satu tab berisi daftarnya.",
+      open: "Buka daftar tab", info: "{l} tab hidup · {a} tidur · {d} di daftar", note: "Tab yang memutar suara, mengunduh, atau formulirnya sedang diisi tidak ikut.",
+      mem: "Tab ini memakai {mb} MB RAM (batas penjaga {lim} MB). Muat ulang di proses baru untuk membebaskannya? Isian yang belum disimpan bisa hilang.", reload: "Muat ulang", later: "Nanti" },
+    en: { btn: "Sleep / move tabs to a list", sleep: "Sleep all other tabs", sleepD: "Tabs stay in the tab bar using almost no RAM; they reload when clicked.",
+      moveOthers: "Move other tabs to the list", moveOthersD: "Tabs other than the one you're viewing are closed and saved in the Tab list.",
+      moveAll: "Move all tabs to the list", moveAllD: "All tabs are closed and saved; one tab with the list remains.",
+      open: "Open tab list", info: "{l} tabs awake · {a} asleep · {d} in lists", note: "Tabs playing audio, downloading or with a form being filled are left alone.",
+      mem: "This tab is using {mb} MB of RAM (guard limit {lim} MB). Reload it in a fresh process to free it? Unsaved input may be lost.", reload: "Reload", later: "Later" },
+  };
+  let sleepOpen = false;
+  const swl = () => SW[state && state.lang === "en" ? "en" : "id"];
+  function closeSleep() { if (!sleepOpen) return; sleepOpen = false; $("sleeppanel").classList.remove("show"); sendHeight(); }
+  function renderSleep() {
+    const w = swl();
+    $("sleepbtn").title = w.btn;
+    if (!sleepOpen) return;
+    const p = $("sleeppanel"); p.textContent = "";
+    const item = (title, desc, fn) => {
+      const b = document.createElement("button"); b.className = "it";
+      const box = document.createElement("div");
+      const t = document.createElement("b"); t.textContent = title; box.append(t);
+      if (desc) { const d = document.createElement("span"); d.textContent = desc; box.append(d); }
+      b.append(box); b.onclick = () => { closeSleep(); fn(); };
+      p.append(b);
+    };
+    const si = state.sleepInfo || {};
+    const info = document.createElement("div"); info.className = "info";
+    info.textContent = w.info.replace("{l}", si.live || 0).replace("{a}", si.asleep || 0).replace("{d}", si.lists || 0);
+    p.append(info);
+    item(w.sleep, w.sleepD, () => send({ cmd: "sleep-all" }));
+    const sep = document.createElement("div"); sep.className = "sep"; p.append(sep);
+    item(w.moveOthers, w.moveOthersD, () => send({ cmd: "tablist-move", all: false }));
+    item(w.moveAll, w.moveAllD, () => send({ cmd: "tablist-move", all: true }));
+    item(w.open, "", () => send({ cmd: "tablist-open" }));
+    const n = document.createElement("div"); n.className = "info"; n.textContent = w.note; p.append(n);
+    sendHeight();
+  }
+  $("sleepbtn").onclick = () => {
+    if (sleepOpen) { closeSleep(); return; }
+    hideOmni(); closeDark(); closeCodec(); send({ cmd: "bubble-close" });
+    sleepOpen = true; $("sleeppanel").classList.add("show"); renderSleep();
+  };
+  // Pemberitahuan penjaga tab membengkak (tab yang sedang dilihat tidak dimuat ulang sendiri).
+  let memKey = "";
+  function renderMemNote() {
+    const m = state.memNote, el = $("memnote");
+    const key = m ? JSON.stringify([m, state.lang]) : "";
+    if (key === memKey) return;
+    memKey = key;
+    el.textContent = "";
+    el.classList.toggle("show", !!m);
+    if (m) {
+      const w = swl();
+      const t = document.createElement("div"); t.textContent = w.mem.replace("{mb}", m.mb).replace("{lim}", m.limit);
+      const row = document.createElement("div"); row.className = "row";
+      const later = document.createElement("button"); later.textContent = w.later; later.onclick = () => send({ cmd: "mem-dismiss" });
+      const re = document.createElement("button"); re.className = "p"; re.textContent = w.reload; re.onclick = () => send({ cmd: "mem-reload" });
+      row.append(later, re); el.append(t, row);
+    }
+    sendHeight();
+  }
   $("dlbtn").onclick = () => send({ cmd: "dl-toggle" });
   // ---- Unduh video (yt-dlp), seperti tombol video di IDM/Mister Download Manager ----
   let vidOpen = false;

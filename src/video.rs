@@ -325,6 +325,9 @@ pub enum Event {
     Path(String),
     Progress { received: u64, total: u64, speed: u64, eta: u64 },
     Done { ok: bool, path: String, error: String },
+    /// Video tersimpan, tetapi subtitlenya gagal (mis. YouTube membatasi, HTTP 429); bisa dicoba
+    /// lagi tanpa mengunduh ulang videonya.
+    SubsFailed(String),
 }
 
 /// Satu baris keluaran yt-dlp → kejadian (baris lain diabaikan).
@@ -353,13 +356,22 @@ pub fn parse_line(line: &str) -> Option<Event> {
 
 /// Proses yt-dlp yang berjalan (untuk dibatalkan).
 #[derive(Clone)]
-pub struct Job(Arc<Mutex<Option<Child>>>);
+pub struct Job(Arc<Mutex<Option<Child>>>, Arc<std::sync::atomic::AtomicBool>);
 
 impl Job {
+    fn new(child: Option<Child>) -> Job {
+        Job(Arc::new(Mutex::new(child)), Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+
     pub fn cancel(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(c) = self.0.lock().unwrap().as_mut() {
             let _ = c.kill();
         }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.1.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -470,26 +482,228 @@ pub fn args_for(spec: &Spec) -> Vec<String> {
         f(exact("bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"));
         a.extend(["--merge-output-format".into(), "mp4/mkv".into()]);
     }
-    if !spec.sub.is_empty() && !spec.is_audio() {
-        a.extend(["--sub-langs".into(), spec.sub.clone(), "--convert-subs".into(), "srt".into()]);
-        if spec.sub_auto {
-            a.push("--write-auto-subs".into());
-        }
-        if spec.embed {
-            // --embed-subs saja: yt-dlp mengunduh subtitle, memasukkannya ke video, lalu menghapus
-            // berkas .srt-nya. Dengan keep_srt, --write-subs ikut dipasang sehingga .srt tetap
-            // ada untuk Media Player Windows (dinamai sama dengan videonya setelah selesai).
-            a.push("--embed-subs".into());
-            if spec.keep_srt {
-                a.push("--write-subs".into());
+    // Subtitle tidak lagi diunduh di sini: subtitle yang gagal (YouTube 429) membuat yt-dlp
+    // membatalkan seluruh unduhan. Subtitle diambil terpisah setelah video tersimpan
+    // (lihat `subs_args`, `fetch_subs`, `embed_subs`).
+    a
+}
+
+/// Spesifikasi ini meminta subtitle (video saja).
+pub fn wants_subs(spec: &Spec) -> bool {
+    !spec.sub.is_empty() && !spec.is_audio()
+}
+
+/// Argumen yt-dlp untuk mengambil subtitle saja (tanpa video), dinamai sama dengan videonya:
+/// "<stem>.<bahasa>.srt".
+pub fn subs_args(spec: &Spec, stem: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec!["--skip-download".into(), "--sub-langs".into(), spec.sub.clone(), "--convert-subs".into(), "srt".into()];
+    a.push(if spec.sub_auto { "--write-auto-subs".into() } else { "--write-subs".into() });
+    // Jeda kecil sebelum mengambil subtitle mengurangi penolakan "Too Many Requests".
+    a.extend(["--sleep-subtitles".into(), "2".into()]);
+    a.extend(["-o".into(), Path::new(&spec.dir).join(format!("{}.%(ext)s", stem.replace('%', "%%"))).display().to_string()]);
+    a
+}
+
+/// Kode bahasa 3 huruf untuk trek subtitle MP4/MKV (pemutar menampilkan nama bahasanya).
+pub fn lang3(code: &str) -> Option<&'static str> {
+    let base = code.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    Some(match base.as_str() {
+        "id" | "in" => "ind",
+        "en" => "eng",
+        "ms" => "msa",
+        "jv" => "jav",
+        "su" => "sun",
+        "ja" => "jpn",
+        "ko" => "kor",
+        "zh" => "zho",
+        "ar" => "ara",
+        "es" => "spa",
+        "fr" => "fra",
+        "de" => "deu",
+        "pt" => "por",
+        "ru" => "rus",
+        "hi" => "hin",
+        "th" => "tha",
+        "vi" => "vie",
+        "tl" | "fil" => "fil",
+        "it" => "ita",
+        "nl" => "nld",
+        "tr" => "tur",
+        _ => return None,
+    })
+}
+
+/// Subtitle hasil `fetch_subs` untuk video `stem` di `dir`: "<stem>.<bahasa>.srt" (atau
+/// "<stem>.srt"). Mengembalikan berkas yang paling baru.
+fn find_srt(dir: &Path, stem: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let low = n.to_ascii_lowercase();
+            low.ends_with(".srt") && n.len() > stem.len() + 4 && n.starts_with(stem) && n[stem.len()..].starts_with('.') && !n[stem.len() + 1..n.len() - 4].contains('.')
+        })
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// Jalankan satu perintah alat (yt-dlp/ffmpeg) sebagai bagian dari `job` (supaya bisa
+/// dibatalkan); keluaran stdout+stderr dibaca sampai selesai. (berhasil, baris ERROR terakhir).
+fn run_tool(mut cmd: Command, job: Option<&Job>) -> (bool, String) {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    hide_window(&mut cmd);
+    let Ok(mut child) = cmd.spawn() else { return (false, "alat tidak bisa dijalankan".into()) };
+    let (out, err) = (child.stdout.take(), child.stderr.take());
+    let slot = job.map(|j| j.0.clone()).unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    *slot.lock().unwrap() = Some(child);
+    let last = Arc::new(Mutex::new(String::new()));
+    let mut readers = Vec::new();
+    for stream in [out.map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), err.map(|e| Box::new(e) as Box<dyn std::io::Read + Send>)].into_iter().flatten() {
+        let last = last.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let l = line.trim();
+                if std::env::var_os("OVNER_DEBUG_YTDLP").is_some() {
+                    eprintln!("tool> {l}");
+                }
+                if l.starts_with("ERROR") || l.starts_with("[Subtitle") || l.starts_with("[info] Writing video subtitles") || l.starts_with("WARNING") {
+                    crate::log(&format!("subtitle: {}", l.chars().take(300).collect::<String>()));
+                }
+                if l.starts_with("ERROR") {
+                    *last.lock().unwrap() = l.trim_start_matches("ERROR: ").chars().take(300).collect();
+                }
             }
-            // Trek subtitle ditandai "default" supaya pemutar langsung menampilkannya.
-            a.extend(["--ppa".into(), "EmbedSubtitle+ffmpeg_o:-disposition:s:0 default".into()]);
-        } else {
-            a.push("--write-subs".into());
+        }));
+    }
+    for r in readers {
+        let _ = r.join();
+    }
+    let ok = slot.lock().unwrap().take().and_then(|mut c| c.wait().ok()).is_some_and(|s| s.success());
+    let e = last.lock().unwrap().clone();
+    (ok, e)
+}
+
+/// Ambil subtitle untuk video yang sudah tersimpan, dengan percobaan ulang bila YouTube
+/// membatasi (HTTP 429) atau servernya sedang bermasalah: maks. 3 kali, jeda 5 lalu 15 detik.
+pub fn fetch_subs(data: &Path, spec: &Spec, video: &Path, job: Option<&Job>, cancelled: &dyn Fn() -> bool) -> Result<PathBuf, String> {
+    let stem = video.file_stem().map(|s| s.to_string_lossy().to_string()).ok_or("nama video tidak terbaca")?;
+    let dir = video.parent().ok_or("folder video tidak terbaca")?;
+    let mut last = String::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            let wait = if attempt == 1 { 5 } else { 15 };
+            crate::log(&format!("subtitle: dicoba lagi dalam {wait} detik (percobaan {})", attempt + 1));
+            for _ in 0..wait * 4 {
+                if cancelled() {
+                    return Err("dibatalkan".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+        let mut cmd = Command::new(ytdlp(data));
+        cmd.args(["--newline", "--no-colors", "--no-playlist", "--no-mtime"]).args(subs_args(spec, &stem)).args(tool_args(data)).arg(&spec.page);
+        let (ok, err) = run_tool(cmd, job);
+        if let Some(srt) = find_srt(dir, &stem) {
+            return Ok(srt);
+        }
+        if cancelled() {
+            return Err("dibatalkan".into());
+        }
+        last = if err.is_empty() && ok { "subtitle bahasa itu tidak tersedia".into() } else if err.is_empty() { "gagal".into() } else { err };
+        let low = last.to_ascii_lowercase();
+        let retry = low.contains("429") || low.contains("too many requests") || low.contains("http error 5") || low.contains("timed out") || low.contains("connection");
+        if !retry {
+            break;
         }
     }
-    a
+    Err(friendly_sub_error(&last))
+}
+
+fn friendly_sub_error(e: &str) -> String {
+    let low = e.to_ascii_lowercase();
+    if low.contains("429") || low.contains("too many requests") {
+        "YouTube sedang membatasi unduhan subtitle (HTTP 429); coba lagi beberapa menit lagi".into()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Masukkan `srt` ke video sebagai trek subtitle default (MP4: mov_text, MKV: srt,
+/// WebM: webvtt). Trek subtitle lama diganti. Berkas video diganti setelah berhasil.
+pub fn embed_subs(data: &Path, video: &Path, srt: &Path, lang: &str, job: Option<&Job>) -> Result<(), String> {
+    let ext = video.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let codec = match ext.as_str() {
+        "mkv" => "srt",
+        "webm" => "webvtt",
+        _ => "mov_text",
+    };
+    let tmp = video.with_extension(format!("ovner-sub.{ext}"));
+    let _ = std::fs::remove_file(&tmp);
+    let exe = if ffmpeg(data).exists() { ffmpeg(data) } else { PathBuf::from("ffmpeg") };
+    let mut cmd = Command::new(exe);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(video).arg("-i").arg(srt);
+    cmd.args(["-map", "0", "-map", "-0:s", "-map", "1:0", "-c", "copy", "-c:s", codec, "-disposition:s:0", "default"]);
+    if let Some(l) = lang3(lang) {
+        cmd.arg("-metadata:s:s:0").arg(format!("language={l}"));
+    }
+    if ext == "mp4" || ext == "m4v" || ext == "mov" {
+        cmd.args(["-movflags", "+faststart"]);
+    }
+    cmd.arg(&tmp);
+    let (ok, err) = run_tool(cmd, job);
+    if !ok || std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0) == 0 {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(if err.is_empty() { "ffmpeg gagal memasukkan subtitle".into() } else { format!("ffmpeg: {err}") });
+    }
+    std::fs::rename(&tmp, video).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("video tidak bisa diganti: {e}")
+    })
+}
+
+/// Langkah subtitle setelah video tersimpan: ambil (dengan percobaan ulang), masukkan ke video
+/// bila diminta, lalu .srt disimpan bernama sama dengan video (keep_srt / tanpa embed) atau
+/// dihapus. Ok = pesan singkat untuk log.
+pub fn subs_step(data: &Path, spec: &Spec, video: &Path, job: Option<&Job>, cancelled: &dyn Fn() -> bool) -> Result<String, String> {
+    let srt = fetch_subs(data, spec, video, job, cancelled)?;
+    let lang = spec.sub.split(',').next().unwrap_or("").trim().to_string();
+    if spec.embed {
+        embed_subs(data, video, &srt, &lang, job)?;
+        if spec.keep_srt {
+            sidecar_srt(video);
+        } else {
+            let _ = std::fs::remove_file(&srt);
+        }
+        // Sisa .vtt yang tidak dikonversi.
+        cleanup_vtt(video);
+        Ok(format!("subtitle {lang} dimasukkan ke video"))
+    } else {
+        sidecar_srt(video);
+        cleanup_vtt(video);
+        Ok(format!("subtitle {lang} disimpan sebagai .srt"))
+    }
+}
+
+fn cleanup_vtt(video: &Path) {
+    let (Some(dir), Some(stem)) = (video.parent(), video.file_stem().map(|s| s.to_string_lossy().to_string())) else { return };
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(&stem) && n[stem.len()..].starts_with('.') && n.to_ascii_lowercase().ends_with(".vtt") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// Coba ambil subtitle lagi untuk video yang sudah ada (tombol "Coba unduh subtitle lagi").
+pub fn retry_subs(data: &Path, spec: &Spec, video: &Path) -> Result<String, String> {
+    if !video.exists() {
+        return Err("berkas video sudah tidak ada".into());
+    }
+    ensure_tools(data, Needs { ffmpeg: spec.embed, deno: is_youtube(&spec.page) }, &|_| {})?;
+    subs_step(data, spec, video, None, &|| false)
 }
 
 /// Hasil penelusuran halaman: judul, durasi, daftar pilihan (dengan perkiraan ukuran), subtitle.
@@ -654,7 +868,7 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
     crate::log(&format!("yt-dlp {} → {}", args_for(spec).join(" "), spec.page));
     let mut child = cmd.spawn().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
     let (out, err) = (child.stdout.take(), child.stderr.take());
-    let job = Job(Arc::new(Mutex::new(Some(child))));
+    let job = Job::new(Some(child));
     let cb = Arc::new(cb);
     #[derive(Default)]
     struct Outcome {
@@ -702,12 +916,14 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
         }));
     }
     let j2 = job.clone();
+    let (spec2, data2) = (spec.clone(), data.to_path_buf());
     std::thread::spawn(move || {
         for r in readers {
             let _ = r.join();
         }
         let status = j2.0.lock().unwrap().as_mut().and_then(|c| c.wait().ok());
         let ok = status.is_some_and(|s| s.success());
+        #[allow(unused_mut)]
         let mut st = state.lock().unwrap();
         if let Ok(t) = std::fs::read_to_string(&result_file) {
             if let Some(p) = t.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
@@ -715,14 +931,29 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
             }
         }
         let _ = std::fs::remove_file(&result_file);
-        if ok {
-            if let Some(f) = &st.file {
-                sidecar_srt(Path::new(f));
+        // Video tersimpan: subtitle diambil terpisah. Gagal subtitle tidak membuang videonya.
+        let mut sub_err = String::new();
+        let video_ok = ok && st.fatal.is_none() && st.file.as_deref().is_some_and(|p| Path::new(p).exists());
+        if video_ok && wants_subs(&spec2) {
+            let file = PathBuf::from(st.file.clone().unwrap_or_default());
+            drop(st);
+            cb(Event::Note("subtitle…".into()));
+            let jc = j2.clone();
+            match subs_step(&data2, &spec2, &file, Some(&j2), &move || jc.is_cancelled()) {
+                Ok(m) => crate::log(&format!("subtitle: {m}")),
+                Err(e) => {
+                    crate::log(&format!("subtitle gagal (video tetap tersimpan): {e}"));
+                    sub_err = e;
+                }
             }
+            st = state.lock().unwrap();
+        }
+        if !sub_err.is_empty() {
+            cb(Event::SubsFailed(sub_err.clone()));
         }
         let ev = match (&st.file, &st.fatal) {
             (_, Some(f)) => Event::Done { ok: false, path: st.file.clone().unwrap_or_default(), error: f.clone() },
-            (Some(p), None) if ok && Path::new(p).exists() => Event::Done { ok: true, path: p.clone(), error: String::new() },
+            (Some(p), None) if ok && Path::new(p).exists() => Event::Done { ok: true, path: p.clone(), error: if sub_err.is_empty() { String::new() } else { format!("subtitle gagal: {sub_err}") } },
             (Some(p), None) if ok => Event::Done { ok: false, path: p.clone(), error: "berkas hasil tidak ditemukan".into() },
             _ => Event::Done {
                 ok: false,
@@ -879,6 +1110,54 @@ mod tests {
         assert!(sub_out.join("sub2.srt").exists(), "srt terpisah, bernama sama dengan videonya ({lang})");
     }
 
+    /// Subtitle ditolak server (HTTP 429, seperti YouTube): video tetap tersimpan, subtitle bisa
+    /// dicoba lagi; 429 sekali saja → percobaan ulang otomatis berhasil.
+    /// OVNER_VIDEO_E2E_SUBS429 = halaman yang subtitlenya selalu 429;
+    /// OVNER_VIDEO_E2E_SUBSFLAKY = halaman yang subtitlenya 429 pada permintaan pertama saja.
+    #[test]
+    #[ignore]
+    fn video_subs_429() {
+        let data = PathBuf::from(std::env::var("OVNER_VIDEO_E2E_DATA").unwrap());
+        let out = data.join("out-429");
+        let _ = std::fs::remove_dir_all(&out);
+        let page = std::env::var("OVNER_VIDEO_E2E_SUBS429").unwrap();
+        let spec = Spec { page: page.clone(), key: "v:best".into(), dir: out.display().to_string(), name: "v429.mp4".into(), sub: "id".into(), embed: true, keep_srt: true, ..Default::default() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _job = start(&data, &spec, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+        let mut failed = None;
+        let done = loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(120)).expect("selesai") {
+                Event::SubsFailed(m) => failed = Some(m),
+                ev @ Event::Done { .. } => break ev,
+                _ => {}
+            }
+        };
+        let Event::Done { ok, path, error } = done else { unreachable!() };
+        assert!(ok, "video tetap tersimpan: {error}");
+        assert!(Path::new(&path).exists());
+        assert!(error.starts_with("subtitle gagal") && error.contains("429"), "{error}");
+        assert!(failed.is_some_and(|m| m.contains("429")));
+        // Coba lagi: masih 429 → pesan jelas, video tidak rusak.
+        let e = retry_subs(&data, &spec, Path::new(&path)).unwrap_err();
+        assert!(e.contains("429"), "{e}");
+        assert!(probe_result(&data, Path::new(&path)).is_some(), "video masih utuh");
+
+        // 429 sekali saja: percobaan ulang otomatis (jeda 5 detik) berhasil dan tersemat.
+        let flaky = std::env::var("OVNER_VIDEO_E2E_SUBSFLAKY").unwrap();
+        let spec = Spec { page: flaky, name: "vflaky.mp4".into(), ..spec };
+        let Event::Done { ok, path, error } = run_spec(&data, &spec) else { unreachable!() };
+        assert!(ok && error.is_empty(), "{error}");
+        let o = Command::new(ffmpeg_dir(&data).join("ffprobe")).args(["-v", "error", "-select_streams", "s", "-show_entries", "stream=codec_name:stream_tags=language:stream_disposition=default", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+        let so = String::from_utf8_lossy(&o.stdout).to_string();
+        assert!(so.contains("mov_text") && so.contains("ind"), "subtitle tertanam berbahasa ind: {so:?}");
+        assert!(out.join("vflaky.srt").exists(), ".srt bernama sama");
+        let vtt: Vec<_> = std::fs::read_dir(&out).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".vtt")).collect();
+        assert!(vtt.is_empty(), "sisa .vtt");
+    }
+
     /// Tanpa ffmpeg: penggabungan tidak boleh dilaporkan berhasil.
     #[test]
     #[ignore]
@@ -942,20 +1221,22 @@ mod tests {
         assert!(!a.contains(&"--embed-subs".to_string()), "audio tanpa subtitle");
         let v = Spec { key: "v:1080".into(), fmt: "137+140".into(), ..spec.clone() };
         let va = args_for(&v);
-        assert!(va.contains(&"--embed-subs".to_string()));
-        assert!(!va.contains(&"--write-subs".to_string()), "disematkan: .srt tidak disimpan terpisah");
+        // Subtitle tidak lagi ikut unduhan video (gagal 429 dulu membatalkan videonya).
+        assert!(!va.iter().any(|x| x.contains("sub")), "{va:?}");
         assert!(va[1].starts_with("137+140/"), "{va:?}");
         assert!(!va[1].contains("height<="), "tidak jatuh ke kualitas lebih rendah: {va:?}");
-        let w = Spec { embed: false, ..v.clone() };
-        assert!(args_for(&w).contains(&"--write-subs".to_string()));
+        assert!(wants_subs(&v) && !wants_subs(&spec), "audio tanpa subtitle");
+        let sa = subs_args(&v, "Judul 1080p");
+        assert!(sa.contains(&"--skip-download".to_string()) && sa.contains(&"--write-subs".to_string()) && !sa.contains(&"--write-auto-subs".to_string()), "{sa:?}");
+        assert!(sa.last().unwrap().ends_with("Judul 1080p.%(ext)s"), "{sa:?}");
+        let auto = subs_args(&Spec { sub_auto: true, ..v.clone() }, "x");
+        assert!(auto.contains(&"--write-auto-subs".to_string()) && !auto.contains(&"--write-subs".to_string()));
+        assert_eq!(lang3("id"), Some("ind"));
+        assert_eq!(lang3("en-US"), Some("eng"));
+        assert_eq!(lang3("xx"), None);
         assert_eq!(strip_ext("Lagu.MP4"), "Lagu");
         assert_eq!(ext_for("a:mp3:0"), "mp3");
         assert!(!Spec { key: "a:m4a".into(), ..spec }.needs_ffmpeg());
-        // Disematkan + .srt tetap disimpan (Media Player Windows); trek subtitle default.
-        let k = Spec { keep_srt: true, ..v.clone() };
-        let ka = args_for(&k);
-        assert!(ka.contains(&"--embed-subs".to_string()) && ka.contains(&"--write-subs".to_string()), "{ka:?}");
-        assert!(ka.iter().any(|x| x.contains("disposition:s:0 default")), "{ka:?}");
         // Akhiran nama berkas: resolusi untuk video, format + kualitas (huruf besar) untuk audio.
         let sfx = |key: &str| list.iter().find(|x| x["key"] == key).map(|x| x["suffix"].as_str().unwrap_or("").to_string()).unwrap();
         assert_eq!(sfx("v:1080"), "1080p");
