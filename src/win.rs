@@ -1779,6 +1779,60 @@ mod imp {
         }
     }
 
+    /// Panel unduhan bawaan WebView2 ("Downloads" dengan See more) tidak pernah dipakai Ovner:
+    /// begitu terbuka (Ctrl+J di PDF/iframe, unduhan yang lolos, dsb.) langsung ditutup dan
+    /// `cb` dipanggil supaya Ovner menampilkan Download box v2 sendiri.
+    pub fn on_download_dialog(webview: &wry::WebView, cb: impl Fn() + 'static) {
+        use webview2_com::IsDefaultDownloadDialogOpenChangedEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_9;
+        use wry::WebViewExtWindows;
+        let Ok(w9) = webview.webview().cast::<ICoreWebView2_9>() else { return };
+        let handler = IsDefaultDownloadDialogOpenChangedEventHandler::create(Box::new(move |sender, _| {
+            if let Some(w9) = sender.and_then(|s| s.cast::<ICoreWebView2_9>().ok()) {
+                let mut open = windows::core::BOOL(0);
+                unsafe {
+                    if w9.IsDefaultDownloadDialogOpen(&mut open).is_ok() && open.as_bool() {
+                        let _ = w9.CloseDefaultDownloadDialog();
+                        cb();
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = w9.add_IsDefaultDownloadDialogOpenChanged(&handler, &mut token);
+        }
+    }
+
+    /// Ctrl+J di mana pun dalam tab (termasuk penampil PDF, iframe, situs tanpa JavaScript):
+    /// jangan buka panel unduhan bawaan WebView2, panggil `cb` (halaman Unduhan Ovner).
+    pub fn on_ctrl_j(webview: &wry::WebView, cb: impl Fn() + 'static) {
+        use webview2_com::AcceleratorKeyPressedEventHandler;
+        use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+        use wry::WebViewExtWindows;
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
+                let mut key = 0u32;
+                let _ = args.KeyEventKind(&mut kind);
+                let _ = args.VirtualKey(&mut key);
+                let down = |vk: u16| GetKeyState(vk as i32) < 0;
+                if kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN && key == 0x4A && down(VK_CONTROL.0) && !down(VK_MENU.0) && !down(VK_SHIFT.0) {
+                    let _ = args.SetHandled(true);
+                    cb();
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+        }
+    }
+
     /// Muat ekstensi dari folder (unpacked). Hasilnya dicatat lewat `log`.
     pub fn load_extensions(webview: &wry::WebView, dirs: &[String], log: fn(&str)) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
@@ -1944,6 +1998,8 @@ mod imp {
     pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}
     pub fn on_process_failed(_webview: &wry::WebView, _cb: impl Fn(ProcFail, String) + 'static) {}
     pub fn on_source_changed(_webview: &wry::WebView, _cb: impl Fn(String, bool) + 'static) {}
+    pub fn on_download_dialog(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
+    pub fn on_ctrl_j(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
     pub fn cname_of(_host: &str) -> Option<String> {
         None

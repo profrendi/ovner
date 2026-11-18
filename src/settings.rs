@@ -239,8 +239,24 @@ pub struct Settings {
     /// "full" (GPU penuh), "lite" (GPU untuk video dan komposisi, gambar halaman di CPU),
     /// "off" (tanpa GPU, paling hemat RAM tapi video lebih berat).
     pub gpu_mode: String,
-    /// Paksa YouTube memakai H.264 (lebih ringan didekode CPU): "auto" (saat GPU mati), "on", "off".
+    /// Lama (sampai 0.8.17): "auto"/"on"/"off" untuk YouTube H.264. Dibaca sekali untuk migrasi ke `yt_codec`.
     pub youtube_h264: String,
+    /// Codec video YouTube (seperti ekstensi enhanced-h264ify): "auto" (sesuai dekoder GPU
+    /// komputer ini), "manual" (kotak centang di bawah), "off" (tidak membatasi).
+    pub yt_codec: String,
+    pub yt_block_av1: bool,
+    pub yt_block_vp9: bool,
+    pub yt_block_vp8: bool,
+    pub yt_block_h264: bool,
+    pub yt_block_60fps: bool,
+    pub yt_block_opus: bool,
+    pub yt_block_aac: bool,
+    /// Matikan normalisasi volume YouTube (volume video = posisi slider).
+    pub yt_no_loudness: bool,
+    /// Dekoder GPU yang terdeteksi di komputer ini ("h264=1;vp9=1;av1=0"; kosong = belum diperiksa).
+    pub codec_hw: String,
+    /// `youtube_h264` sudah dipindahkan ke `yt_codec`.
+    pub yt_codec_migrated: bool,
     pub zero_copy: bool,
     pub parallel_downloading: bool,
     pub extra_browser_args: String,
@@ -287,6 +303,18 @@ impl Default for Settings {
             background_media_minutes: 10,
             antiblock: false,
             youtube_h264: "auto".into(),
+            yt_codec: "auto".into(),
+            // Bawaan enhanced-h264ify: semua diblokir kecuali H.264 (berlaku di mode Manual).
+            yt_block_av1: true,
+            yt_block_vp9: true,
+            yt_block_vp8: true,
+            yt_block_h264: false,
+            yt_block_60fps: false,
+            yt_block_opus: false,
+            yt_block_aac: false,
+            yt_no_loudness: false,
+            codec_hw: String::new(),
+            yt_codec_migrated: false,
             language: "auto".into(),
             theme: "system".into(),
             bookmark_bar: false,
@@ -543,6 +571,62 @@ impl Settings {
         self.schema = SCHEMA;
     }
 
+    /// Dekoder GPU yang terdeteksi: (H.264, VP9, AV1); None = belum diketahui.
+    pub fn codec_hw(&self) -> (Option<bool>, Option<bool>, Option<bool>) {
+        let get = |k: &str| {
+            self.codec_hw.split(';').find_map(|p| p.strip_prefix(k).and_then(|v| v.strip_prefix('='))).and_then(|v| match v {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            })
+        };
+        (get("h264"), get("vp9"), get("av1"))
+    }
+
+    /// Codec YouTube yang diblokir saat ini: (codec video+audio yang diblokir, tolak >30fps).
+    /// Nama codec: "av1", "vp9", "vp8", "h264", "opus", "aac".
+    pub fn yt_codec_blocks(&self) -> (Vec<&'static str>, bool) {
+        let mut out = Vec::new();
+        let mut no60 = false;
+        match self.yt_codec.as_str() {
+            "manual" => {
+                let mut push = |on: bool, c: &'static str| {
+                    if on {
+                        out.push(c)
+                    }
+                };
+                push(self.yt_block_av1, "av1");
+                push(self.yt_block_vp9, "vp9");
+                push(self.yt_block_vp8, "vp8");
+                // Semua codec video diblokir = YouTube tidak bisa diputar: H.264 tetap diizinkan.
+                push(self.yt_block_h264 && !(self.yt_block_av1 && self.yt_block_vp9), "h264");
+                push(self.yt_block_opus, "opus");
+                push(self.yt_block_aac && !self.yt_block_opus, "aac");
+                no60 = self.yt_block_60fps;
+            }
+            "auto" => {
+                let (h264, vp9, av1) = self.codec_hw();
+                if self.gpu_mode == "off" {
+                    // Tanpa GPU semua didekode CPU: H.264 paling ringan, 30fps.
+                    out.extend(["av1", "vp9", "vp8"]);
+                    no60 = true;
+                } else {
+                    out.push("vp8");
+                    if av1 != Some(true) {
+                        out.push("av1");
+                    }
+                    if vp9 == Some(false) {
+                        out.push("vp9");
+                    }
+                    // Tidak ada dekoder GPU sama sekali: batasi ke 30fps juga.
+                    no60 = h264 == Some(false) && vp9 != Some(true);
+                }
+            }
+            _ => {}
+        }
+        (out, no60)
+    }
+
     pub fn normalize(&mut self) {
         let pick = |v: &mut String, ok: &[&str], def: &str| {
             if !ok.contains(&v.as_str()) {
@@ -570,6 +654,22 @@ impl Settings {
         self.dl_min_mb = self.dl_min_mb.min(10_000);
         self.background_media_minutes = self.background_media_minutes.clamp(1, 24 * 60);
         pick(&mut self.youtube_h264, &["auto", "on", "off"], "auto");
+        if !self.yt_codec_migrated {
+            // 0.8.17 "Selalu H.264" = Manual dengan bawaan (AV1/VP9/VP8 diblokir).
+            // ("auto" lama = "auto" baru: tidak diubah, supaya pilihan baru tidak tertimpa.)
+            match self.youtube_h264.as_str() {
+                "on" => self.yt_codec = "manual".into(),
+                "off" => self.yt_codec = "off".into(),
+                _ => {}
+            }
+            self.yt_codec_migrated = true;
+        }
+        pick(&mut self.yt_codec, &["auto", "manual", "off"], "auto");
+        if self.codec_hw.len() > 64 {
+            self.codec_hw.clear();
+        }
+        // Download box v2 selalu dipakai (pilihan lama dihapus di 0.8.18).
+        self.dl_box_v2 = true;
         self.filter_update_hours = self.filter_update_hours.clamp(1, 24 * 7);
         pick(&mut self.update_channel, &["stable", "nightly"], "stable");
         if !["off", "cloudflare", "quad9", "adguard", "mullvad", "mullvad_adblock"].contains(&self.secure_dns.as_str()) && !self.secure_dns.starts_with("https://") {
@@ -865,6 +965,59 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn yt_codec_migration_and_modes() {
+        // Setelan 0.8.17 "YouTube pakai H.264: Selalu" → Manual (bawaan: hanya H.264).
+        let old: Settings = serde_json::from_str(r#"{"youtube_h264":"on","dl_box_v2":false}"#).unwrap();
+        let mut s = old.clone();
+        s.normalize();
+        assert_eq!(s.yt_codec, "manual");
+        assert!(s.dl_box_v2, "Download box v2 selalu dipakai");
+        assert_eq!(s.yt_codec_blocks(), (vec!["av1", "vp9", "vp8"], false));
+        // Migrasi hanya sekali: pilihan baru tidak ditimpa lagi.
+        s.yt_codec = "off".into();
+        s.normalize();
+        assert_eq!(s.yt_codec, "off");
+        assert_eq!(s.yt_codec_blocks(), (vec![], false));
+        let mut n: Settings = serde_json::from_str(r#"{"youtube_h264":"off"}"#).unwrap();
+        n.normalize();
+        assert_eq!(n.yt_codec, "off");
+
+        // Otomatis: belum diperiksa → AV1 saja (dan VP8).
+        let mut a = Settings::default();
+        a.normalize();
+        assert_eq!(a.yt_codec, "auto");
+        assert_eq!(a.yt_codec_blocks(), (vec!["vp8", "av1"], false));
+        // Laptop lama (Radeon HD 6520G): H.264 GPU, VP9/AV1 tidak.
+        a.codec_hw = "h264=1;vp9=0;av1=0".into();
+        assert_eq!(a.yt_codec_blocks(), (vec!["vp8", "av1", "vp9"], false));
+        // PC kantor (UHD 630 / GTX 16): VP9 GPU, AV1 tidak.
+        a.codec_hw = "h264=1;vp9=1;av1=0".into();
+        assert_eq!(a.yt_codec_blocks(), (vec!["vp8", "av1"], false));
+        // GPU baru dengan AV1: tidak ada yang diblokir selain VP8.
+        a.codec_hw = "h264=1;vp9=1;av1=1".into();
+        assert_eq!(a.yt_codec_blocks(), (vec!["vp8"], false));
+        // Tanpa dekoder GPU sama sekali: H.264 30fps.
+        a.codec_hw = "h264=0;vp9=0;av1=0".into();
+        assert_eq!(a.yt_codec_blocks(), (vec!["vp8", "av1", "vp9"], true));
+        // GPU dimatikan di Ovner.
+        a.codec_hw = "h264=1;vp9=1;av1=1".into();
+        a.gpu_mode = "off".into();
+        assert_eq!(a.yt_codec_blocks(), (vec!["av1", "vp9", "vp8"], true));
+
+        // Manual: semua codec video diblokir → H.264 tetap diizinkan; Opus+AAC → AAC diizinkan.
+        let mut m = Settings { yt_codec: "manual".into(), yt_block_h264: true, yt_block_opus: true, yt_block_aac: true, yt_block_60fps: true, ..Settings::default() };
+        m.normalize();
+        assert_eq!(m.yt_codec_blocks(), (vec!["av1", "vp9", "vp8", "opus"], true));
+        m.yt_block_vp9 = false;
+        assert_eq!(m.yt_codec_blocks().0, vec!["av1", "vp8", "h264", "opus"]);
+        // Diubah dari panel/halaman pengaturan.
+        assert!(m.set("yt_codec", &serde_json::json!("auto")));
+        assert_eq!(m.yt_codec, "auto");
+        assert!(!m.set("yt_codec", &serde_json::json!(true)));
+    }
+
     use super::*;
 
     #[test]

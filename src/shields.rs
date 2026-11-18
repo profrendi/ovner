@@ -259,7 +259,8 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "uniform": s.uniform_fingerprint,
         "hideWv": s.hide_webview2 || s.uniform_fingerprint,
         "referrer": s.referrer_policy,
-        "h264": s.youtube_h264 == "on" || (s.youtube_h264 == "auto" && s.gpu_mode == "off"),
+        // Codec YouTube (seperti enhanced-h264ify) + deteksi dekoder GPU sekali per sesi.
+        "yt": yt_codec_cfg(s),
         // Tombol unduh di atas video (tab privat juga), kecuali di situs yang dikecualikan.
         "videoBtn": s.video_button,
         "videoNever": s.video_button_never,
@@ -268,6 +269,34 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "key": format!("{:016x}", session ^ if private { 0x9e37_79b9_7f4a_7c15 } else { 0 }),
     });
     format!("(function(){{try{{Object.defineProperty(window,'__ovnerCfg',{{value:{cfg},configurable:false}});}}catch(e){{}}}})();\n{CONTENT_JS}\n{PRIVACY_JS}\n{FARBLE_JS}")
+}
+
+/// Dekoder GPU sudah dilaporkan halaman pada sesi ini (halaman berikutnya tidak memeriksa lagi).
+pub static CODEC_PROBED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Potongan teks codec di MIME/codec string ("video/webm; codecs=\"vp09.00.40.08\"") per codec,
+/// sama seperti enhanced-h264ify (av99 = AV1 eksperimen YouTube).
+pub fn codec_tokens(codec: &str) -> &'static [&'static str] {
+    match codec {
+        "av1" => &["av01", "av99"],
+        "vp9" => &["vp9", "vp09"],
+        "vp8" => &["vp8", "vp08"],
+        "h264" => &["avc1", "avc3"],
+        "opus" => &["opus"],
+        "aac" => &["mp4a"],
+        _ => &[],
+    }
+}
+
+fn yt_codec_cfg(s: &Settings) -> serde_json::Value {
+    let (blocked, no60) = s.yt_codec_blocks();
+    let tokens: Vec<&str> = blocked.iter().flat_map(|c| codec_tokens(c).iter().copied()).collect();
+    json!({
+        "block": tokens,
+        "no60": no60,
+        "noLN": s.yt_no_loudness,
+        "probe": !CODEC_PROBED.load(std::sync::atomic::Ordering::Relaxed),
+    })
 }
 
 /// Situs yang menolak browser dengan identitas atau sidik jari yang diubah (menganggapnya bot
@@ -444,6 +473,11 @@ mod tests {
         let js = page_scripts(&s, 42, false);
         assert!(js.contains("__ovnerCfg") && js.contains("bank.co.id") && js.contains("\"farbling\":\"standard\""));
         assert_ne!(page_scripts(&s, 42, true), js);
+        // Codec YouTube: bawaan Otomatis tanpa hasil deteksi = AV1 (+VP8) diblokir.
+        assert!(js.contains(r#""block":["vp8","vp08","av01","av99"]"#), "{js:.400}");
+        let m = Settings { yt_codec: "manual".into(), yt_no_loudness: true, ..Settings::default() };
+        let js = page_scripts(&m, 42, false);
+        assert!(js.contains(r#""block":["av01","av99","vp9","vp09","vp8","vp08"]"#) && js.contains(r#""noLN":true"#));
     }
     #[test]
     fn identity_and_letterbox() {

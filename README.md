@@ -71,6 +71,39 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.18
+
+- **Codec video YouTube seperti enhanced-h264ify** — tombol chip baru di kanan atas (di sebelah
+  mode gelap) dengan pengaturannya sendiri. Tiga mode:
+  - **Otomatis** (bawaan): Ovner memeriksa dekoder video GPU komputer ini sekali per sesi
+    (WebCodecs, cadangannya MediaCapabilities). Codec yang tidak punya dekoder GPU diblokir: AV1 di
+    GPU sebelum Intel Gen 11 / RTX 30 / RX 6000, VP9 di laptop lama. Tanpa dekoder GPU sama sekali
+    atau GPU dimatikan di Ovner: hanya H.264, maksimal 30fps.
+  - **Manual**: kotak centang Blokir AV1 / VP9 / H.264 / VP8 / 60fps / Opus / AAC, bawaan sama
+    seperti enhanced-h264ify (semua kecuali H.264). AV1+VP9+H.264 tidak bisa diblokir bersamaan.
+  - **Mati**: YouTube memilih sendiri.
+  Setiap codec diberi keterangan singkat (kuota, ketajaman, beban dekode, syarat GPU), status
+  dekoder GPU-nya, dan panel menampilkan codec yang sedang diputar (seperti Stats for nerds).
+  Selain `isTypeSupported` dan `canPlayType` (cara enhanced-h264ify), Ovner juga menjawab
+  `MediaCapabilities.decodingInfo` dan WebCodecs supaya YouTube tidak tetap memilih AV1 lewat
+  jalur pemeriksaan yang lebih baru. Opsi "Matikan normalisasi volume" juga ada. Setelan lama
+  "YouTube pakai H.264: Selalu" otomatis menjadi mode Manual.
+- **Nama berkas video/audio otomatis diberi kualitas**: memilih 1080p → `judul 1080p.mp4`;
+  audio → `judul MP3 320 KBPS.mp3`, `judul M4A 128 KBPS.m4a`, `judul OPUS 160 KBPS.opus`,
+  `judul MP3 VBR.mp3`, `judul FLAC.flac`. Mengganti pilihan langsung mengganti akhiran nama.
+- **720p tidak lagi berisi video 480p.** Akar masalahnya: bila berkas dengan nama sama sudah ada,
+  yt-dlp menganggap video "sudah diunduh" dan memakai berkas lama tanpa mengunduh. Kini nama yang
+  sudah terpakai otomatis diberi `(1)`, `(2)`, ... (MKV dan berkas .part ikut diperiksa).
+- **Subtitle tampil di Media Player bawaan Windows.** Media Player Windows tidak membaca subtitle
+  yang tertanam di MP4 (VLC bisa). Pilihan baru "Simpan juga berkas .srt" (nyala bawaan saat
+  subtitle dimasukkan ke video): berkas `.srt` disimpan dengan nama sama persis dengan videonya
+  (`judul 1080p.srt`, bukan `judul 1080p.id.srt`) sehingga bisa dipilih lewat Subtitle → Pilih
+  berkas subtitle. Trek subtitle di dalam MP4 juga ditandai default.
+- **Download box v2 selalu dipakai.** Pilihan "Download box v2" dihapus. Panel unduhan bawaan
+  WebView2 ("Downloads" dengan See more) yang kadang muncul — misalnya Ctrl+J saat fokus di
+  penampil PDF/iframe/situs tanpa JavaScript, atau unduhan yang lolos — kini langsung ditutup dan
+  diganti gelembung Download box v2 Ovner; Ctrl+J di mana pun membuka halaman Unduhan Ovner.
+
 ## Perbaikan 0.8.17
 
 - **Alamat YouTube selalu sesuai halaman yang dibuka.** YouTube berpindah video tanpa memuat

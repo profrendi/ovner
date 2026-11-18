@@ -1,7 +1,7 @@
 // Privasi Ovner yang berjalan di semua bingkai (halaman dan iframe), sebelum skrip situs:
 // - menyamarkan tanda aplikasi WebView2 (chrome.webview, window.ipc) agar terlihat seperti Edge;
 // - mode seragam ala Mullvad: nilai generik untuk CPU, RAM, layar, timer, dan API langka;
-// - YouTube memakai H.264 (lebih ringan didekode CPU, berguna saat GPU dimatikan);
+// - YouTube: blokir codec berat (AV1/VP9/60fps, seperti enhanced-h264ify) dan normalisasi volume;
 // - kebijakan referrer halaman (melengkapi tajuk Referer yang dipangkas penyaring jaringan).
 (function () {
   "use strict";
@@ -18,17 +18,80 @@
     try { Object.defineProperty(obj, prop, { get: () => value, configurable: true }); } catch (e) {}
   };
 
-  // ---- YouTube: H.264 saja (seperti ekstensi h264ify) ----
-  if (cfg.h264 && /(^|\.)(youtube|youtube-nocookie)\.com$/.test(location.hostname)) {
-    const heavy = /vp0?9|vp8|av01/i;
-    for (const MS of [window.MediaSource, window.ManagedMediaSource]) {
+  // ---- YouTube: pilih codec (seperti ekstensi enhanced-h264ify) ----
+  // YouTube bertanya ke browser codec mana yang bisa diputar; codec yang diblokir dijawab
+  // "tidak bisa" sehingga YouTube mengirim codec lain. Selain isTypeSupported dan canPlayType
+  // (yang dipakai enhanced-h264ify), MediaCapabilities.decodingInfo dan WebCodecs ikut dijawab
+  // supaya YouTube tidak tetap memilih AV1 lewat jalur pemeriksaan yang lebih baru.
+  const yt = cfg.yt || {};
+  const ytHost = /(^|\.)(youtube|youtube-nocookie)\.com$/.test(location.hostname);
+  const block = (yt.block || []).map((t) => String(t).toLowerCase());
+  if (ytHost && (block.length || yt.no60)) {
+    const bad = (t) => {
+      t = String(t == null ? "" : t).toLowerCase();
+      if (block.some((b) => t.includes(b))) return true;
+      if (yt.no60) { const m = /framerate=["']?(\d+)/.exec(t); if (m && +m[1] > 30) return true; }
+      return false;
+    };
+    for (const MS of [window.MediaSource, window.ManagedMediaSource, window.WebKitMediaSource]) {
       if (MS && MS.isTypeSupported) {
         const orig = MS.isTypeSupported.bind(MS);
-        try { MS.isTypeSupported = (t) => (heavy.test(String(t)) ? false : orig(t)); } catch (e) {}
+        try { MS.isTypeSupported = function (t) { return bad(t) ? false : orig(t); }; } catch (e) {}
       }
     }
     const cpt = HTMLMediaElement.prototype.canPlayType;
-    HTMLMediaElement.prototype.canPlayType = function (t) { return heavy.test(String(t)) ? "" : cpt.call(this, t); };
+    HTMLMediaElement.prototype.canPlayType = function (t) { return bad(t) ? "" : cpt.call(this, t); };
+    const MC = window.MediaCapabilities && MediaCapabilities.prototype;
+    if (MC && MC.decodingInfo) {
+      const di = MC.decodingInfo;
+      MC.decodingInfo = function (c) {
+        try {
+          const v = c && c.video, a = c && c.audio;
+          if ((v && (bad(v.contentType) || (yt.no60 && +v.framerate > 30))) || (a && bad(a.contentType))) {
+            return Promise.resolve({ supported: false, smooth: false, powerEfficient: false, configuration: c });
+          }
+        } catch (e) {}
+        return di.apply(this, arguments);
+      };
+    }
+    for (const D of [window.VideoDecoder, window.AudioDecoder]) {
+      if (D && D.isConfigSupported) {
+        const ics = D.isConfigSupported.bind(D);
+        try {
+          D.isConfigSupported = function (c) {
+            if (c && (bad(c.codec) || (yt.no60 && +c.framerate > 30))) return Promise.resolve({ supported: false, config: c });
+            return ics(c);
+          };
+        } catch (e) {}
+      }
+    }
+  }
+  // Normalisasi volume YouTube dimatikan: volume video mengikuti slider pemutar
+  // (enhanced-h264ify "Disable Loudness Normalization").
+  if (ytHost && yt.noLN) {
+    let panel = null, burst = 0, burstAt = 0;
+    const want = () => { const v = panel && +panel.getAttribute("aria-valuenow"); return v >= 0 && v <= 100 ? v / 100 : null; };
+    const apply = () => {
+      const v = document.querySelector("video.html5-main-video, video"), w = want();
+      if (!v || w == null || v.muted || Math.abs(v.volume - w) < 0.005) return;
+      // Pengaman: bila pemutar terus membalas perubahan ini, berhenti sebentar (tidak saling kejar).
+      const now = Date.now();
+      if (now - burstAt > 5000) { burst = 0; burstAt = now; }
+      if (++burst > 4) return;
+      try { v.volume = w; } catch (e) {}
+    };
+    const watch = () => {
+      const p = document.querySelector(".ytp-volume-panel");
+      if (!p || p === panel) return;
+      panel = p;
+      new MutationObserver(apply).observe(p, { attributes: true, attributeFilter: ["aria-valuenow"] });
+      apply();
+    };
+    // YouTube menurunkan volume lagi setiap video baru dimuat: terapkan ulang saat itu.
+    document.addEventListener("loadedmetadata", () => setTimeout(apply, 250), true);
+    document.addEventListener("playing", () => setTimeout(apply, 250), true);
+    const t = setInterval(() => { watch(); if (panel) clearInterval(t); }, 1000);
+    document.addEventListener("yt-navigate-finish", watch, true);
   }
 
   // ---- Referrer ----

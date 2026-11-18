@@ -17,6 +17,35 @@
   const post = (o) => { try { const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s); } catch (e) {} };
   const cfg = window.__ovnerCfg || {};
 
+  // Dekoder video GPU komputer ini (untuk mode codec YouTube "Otomatis"): diperiksa sekali per
+  // sesi di halaman https pertama. Fungsi aslinya diambil sekarang, sebelum privacy.js
+  // menimpanya di YouTube. WebCodecs "prefer-hardware" = hanya dekoder GPU; bila tidak ada,
+  // MediaCapabilities.powerEfficient dipakai.
+  if (cfg.yt && cfg.yt.probe && window.isSecureContext && /^https?:$/.test(location.protocol)) {
+    const VD = window.VideoDecoder, ics = VD && VD.isConfigSupported;
+    const mc = navigator.mediaCapabilities, di = mc && mc.decodingInfo;
+    const probe = async () => {
+      const C = { h264: ["avc1.640028", "mp4"], vp9: ["vp09.00.40.08", "webm"], av1: ["av01.0.08M.08", "mp4"] };
+      const out = { t: "codec-hw" };
+      for (const [k, [codec, box]] of Object.entries(C)) {
+        let hw = null;
+        try {
+          if (ics) hw = !!(await ics.call(VD, { codec, codedWidth: 1920, codedHeight: 1080, hardwareAcceleration: "prefer-hardware" })).supported;
+        } catch (e) {}
+        if (hw === null && di) {
+          try {
+            const r = await di.call(mc, { type: "media-source", video: { contentType: `video/${box}; codecs="${codec}"`, width: 1920, height: 1080, bitrate: 4000000, framerate: 30 } });
+            hw = !!(r.supported && r.powerEfficient);
+          } catch (e) {}
+        }
+        out[k] = hw;
+      }
+      post(out);
+    };
+    const later = () => setTimeout(() => { probe().catch(() => {}); }, 1500);
+    if (document.readyState === "complete") later(); else addEventListener("load", later, { once: true });
+  }
+
   // Dialog "Tinggalkan situs?" (seperti --disable-beforeunload di ungoogled-chromium).
   if (cfg.noBeforeUnload) {
     const add = EventTarget.prototype.addEventListener;

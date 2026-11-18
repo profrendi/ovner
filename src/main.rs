@@ -459,6 +459,10 @@ enum UserEvent {
     DeleteCookies(String, String),
     /// Pop-up window.open sudah dibuat sebagai WebView: jadikan tab.
     PopupReady,
+    /// Codec yang sedang diputar tab YouTube aktif jendela `.0` (JSON dari getStatsForNerds).
+    CodecNow(u32, String),
+    /// Panel unduhan bawaan WebView2 sempat terbuka di tab ini: tampilkan Download box v2.
+    DlDialog(u64),
     /// Halaman meminta jendelanya ditutup (window.close).
     ScriptClose(u64),
     /// Hasil uji diagnostik di latar.
@@ -720,6 +724,8 @@ struct App {
 
     last_unresponsive: HashMap<u64, Instant>,
     extensions_loaded: bool,
+    /// Setelan codec YouTube diubah di panel tapi tab YouTube belum dimuat ulang.
+    codec_dirty: bool,
     /// Tersembunyi di tray.
     in_tray: bool,
     /// Sedang dalam keadaan hemat (tray atau diminimalkan).
@@ -1027,6 +1033,13 @@ fn build_tab_view(
     }
     let p_close = tenv.proxy.clone();
     win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
+    // Panel unduhan bawaan WebView2 tidak pernah ditampilkan: selalu Download box v2 Ovner.
+    {
+        let p_dlg = tenv.proxy.clone();
+        win::on_download_dialog(&wv, move || send(&p_dlg, UserEvent::DlDialog(id)));
+        let p_j = tenv.proxy.clone();
+        win::on_ctrl_j(&wv, move || send(&p_j, UserEvent::Content(id, r#"{"t":"key","k":"downloads"}"#.into())));
+    }
     let p_dl = tenv.proxy.clone();
     let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
     // PDF besar langsung diunduh (setelan "pdf_download"): dibaca Ovner dari respons yang sudah
@@ -2130,6 +2143,7 @@ impl App {
             "pwOffer": self.pw_offer.as_ref().map(|(u, user, _, update)| json!({"site": vault::site_of(u), "user": user, "update": update})),
             "toolbarCss": s.toolbar_css,
             "dark": dark,
+            "codec": self.codec_state(&s),
             "video": tab.is_some_and(|t| video::is_video_page(&t.url)),
             "pageTitle": tab.map(|t| t.title.clone()).unwrap_or_default(),
             "videoTools": [video::ytdlp(data_dir()).exists(), video::ffmpeg(data_dir()).exists()],
@@ -3040,9 +3054,12 @@ impl App {
     }
 
     /// Mulai (atau tunda, `later`) unduhan video dari dialog.
-    fn start_video_spec(&mut self, spec: video::Spec, later: bool) {
+    fn start_video_spec(&mut self, mut spec: video::Spec, later: bool) {
         let id = win::next_download_id();
-        let name = format!("{}.{}", video::strip_ext(&spec.name), video::ext_for(&spec.key));
+        // Nama yang sudah dipakai berkas lain diberi (1), (2), ... supaya yt-dlp tidak
+        // menganggapnya "sudah diunduh" lalu memakai berkas lama.
+        spec.name = video::unique_name(Path::new(&spec.dir), &spec.name, &spec.key);
+        let name = spec.name.clone();
         self.downloads.push(Download {
             id,
             url: spec.page.clone(),
@@ -3074,8 +3091,17 @@ impl App {
     }
 
     /// Jalankan yt-dlp untuk unduhan video `id`.
-    fn run_video(&mut self, id: u64, spec: video::Spec) {
+    fn run_video(&mut self, id: u64, mut spec: video::Spec) {
         let _ = std::fs::create_dir_all(&spec.dir);
+        // Unduhan yang ditunda: nama bisa sudah terpakai sejak dijadwalkan.
+        let fresh = video::unique_name(Path::new(&spec.dir), &spec.name, &spec.key);
+        if fresh != spec.name {
+            spec.name = fresh;
+            if let Some(d) = self.downloads.iter_mut().rev().find(|d| d.id == id) {
+                d.path = Path::new(&spec.dir).join(&spec.name).display().to_string();
+                d.name = spec.name.clone();
+            }
+        }
         let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
         let lang = self.lang;
         log(&format!("unduh video ({}): {}", spec.key, spec.page));
@@ -4188,6 +4214,9 @@ impl App {
                 self.sample_usage();
                 self.push_usage();
             }
+            // Codec YouTube dari halaman Pengaturan: langsung berlaku di tab YouTube.
+            "yt_codec" | "yt_block_av1" | "yt_block_vp9" | "yt_block_vp8" | "yt_block_h264" | "yt_block_60fps" | "yt_block_opus" | "yt_block_aac"
+            | "yt_no_loudness" => self.apply_codec(),
             "letterboxing" | "vertical_tabs" => {
                 self.each_window(|a| {
                     a.ensure_sidebar();
@@ -4203,7 +4232,7 @@ impl App {
                 }
             }
             "farbling" | "farbling_off" | "spellcheck" | "disable_beforeunload" | "de_amp" | "user_css" | "hide_webview2" | "uniform_fingerprint"
-            | "uniform_utc" | "youtube_h264" | "referrer_policy" | "gpu_mode" => {
+            | "uniform_utc" | "referrer_policy" | "gpu_mode" => {
                 self.script_gen += 1;
                 self.each_window(|a| a.rebuild_shown());
             }
@@ -4267,6 +4296,78 @@ impl App {
         self.refresh_pages("settings");
         self.last_render_key.clear();
         self.render();
+    }
+
+    /// Panel unduhan bawaan WebView2 sempat terbuka (sudah ditutup): tampilkan gelembung
+    /// Download box v2 di jendela tab itu.
+    fn on_default_dl_dialog(&mut self, tab: u64) {
+        if let Some(no) = self.win_of_tab(tab) {
+            self.switch_to(no);
+        }
+        log("panel unduhan bawaan WebView2 ditutup, diganti Download box v2");
+        self.dl_bubble = true;
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    /// Ada tab YouTube yang hidup (WebView-nya ada) di jendela mana pun.
+    fn any_youtube_tab(&self) -> bool {
+        self.all_tabs().any(|t| t.webview.is_some() && video::is_youtube(&t.url))
+    }
+
+    /// Bangun ulang tab YouTube di semua jendela supaya setelan codec baru dipakai (YouTube
+    /// memilih codec saat halaman dimuat). Tab lain tidak tersentuh.
+    fn apply_codec(&mut self) {
+        self.codec_dirty = false;
+        let mut n = 0;
+        self.each_window(|a| {
+            let list: Vec<usize> = (0..a.tabs.len()).filter(|&j| a.tabs[j].webview.is_some() && video::is_youtube(&a.tabs[j].url)).collect();
+            for j in list {
+                a.rebuild_tab(j);
+                n += 1;
+            }
+        });
+        let (b, no60) = self.settings.borrow().yt_codec_blocks();
+        log(&format!("codec YouTube: blokir {b:?}{}; {n} tab dimuat ulang", if no60 { " + >30fps" } else { "" }));
+    }
+
+    /// Data panel codec untuk toolbar.
+    fn codec_state(&self, s: &Settings) -> Value {
+        let (blocked, no60) = s.yt_codec_blocks();
+        let (h264, vp9, av1) = s.codec_hw();
+        let site = self.tabs.get(self.active).is_some_and(|t| video::is_youtube(&t.url));
+        json!({
+            "mode": s.yt_codec,
+            "manual": {
+                "av1": s.yt_block_av1, "vp9": s.yt_block_vp9, "vp8": s.yt_block_vp8, "h264": s.yt_block_h264,
+                "fps60": s.yt_block_60fps, "opus": s.yt_block_opus, "aac": s.yt_block_aac,
+            },
+            "noLN": s.yt_no_loudness,
+            "blocked": blocked,
+            "no60": no60,
+            "hw": {"h264": h264, "vp9": vp9, "av1": av1},
+            "gpuOff": s.gpu_mode == "off",
+            "dirty": self.codec_dirty,
+            "yt": site,
+        })
+    }
+
+    /// Codec yang sedang diputar tab YouTube aktif (seperti "Stats for nerds").
+    fn query_codec_now(&mut self) {
+        let no = self.win_no;
+        if let Some(wv) = self.tabs.get(self.active).filter(|t| video::is_youtube(&t.url)).and_then(|t| t.webview.as_ref()) {
+            let p = self.proxy.clone();
+            let js = "(function(){try{var p=document.getElementById('movie_player');var s=p&&p.getStatsForNerds&&p.getStatsForNerds();\
+                      var v=document.querySelector('video.html5-main-video')||document.querySelector('video');\
+                      var q=v&&v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():null;\
+                      if(!s&&!v)return null;\
+                      return {codecs:String(s&&s.codecs||''),res:String(s&&s.resolution||''),w:v?v.videoWidth:0,h:v?v.videoHeight:0,\
+                      drop:q?q.droppedVideoFrames:null,total:q?q.totalVideoFrames:null,playing:!!(v&&!v.paused)};}catch(e){return null}})()";
+            if wv.evaluate_script_with_callback(js, move |r| send(&p, UserEvent::CodecNow(no, r))).is_ok() {
+                return;
+            }
+        }
+        post_page(&self.toolbar, "codecNow", "null", "window.ovner && ovner.codecNow");
     }
 
     /// Terapkan mode gelap ke semua tab yang hidup tanpa memuat ulang.
@@ -4519,10 +4620,42 @@ impl App {
             log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings" | "codec-hw") {
             return false;
         }
         match kind {
+            // Dekoder video GPU komputer ini (sekali per sesi) untuk mode codec "Otomatis".
+            "codec-hw" => {
+                if shields::CODEC_PROBED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    return false;
+                }
+                let b = |k: &str| match msg[k].as_bool() {
+                    Some(true) => "1",
+                    Some(false) => "0",
+                    None => "?",
+                };
+                let v = format!("h264={};vp9={};av1={}", b("h264"), b("vp9"), b("av1"));
+                log(&format!("dekoder video GPU: {v}"));
+                let changed = {
+                    let mut st = self.settings.borrow_mut();
+                    let changed = st.codec_hw != v;
+                    if changed {
+                        st.codec_hw = v;
+                        st.save(data_dir());
+                    }
+                    changed
+                };
+                if changed {
+                    // Hasil pertama/berubah: tab YouTube berikutnya memakai pilihan baru; tab
+                    // YouTube yang terbuka diperbarui lewat tombol "Terapkan" di panel codec.
+                    if self.settings.borrow().yt_codec == "auto" {
+                        self.codec_dirty = self.any_youtube_tab();
+                    }
+                    self.refresh_pages("settings");
+                    self.last_render_key.clear();
+                    self.render();
+                }
+            }
             // Tombol "Unduh video" di atas video halaman.
             "video-dl" => {
                 if i != self.active {
@@ -5169,6 +5302,7 @@ impl App {
                     sub: msg["sub"].as_str().unwrap_or("").to_string(),
                     embed: msg["embed"].as_bool().unwrap_or(false),
                     sub_auto: msg["subAuto"].as_bool().unwrap_or(false),
+                    keep_srt: msg["srt"].as_bool().unwrap_or(false),
                     fmt: msg["fmt"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_')).collect(),
                 };
                 if spec.page.starts_with("http") && !spec.dir.is_empty() {
@@ -5194,6 +5328,34 @@ impl App {
                     }
                 }
             }
+            // ---- Panel codec YouTube (seperti popup enhanced-h264ify) ----
+            "codec-set" => {
+                let key = msg["key"].as_str().unwrap_or("");
+                let allowed = ["yt_codec", "yt_block_av1", "yt_block_vp9", "yt_block_vp8", "yt_block_h264", "yt_block_60fps", "yt_block_opus", "yt_block_aac", "yt_no_loudness"];
+                if allowed.contains(&key) {
+                    let before = self.settings.borrow().yt_codec_blocks();
+                    let ln = self.settings.borrow().yt_no_loudness;
+                    if self.settings.borrow_mut().set(key, &msg["value"]) {
+                        self.settings.borrow().save(data_dir());
+                        let changed = {
+                            let s = self.settings.borrow();
+                            s.yt_codec_blocks() != before || s.yt_no_loudness != ln
+                        };
+                        if changed {
+                            self.codec_dirty = self.any_youtube_tab();
+                        }
+                        self.refresh_pages("settings");
+                        self.last_render_key.clear();
+                        self.render();
+                    }
+                }
+            }
+            "codec-apply" => {
+                self.apply_codec();
+                self.last_render_key.clear();
+                self.render();
+            }
+            "codec-now" => self.query_codec_now(),
             "pick" => {
                 let _ = self.on_menu("pick");
             }
@@ -7014,6 +7176,7 @@ fn main() {
         cname: Arc::new(Mutex::new(HashMap::new())),
         last_unresponsive: HashMap::new(),
         extensions_loaded: false,
+        codec_dirty: false,
         sampler: usage::Sampler::new(),
         stats: Vec::new(),
         stats_at: Instant::now(),
@@ -7351,6 +7514,13 @@ fn main() {
                     app.assign_tab_procs();
                 }
                 UserEvent::PopupReady => app.adopt_popups(),
+                UserEvent::CodecNow(no, r) => {
+                    if app.switch_to(no) {
+                        let v: Value = serde_json::from_str(&r).unwrap_or(Value::Null);
+                        post_page(&app.toolbar, "codecNow", &v.to_string(), "window.ovner && ovner.codecNow");
+                    }
+                }
+                UserEvent::DlDialog(tab) => app.on_default_dl_dialog(tab),
                 UserEvent::Problem(id, name, json_text) => app.on_problem(id, &name, &json_text),
                 UserEvent::DeleteCookies(base, json_text) => {
                     let v: Value = serde_json::from_str(&json_text).unwrap_or_default();

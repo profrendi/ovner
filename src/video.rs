@@ -387,6 +387,10 @@ pub struct Spec {
     /// kualitas yang dipilih, bukan jatuh diam-diam ke format lain yang lebih kecil.
     #[serde(default)]
     pub fmt: String,
+    /// Subtitle dimasukkan ke video DAN disimpan sebagai .srt bernama sama di sampingnya
+    /// (Media Player bawaan Windows tidak membaca subtitle di dalam MP4).
+    #[serde(default)]
+    pub keep_srt: bool,
 }
 
 impl Spec {
@@ -473,8 +477,14 @@ pub fn args_for(spec: &Spec) -> Vec<String> {
         }
         if spec.embed {
             // --embed-subs saja: yt-dlp mengunduh subtitle, memasukkannya ke video, lalu menghapus
-            // berkas .srt-nya. (Dulu --write-subs ikut dipasang sehingga .srt tertinggal terpisah.)
+            // berkas .srt-nya. Dengan keep_srt, --write-subs ikut dipasang sehingga .srt tetap
+            // ada untuk Media Player Windows (dinamai sama dengan videonya setelah selesai).
             a.push("--embed-subs".into());
+            if spec.keep_srt {
+                a.push("--write-subs".into());
+            }
+            // Trek subtitle ditandai "default" supaya pemutar langsung menampilkannya.
+            a.extend(["--ppa".into(), "EmbedSubtitle+ffmpeg_o:-disposition:s:0 default".into()]);
         } else {
             a.push("--write-subs".into());
         }
@@ -535,7 +545,7 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
                 _ => (id_of(f), size(f)),
             };
             let codec = f["vcodec"].as_str().unwrap_or("").split('.').next().unwrap_or("").to_string();
-            json!({"key": format!("v:{h}"), "label": format!("{h}p MP4"), "size": sz, "ext": "mp4", "kind": "video", "fmt": fmt, "codec": codec})
+            json!({"key": format!("v:{h}"), "label": format!("{h}p MP4"), "size": sz, "ext": "mp4", "kind": "video", "fmt": fmt, "codec": codec, "suffix": format!("{h}p")})
         })
         .collect();
     if list.is_empty() && !fmts.is_empty() {
@@ -544,13 +554,16 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
     let est = |kbps: f64| (kbps * 1000.0 / 8.0 * dur) as u64;
     let m4a_key = if audio.is_empty() { "a:m4ax" } else { "a:m4a" };
     let m4a_fmt = best_m4a.map(|f| id_of(f)).unwrap_or_default();
-    list.push(json!({"key": m4a_key, "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": if dur > 0.0 || best_m4a.is_some() { a_size } else { 0 }, "ext": "m4a", "kind": "audio", "fmt": m4a_fmt}));
-    list.push(json!({"key": "a:mp3:0", "label": "Audio MP3 VBR", "en": "Audio only MP3 VBR", "size": est(245.0), "ext": "mp3", "kind": "audio", "approx": true}));
+    // Akhiran nama berkas (huruf besar): "M4A 128 KBPS", "MP3 VBR", "OPUS 160 KBPS", "FLAC".
+    let kbps = |f: Option<&&serde_json::Value>, fallback: u32| f.and_then(|f| f["abr"].as_f64()).map(snap_kbps).unwrap_or(fallback);
+    let m4a_sfx = if best_m4a.is_some() || audio.is_empty() { format!("M4A {} KBPS", kbps(best_m4a, 128)) } else { "M4A".to_string() };
+    list.push(json!({"key": m4a_key, "label": "Audio, M4A asli", "en": "Audio only, original M4A", "size": if dur > 0.0 || best_m4a.is_some() { a_size } else { 0 }, "ext": "m4a", "kind": "audio", "fmt": m4a_fmt, "suffix": m4a_sfx}));
+    list.push(json!({"key": "a:mp3:0", "label": "Audio MP3 VBR", "en": "Audio only MP3 VBR", "size": est(245.0), "ext": "mp3", "kind": "audio", "approx": true, "suffix": "MP3 VBR"}));
     for k in [320, 256, 192, 128] {
-        list.push(json!({"key": format!("a:mp3:{k}"), "label": format!("Audio MP3 {k} kbps"), "en": format!("Audio only MP3 {k} kbps"), "size": est(k as f64), "ext": "mp3", "kind": "audio"}));
+        list.push(json!({"key": format!("a:mp3:{k}"), "label": format!("Audio MP3 {k} kbps"), "en": format!("Audio only MP3 {k} kbps"), "size": est(k as f64), "ext": "mp3", "kind": "audio", "suffix": format!("MP3 {k} KBPS")}));
     }
-    list.push(json!({"key": "a:opus", "label": "Audio OPUS", "en": "Audio only OPUS", "size": best_opus.map(|f| size(f)).unwrap_or(est(160.0)), "ext": "opus", "kind": "audio", "fmt": best_opus.map(|f| id_of(f)).unwrap_or_default()}));
-    list.push(json!({"key": "a:flac", "label": "Audio FLAC", "en": "Audio only FLAC", "size": est(900.0), "ext": "flac", "kind": "audio", "approx": true}));
+    list.push(json!({"key": "a:opus", "label": "Audio OPUS", "en": "Audio only OPUS", "size": best_opus.map(|f| size(f)).unwrap_or(est(160.0)), "ext": "opus", "kind": "audio", "fmt": best_opus.map(|f| id_of(f)).unwrap_or_default(), "suffix": format!("OPUS {} KBPS", kbps(best_opus, 160))}));
+    list.push(json!({"key": "a:flac", "label": "Audio FLAC", "en": "Audio only FLAC", "size": est(900.0), "ext": "flac", "kind": "audio", "approx": true, "suffix": "FLAC"}));
     // Subtitle: buatan pemilik video dulu, lalu terjemahan otomatis bahasa Indonesia/Inggris.
     let mut subs: Vec<serde_json::Value> = Vec::new();
     if let Some(m) = j["subtitles"].as_object() {
@@ -573,6 +586,35 @@ pub fn choices(j: &serde_json::Value) -> serde_json::Value {
         "choices": list,
         "subs": subs,
     })
+}
+
+/// Bitrate audio dibulatkan ke angka umum (YouTube M4A 129,5 kbps → 128, Opus 135 → 128/160).
+pub fn snap_kbps(abr: f64) -> u32 {
+    const STD: [u32; 11] = [32, 48, 64, 96, 128, 160, 192, 224, 256, 320, 384];
+    STD.iter().copied().min_by(|a, b| (*a as f64 - abr).abs().total_cmp(&(*b as f64 - abr).abs())).unwrap_or(128)
+}
+
+/// Nama berkas yang belum dipakai di `dir` untuk unduhan `key`: "judul.mp4" → "judul (1).mp4"
+/// bila sudah ada. Tanpa ini yt-dlp menganggap video "sudah diunduh" dan diam-diam memakai
+/// berkas lama (0.8.17: pilih 720p, dapat berkas 480p yang belum diganti namanya).
+pub fn unique_name(dir: &Path, name: &str, key: &str) -> String {
+    let base = strip_ext(name).trim().to_string();
+    let ext = ext_for(key);
+    // Video bisa berakhir .mkv (format tidak muat di MP4); subtitle terpisah ikut diperiksa.
+    let alts: &[&str] = if key.starts_with("a:") { &[ext] } else { &["mp4", "mkv", "webm"] };
+    let taken = |b: &str| {
+        alts.iter().any(|e| dir.join(format!("{b}.{e}")).exists() || dir.join(format!("{b}.{e}.part")).exists())
+    };
+    if !taken(&base) {
+        return format!("{base}.{ext}");
+    }
+    for n in 1..1000 {
+        let b = format!("{base} ({n})");
+        if !taken(&b) {
+            return format!("{b}.{ext}");
+        }
+    }
+    format!("{base}.{ext}")
 }
 
 /// Telusuri halaman dengan yt-dlp (`-J`): daftar format, judul, subtitle. Memblokir.
@@ -673,6 +715,11 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
             }
         }
         let _ = std::fs::remove_file(&result_file);
+        if ok {
+            if let Some(f) = &st.file {
+                sidecar_srt(Path::new(f));
+            }
+        }
         let ev = match (&st.file, &st.fatal) {
             (_, Some(f)) => Event::Done { ok: false, path: st.file.clone().unwrap_or_default(), error: f.clone() },
             (Some(p), None) if ok && Path::new(p).exists() => Event::Done { ok: true, path: p.clone(), error: String::new() },
@@ -686,6 +733,34 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
         cb(ev);
     });
     Ok(job)
+}
+
+/// Subtitle terpisah yt-dlp bernama "judul.id.srt"; Media Player Windows dan banyak pemutar
+/// lain mencari "judul.srt" di samping videonya. Bila hanya ada satu, namanya disamakan.
+pub fn sidecar_srt(video: &Path) -> Option<PathBuf> {
+    let (dir, stem) = (video.parent()?, video.file_stem()?.to_string_lossy().to_string());
+    let want = dir.join(format!("{stem}.srt"));
+    if want.exists() {
+        return Some(want);
+    }
+    let found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            n.len() > stem.len() + 5
+                && n.starts_with(&stem)
+                && n[stem.len()..].starts_with('.')
+                && n.to_ascii_lowercase().ends_with(".srt")
+                && !n[stem.len() + 1..n.len() - 4].contains('.')
+        })
+        .collect();
+    if found.len() == 1 && std::fs::rename(&found[0], &want).is_ok() {
+        crate::log(&format!("subtitle disimpan di samping video: {}", want.display()));
+        return Some(want);
+    }
+    None
 }
 
 /// Resolusi dan codec video hasil unduhan (ffprobe), untuk dicatat dan dibandingkan dengan pilihan.
@@ -791,10 +866,17 @@ mod tests {
         assert!(String::from_utf8_lossy(&o.stdout).contains("mov_text"), "subtitle tertanam: {:?}", String::from_utf8_lossy(&o.stdout));
         let srt: Vec<_> = std::fs::read_dir(&sub_out).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".srt")).collect();
         assert!(srt.is_empty(), "srt tertinggal");
+        // Disematkan + .srt bernama sama untuk Media Player Windows.
+        let keep = Spec { keep_srt: true, name: "sub3".into(), ..spec.clone() };
+        let Event::Done { ok, path, error } = run_spec(&data, &keep) else { unreachable!() };
+        assert!(ok, "{error}");
+        assert!(sub_out.join("sub3.srt").exists(), "srt bernama sama: {path}");
+        let o = Command::new(ffmpeg_dir(&data).join("ffprobe")).args(["-v", "error", "-select_streams", "s", "-show_entries", "stream_disposition=default", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+        assert!(String::from_utf8_lossy(&o.stdout).trim().starts_with('1'), "trek default: {:?}", String::from_utf8_lossy(&o.stdout));
         let spec2 = Spec { embed: false, name: "sub2".into(), ..spec };
         let Event::Done { ok, .. } = run_spec(&data, &spec2) else { unreachable!() };
         assert!(ok);
-        assert!(sub_out.join(format!("sub2.{lang}.srt")).exists(), "srt terpisah");
+        assert!(sub_out.join("sub2.srt").exists(), "srt terpisah, bernama sama dengan videonya ({lang})");
     }
 
     /// Tanpa ffmpeg: penggabungan tidak boleh dilaporkan berhasil.
@@ -869,5 +951,44 @@ mod tests {
         assert_eq!(strip_ext("Lagu.MP4"), "Lagu");
         assert_eq!(ext_for("a:mp3:0"), "mp3");
         assert!(!Spec { key: "a:m4a".into(), ..spec }.needs_ffmpeg());
+        // Disematkan + .srt tetap disimpan (Media Player Windows); trek subtitle default.
+        let k = Spec { keep_srt: true, ..v.clone() };
+        let ka = args_for(&k);
+        assert!(ka.contains(&"--embed-subs".to_string()) && ka.contains(&"--write-subs".to_string()), "{ka:?}");
+        assert!(ka.iter().any(|x| x.contains("disposition:s:0 default")), "{ka:?}");
+        // Akhiran nama berkas: resolusi untuk video, format + kualitas (huruf besar) untuk audio.
+        let sfx = |key: &str| list.iter().find(|x| x["key"] == key).map(|x| x["suffix"].as_str().unwrap_or("").to_string()).unwrap();
+        assert_eq!(sfx("v:1080"), "1080p");
+        assert_eq!(sfx("v:360"), "360p");
+        assert_eq!(sfx("a:m4a"), "M4A 128 KBPS", "129,5 kbps dibulatkan");
+        assert_eq!(sfx("a:mp3:0"), "MP3 VBR");
+        assert_eq!(sfx("a:mp3:320"), "MP3 320 KBPS");
+        assert_eq!(sfx("a:opus"), "OPUS 160 KBPS");
+        assert_eq!(sfx("a:flac"), "FLAC");
+    }
+
+    #[test]
+    fn unique_names_and_sidecar_srt() {
+        let dir = std::env::temp_dir().join(format!("ovner-uniq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unique_name(&dir, "Judul 720p.mp4", "v:720"), "Judul 720p.mp4");
+        // Berkas lama dengan nama sama (mis. hasil 480p yang belum diganti namanya).
+        std::fs::write(dir.join("Judul 720p.mp4"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "Judul 720p.mp4", "v:720"), "Judul 720p (1).mp4");
+        std::fs::write(dir.join("Judul 720p (1).mkv"), b"x").unwrap();
+        assert_eq!(unique_name(&dir, "Judul 720p", "v:720"), "Judul 720p (2).mp4", "MKV ikut dihitung");
+        assert_eq!(unique_name(&dir, "Judul 720p.mp3", "a:mp3:320"), "Judul 720p.mp3", "audio hanya melihat ekstensinya");
+        // judul.id.srt → judul.srt (dibaca Media Player Windows), berkas lain tidak tersentuh.
+        let v = dir.join("Judul 1080p.mp4");
+        std::fs::write(&v, b"x").unwrap();
+        std::fs::write(dir.join("Judul 1080p.id.srt"), b"1").unwrap();
+        std::fs::write(dir.join("Judul 1080p (1).en.srt"), b"1").unwrap();
+        assert_eq!(sidecar_srt(&v), Some(dir.join("Judul 1080p.srt")));
+        assert!(!dir.join("Judul 1080p.id.srt").exists());
+        assert!(dir.join("Judul 1080p (1).en.srt").exists());
+        assert_eq!(snap_kbps(129.5), 128);
+        assert_eq!(snap_kbps(150.0), 160);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

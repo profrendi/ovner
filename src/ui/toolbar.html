@@ -153,6 +153,31 @@
   #dlbtn.show { display: grid; }
   #dlbtn.busy svg { color: var(--accent); }
   #darkbtn.on { color: var(--accent); }
+  #codecbtn.on { color: var(--accent); }
+  #codecpanel { position: absolute; right: 48px; top: 4px; width: 372px; max-height: 600px; overflow-y: auto; display: none; background: var(--bar); border: 1px solid var(--line);
+    border-radius: 12px; box-shadow: 0 10px 28px #0005; padding: 12px 14px; font-size: 13px; }
+  #codecpanel.show { display: block; }
+  #codecpanel h3 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  #codecpanel h3 button { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+  #codecpanel .now { background: var(--field); border-radius: 8px; padding: 7px 9px; font-size: 12px; margin-bottom: 10px; line-height: 1.45; }
+  #codecpanel .now b { font-weight: 600; }
+  #codecpanel .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 6px; }
+  #codecpanel .seg button { flex: 1; border: 0; background: none; color: var(--text); padding: 6px 4px; font: inherit; cursor: pointer; }
+  #codecpanel .seg button + button { border-left: 1px solid var(--line); }
+  #codecpanel .seg button.on { background: var(--accent); color: #fff; }
+  #codecpanel .md { color: var(--muted); font-size: 12px; line-height: 1.4; margin-bottom: 4px; }
+  #codecpanel .k { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 2px; }
+  #codecpanel .cr { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; padding: 6px 2px; border-top: 1px solid var(--line); align-items: start; }
+  #codecpanel .cr input { margin: 2px 0 0; accent-color: var(--accent); }
+  #codecpanel .cr .nm { font-weight: 600; }
+  #codecpanel .cr .nm code { font-weight: 400; color: var(--muted); font-size: 11.5px; margin-left: 4px; }
+  #codecpanel .cr .ds { grid-column: 2 / 4; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+  #codecpanel .hw { font-size: 11px; padding: 0 7px; border-radius: 9px; background: var(--field); color: var(--muted); white-space: nowrap; }
+  #codecpanel .hw.yes { color: #2e9d57; } #codecpanel .hw.no { color: #d9534f; }
+  #codecpanel .cr.dis { opacity: .62; }
+  #codecpanel .warn { color: #d9822b; font-size: 12px; margin-top: 6px; }
+  #codecpanel .apply { width: 100%; margin-top: 10px; padding: 7px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  #codecpanel .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; line-height: 1.4; }
   #darkpanel { position: absolute; right: 48px; top: 4px; width: 330px; display: none; background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
     box-shadow: 0 10px 28px #0005; padding: 12px 14px; font-size: 13px; }
   #darkpanel.show { display: block; }
@@ -271,6 +296,7 @@
   <button id="upd"></button>
   <button class="b" id="vidbtn" hidden><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-2.5v9L17 14M10 9v6M7.5 12.5 10 15l2.5-2.5"/></svg></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+  <button class="b" id="codecbtn"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 10h4v4h-4zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg></button>
   <button class="b" id="darkbtn"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg></button>
   <button class="b" id="shield" title=""><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/></svg><span id="count"></span></button>
   <button class="b" id="menu" title="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
@@ -284,7 +310,7 @@
 </div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -823,14 +849,15 @@
       if (m.render) window.ovner.render(m.render);
       if ("usage" in m && window.ovner.usage) window.ovner.usage(m.usage);
       if (m.videoDlg && window.ovner.videoDlg) window.ovner.videoDlg(m.videoDlg);
+      if ("codecNow" in m && window.ovner.codecNow) window.ovner.codecNow(m.codecNow);
     });
   }
   window.ovner = {
     // Data dialog unduh video dari Ovner: {open, url, title, ...} lalu {choices, subs, name} / {error} / {dir}.
     videoDlg(o) {
       if (o.open) {
-        hideOmni(); closeDark(); closeVid(); closeBm(); send({ cmd: "bubble-close" });
-        vd = { open: true, url: o.url, title: o.title, loading: true, videoDir: o.videoDir, audioDir: o.audioDir, dir: o.videoDir, dirEdited: false, sub: "", embed: false };
+        hideOmni(); closeDark(); closeCodec(); closeVid(); closeBm(); send({ cmd: "bubble-close" });
+        vd = { open: true, url: o.url, title: o.title, loading: true, videoDir: o.videoDir, audioDir: o.audioDir, dir: o.videoDir, dirEdited: false, sub: "", embed: false, srt: true, suffix: "" };
         $("viddlg").classList.add("show");
       }
       if (!vd.open) return;
@@ -840,13 +867,15 @@
       if (o.choices) {
         vd.choices = o.choices; vd.subs = o.subs || []; vd.loading = false; vd.error = ""; vd.tools = o.tools;
         if (o.title) vd.title = o.title;
-        vd.name = o.name || vd.name;
+        vd.name = o.name || vd.name; vd.suffix = "";
         vdSelect(o.choices.length ? o.choices[0].key : "");
         return;
       }
       if ("loading" in o) vd.loading = o.loading;
       renderVidDlg();
     },
+    // Codec yang sedang diputar tab YouTube aktif (null = belum ada pemutar).
+    codecNow(o) { codecNow = o || null; renderCodec(); },
     // Tab dari jendela lain dijatuhkan di titik (x) ini: pindahkan ke urutan yang sesuai.
     dropAt(id, x, y) {
       const p = x;
@@ -904,6 +933,7 @@
       $("find").classList.toggle("show", !!s.find);
       renderBubble();
       renderDark();
+      renderCodec();
       renderVid();
       renderBmDlg();
       const dl = $("dlbtn");
@@ -1171,6 +1201,7 @@
     const om = $("omni").classList.contains("show") ? $("omni").offsetHeight : 0;
     const bu = $("bubble").classList.contains("show") ? $("bubble").offsetHeight + 12 : 0;
     const dp = Math.max($("darkpanel").classList.contains("show") ? $("darkpanel").offsetHeight + 12 : 0,
+      $("codecpanel").classList.contains("show") ? $("codecpanel").offsetHeight + 12 : 0,
       $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0,
       $("viddlg").classList.contains("show") ? $("viddlg").offsetHeight + 12 : 0,
       $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
@@ -1180,7 +1211,7 @@
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
     // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
     const rects = [];
-    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("codecpanel"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
       if (!el || !el.offsetParent || !el.offsetWidth) continue;
       const r = el.getBoundingClientRect();
       rects.push([r.left, r.top, r.width, r.height + 10]);
@@ -1188,7 +1219,7 @@
     send({ cmd: "height", h: base, over: Math.max(om, bu, dp, bm), rects });
   }
   // Bagian kosong lapisan overlay menutup gelembung.
-  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeVid(); closeVidDlg(); closeBm(); send({ cmd: "bubble-close" }); } });
+  $("ov").addEventListener("mousedown", (e) => { if (e.target.id === "ov" || e.target.id === "bmmenus") { hideOmni(); closeDark(); closeCodec(); closeVid(); closeVidDlg(); closeBm(); send({ cmd: "bubble-close" }); } });
   // ---- Panel mode gelap (seperti popup Dark Reader): per situs + kecerahan/kontras/sepia ----
   let darkOpen = false, darkKey = "";
   function closeDark() { if (!darkOpen) return; darkOpen = false; $("darkpanel").classList.remove("show"); darkKey = ""; sendHeight(); }
@@ -1248,10 +1279,141 @@
   }
   $("darkbtn").onclick = () => {
     if (darkOpen) { closeDark(); return; }
-    hideOmni(); send({ cmd: "bubble-close" });
+    hideOmni(); closeCodec(); send({ cmd: "bubble-close" });
     darkOpen = true; darkKey = "";
     $("darkpanel").classList.add("show");
     renderDark();
+  };
+  // ---- Panel codec YouTube (seperti enhanced-h264ify, ditambah deteksi dekoder GPU) ----
+  const CW = {
+    id: { title: "Codec video YouTube", btn: "Codec video YouTube (seperti enhanced-h264ify)", auto: "Otomatis", manual: "Manual", off: "Mati",
+      mAuto: "Mengikuti dekoder GPU komputer ini: codec yang tidak punya dekoder GPU diblokir supaya video tidak membebani CPU.",
+      mManual: "Pilih sendiri codec yang diblokir. Bawaan seperti enhanced-h264ify: semua diblokir kecuali H.264.",
+      mOff: "Tidak ada yang diblokir: YouTube memilih codec sendiri (sering AV1).",
+      gpu: "Dekoder GPU:", unknown: "belum diperiksa (buka satu halaman https, misalnya YouTube)", gpuOff: "GPU dimatikan di Pengaturan → semua video didekode CPU: hanya H.264, maksimal 30fps.",
+      video: "Video", audio: "Audio", blk: "Blokir", hwYes: "GPU ✓", hwNo: "CPU saja", hwUnk: "GPU ?",
+      av1: "Paling hemat kuota (30–50% dari H.264) dan paling tajam, tapi paling berat bila GPU tidak punya dekoder AV1 (Intel Gen 11+, RTX 30+, RX 6000+).",
+      vp9: "Hemat kuota 30–40% dari H.264, sampai 4K dan HDR. Ringan di GPU keluaran 2016 ke atas; berat di laptop lama.",
+      h264: "Paling ringan di hampir semua perangkat, tapi paling boros kuota dan maksimal 1080p (tanpa 1440p/4K/HDR). Jangan diblokir bila ingin ringan.",
+      vp8: "Codec lama; YouTube hampir tidak memakainya lagi. Aman diblokir.",
+      fps60: "Video 60fps dibatasi ke 30fps: beban dekode turun hampir separuh. Cocok untuk prosesor lama atau hemat baterai.",
+      opus: "Audio WebM (Opus). Biasanya dibiarkan.", aac: "Audio MP4 (AAC). Tidak bisa diblokir bersamaan dengan Opus.",
+      ln: "Matikan normalisasi volume", lnD: "Volume video mengikuti slider pemutar, tidak diturunkan otomatis oleh YouTube.",
+      allBlocked: "AV1, VP9, dan H.264 tidak bisa diblokir semua: H.264 tetap diizinkan supaya video bisa diputar.",
+      apply: "Terapkan — muat ulang tab YouTube", note: "YouTube memilih codec saat halaman dimuat. Cek hasilnya: klik kanan video → Stats for nerds, baris Codecs.",
+      now: "Sedang diputar:", nowNone: "Buka video YouTube untuk melihat codec yang sedang dipakai.", nowWait: "Menunggu pemutar YouTube…", dropped: "bingkai terlewat" },
+    en: { title: "YouTube video codecs", btn: "YouTube video codecs (like enhanced-h264ify)", auto: "Auto", manual: "Manual", off: "Off",
+      mAuto: "Follows this computer's GPU decoders: codecs without a GPU decoder are blocked so video doesn't load the CPU.",
+      mManual: "Choose the blocked codecs yourself. Default like enhanced-h264ify: everything except H.264 is blocked.",
+      mOff: "Nothing is blocked: YouTube picks the codec itself (often AV1).",
+      gpu: "GPU decoders:", unknown: "not checked yet (open any https page, e.g. YouTube)", gpuOff: "GPU is off in Settings → all video is decoded by the CPU: H.264 only, up to 30fps.",
+      video: "Video", audio: "Audio", blk: "Block", hwYes: "GPU ✓", hwNo: "CPU only", hwUnk: "GPU ?",
+      av1: "Smallest data use (30–50% less than H.264) and sharpest, but heaviest when the GPU has no AV1 decoder (Intel Gen 11+, RTX 30+, RX 6000+).",
+      vp9: "30–40% less data than H.264, up to 4K and HDR. Light on GPUs from 2016 onwards; heavy on old laptops.",
+      h264: "Lightest on almost every device, but uses the most data and tops out at 1080p (no 1440p/4K/HDR). Leave it unblocked for the lightest playback.",
+      vp8: "Old codec; YouTube hardly uses it anymore. Safe to block.",
+      fps60: "60fps video is limited to 30fps: decoding work drops by almost half. Good for old CPUs or saving battery.",
+      opus: "WebM audio (Opus). Usually left alone.", aac: "MP4 audio (AAC). Can't be blocked together with Opus.",
+      ln: "Disable loudness normalization", lnD: "Video volume follows the player slider instead of being lowered automatically by YouTube.",
+      allBlocked: "AV1, VP9 and H.264 can't all be blocked: H.264 stays allowed so video still plays.",
+      apply: "Apply — reload YouTube tabs", note: "YouTube picks the codec when the page loads. Check it: right-click the video → Stats for nerds, Codecs line.",
+      now: "Playing now:", nowNone: "Open a YouTube video to see the codec in use.", nowWait: "Waiting for the YouTube player…", dropped: "dropped frames" },
+  };
+  let codecOpen = false, codecKey = "", codecNow = undefined, codecTimer = 0, codecTouched = false;
+  function closeCodec() {
+    if (!codecOpen) return;
+    codecOpen = false; clearInterval(codecTimer); $("codecpanel").classList.remove("show"); codecKey = "";
+    // Perubahan yang dibuat di panel ini ikut diterapkan saat panel ditutup.
+    if (codecTouched && state.codec && state.codec.dirty) send({ cmd: "codec-apply" });
+    codecTouched = false;
+    sendHeight();
+  }
+  const codecName = (c) => { c = String(c || "").toLowerCase();
+    return c.startsWith("av01") ? "AV1" : /^vp0?9/.test(c) ? "VP9" : /^vp0?8/.test(c) ? "VP8" : /^(avc1|avc3)/.test(c) ? "H.264" : c.startsWith("opus") ? "Opus" : c.startsWith("mp4a") ? "AAC" : c; };
+  function nowText(w) {
+    const c = state.codec || {};
+    if (!c.yt) return w.nowNone;
+    const n = codecNow;
+    if (!n) return w.nowWait;
+    const parts = String(n.codecs || "").split("/").map((x) => x.trim()).filter(Boolean);
+    const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+    const names = parts.map((p) => { const id = p.split(" ")[0]; return esc(codecName(id)) + " <code>" + esc(id) + "</code>"; });
+    let t = "<b>" + w.now + "</b> " + (names.length ? names.join(" + ") : "—");
+    if (n.w && n.h) t += " · " + (+n.w) + "×" + (+n.h);
+    if (n.total) t += " · " + (+n.drop) + " " + w.dropped + " / " + (+n.total);
+    return t;
+  }
+  function renderCodec() {
+    const c = state.codec || {};
+    const b = $("codecbtn");
+    const w = CW[state && state.lang === "en" ? "en" : "id"];
+    b.classList.toggle("on", c.mode && c.mode !== "off");
+    b.title = w.btn;
+    if (!codecOpen) return;
+    const key = JSON.stringify([c, state.lang, codecNow]);
+    if (key === codecKey) return;
+    codecKey = key;
+    const p = $("codecpanel");
+    const st = p.scrollTop;
+    p.textContent = "";
+    const el = (tag, props, ...kids) => { const e = document.createElement(tag); Object.assign(e, props || {}); for (const k of kids) e.append(k); return e; };
+    p.append(el("h3", {}, el("span", { textContent: w.title }), el("button", { textContent: "×", onclick: closeCodec })));
+    p.append(el("div", { className: "now", innerHTML: nowText(w) }));
+    const seg = el("div", { className: "seg" });
+    for (const m of ["auto", "manual", "off"]) {
+      const bt = el("button", { textContent: w[m] });
+      bt.classList.toggle("on", c.mode === m);
+      bt.onclick = () => { codecTouched = true; send({ cmd: "codec-set", key: "yt_codec", value: m }); };
+      seg.append(bt);
+    }
+    p.append(seg);
+    p.append(el("div", { className: "md", textContent: c.mode === "auto" ? w.mAuto : c.mode === "manual" ? w.mManual : w.mOff }));
+    const hw = c.hw || {};
+    const hwTag = (v) => el("span", { className: "hw " + (v === true ? "yes" : v === false ? "no" : ""), textContent: v === true ? w.hwYes : v === false ? w.hwNo : w.hwUnk });
+    if (c.mode === "auto") {
+      const known = hw.h264 != null || hw.vp9 != null || hw.av1 != null;
+      const mark = (v) => (v === true ? "✓" : v === false ? "✗" : "?");
+      p.append(el("div", { className: "md", textContent: w.gpu + " " + (known ? `H.264 ${mark(hw.h264)} · VP9 ${mark(hw.vp9)} · AV1 ${mark(hw.av1)}` : w.unknown) }));
+      if (c.gpuOff) p.append(el("div", { className: "warn", textContent: w.gpuOff }));
+    }
+    const blocked = new Set(c.blocked || []);
+    const man = c.manual || {};
+    const manual = c.mode === "manual";
+    const row = (id, name, tag, desc, checked, hwv, setKey, enabled) => {
+      const r = el("label", { className: "cr" + (enabled ? "" : " dis") });
+      const cb = el("input", { type: "checkbox", checked: !!checked, disabled: !enabled });
+      cb.onchange = () => { codecTouched = true; send({ cmd: "codec-set", key: setKey, value: cb.checked }); };
+      const nm = el("span", { className: "nm", textContent: name });
+      if (tag) nm.append(el("code", { textContent: tag }));
+      r.append(cb, nm, hwv === undefined ? el("span") : hwTag(hwv), el("span", { className: "ds", textContent: desc }));
+      return r;
+    };
+    const on = (k, mk) => (manual ? !!man[mk] : blocked.has(k));
+    p.append(el("div", { className: "k", textContent: w.video }));
+    p.append(row("av1", w.blk + " AV1", "av01", w.av1, on("av1", "av1"), hw.av1, "yt_block_av1", manual));
+    p.append(row("vp9", w.blk + " VP9", "vp09", w.vp9, on("vp9", "vp9"), hw.vp9, "yt_block_vp9", manual));
+    p.append(row("h264", w.blk + " H.264", "avc1", w.h264, on("h264", "h264"), hw.h264, "yt_block_h264", manual));
+    p.append(row("vp8", w.blk + " VP8", "vp8", w.vp8, on("vp8", "vp8"), undefined, "yt_block_vp8", manual));
+    p.append(row("fps60", w.blk + " 60fps", "", w.fps60, manual ? !!man.fps60 : !!c.no60, undefined, "yt_block_60fps", manual));
+    if (manual && man.av1 && man.vp9 && man.h264) p.append(el("div", { className: "warn", textContent: w.allBlocked }));
+    p.append(el("div", { className: "k", textContent: w.audio }));
+    p.append(row("opus", w.blk + " Opus", "opus", w.opus, on("opus", "opus"), undefined, "yt_block_opus", manual));
+    p.append(row("aac", w.blk + " AAC", "mp4a", w.aac, on("aac", "aac"), undefined, "yt_block_aac", manual));
+    p.append(row("ln", w.ln, "", w.lnD, !!c.noLN, undefined, "yt_no_loudness", true));
+    if (c.dirty) p.append(el("button", { className: "apply", textContent: w.apply, onclick: () => send({ cmd: "codec-apply" }) }));
+    p.append(el("div", { className: "note", textContent: w.note }));
+    p.scrollTop = st;
+    sendHeight();
+  }
+  $("codecbtn").onclick = () => {
+    if (codecOpen) { closeCodec(); return; }
+    hideOmni(); closeDark(); send({ cmd: "bubble-close" });
+    codecOpen = true; codecKey = ""; codecNow = undefined;
+    $("codecpanel").classList.add("show");
+    renderCodec();
+    send({ cmd: "codec-now" });
+    clearInterval(codecTimer);
+    codecTimer = setInterval(() => { if (codecOpen && state.codec && state.codec.yt) send({ cmd: "codec-now" }); }, 2000);
   };
   $("dlbtn").onclick = () => send({ cmd: "dl-toggle" });
   // ---- Unduh video (yt-dlp), seperti tombol video di IDM/Mister Download Manager ----
@@ -1273,20 +1435,30 @@
   const VW = {
     id: { title: "Unduh video dari halaman", page: "Alamat halaman", look: "Telusuri", saveTo: "Simpan ke", name: "Nama berkas", subs: "Subtitle", noSubs: "Tidak ada di halaman ini",
           none: "Tanpa subtitle", embed: "Masukkan ke video", now: "Unduh sekarang", later: "Nanti", cancel: "Batal", loading: "Mencari format video…", audio: "Audio saja", empty: "Tidak ada format yang bisa diunduh.",
-          tools: "Komponen yt-dlp/ffmpeg diunduh sekali saat pertama dipakai." },
+          tools: "Komponen yt-dlp/ffmpeg diunduh sekali saat pertama dipakai.",
+          srt: "Simpan juga berkas .srt (untuk Windows Media Player)", srtTip: "Media Player bawaan Windows tidak membaca subtitle di dalam MP4. Berkas .srt bernama sama dengan video dibaca Media Player (Subtitle → Pilih berkas subtitle), VLC, dan pemutar lain." },
     en: { title: "Download video from a page", page: "Page address", look: "Look up", saveTo: "Save to", name: "File name", subs: "Subtitles", noSubs: "None on this page",
           none: "No subtitles", embed: "Put them into the video", now: "Download Now", later: "Later", cancel: "Cancel", loading: "Looking up video formats…", audio: "Audio only", empty: "No downloadable formats.",
-          tools: "The yt-dlp/ffmpeg components are downloaded once on first use." },
+          tools: "The yt-dlp/ffmpeg components are downloaded once on first use.",
+          srt: "Also keep the .srt file (for Windows Media Player)", srtTip: "Windows' built-in Media Player does not read subtitles inside MP4. An .srt file with the same name as the video works in Media Player (Subtitles → Choose subtitle file), VLC and other players." },
   };
   const vfmt = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(2) + " GB" : (n / 1048576).toFixed(2) + " MB");
   function closeVidDlg() { if (!vd.open) return; vd.open = false; $("viddlg").classList.remove("show"); sendHeight(); }
   function vdChoice() { return (vd.choices || []).find((c) => c.key === vd.sel); }
-  function vdBase() { return (vd.name || "video").replace(/\.(mp4|m4a|mp3|opus|flac|webm|mkv)$/i, ""); }
+  // Nama tanpa ekstensi dan tanpa akhiran kualitas sebelumnya ("judul 1080p" → "judul").
+  function vdBase() {
+    let b = (vd.name || "video").replace(/\.(mp4|m4a|mp3|opus|flac|webm|mkv)$/i, "");
+    if (vd.suffix && b.endsWith(" " + vd.suffix)) b = b.slice(0, -(vd.suffix.length + 1));
+    return b.trimEnd() || "video";
+  }
   function vdSelect(key) {
+    const base = vdBase();
     vd.sel = key;
     const c = vdChoice();
     if (!c) { renderVidDlg(); return; }
-    vd.name = vdBase() + "." + c.ext;
+    // Akhiran otomatis: "judul 1080p.mp4", "judul MP3 320 KBPS.mp3".
+    vd.suffix = c.suffix || "";
+    vd.name = base + (vd.suffix ? " " + vd.suffix : "") + "." + c.ext;
     if (!vd.dirEdited) vd.dir = c.kind === "audio" ? vd.audioDir : vd.videoDir;
     renderVidDlg();
   }
@@ -1295,7 +1467,7 @@
     if (!c || !vd.dir) return;
     const sb = (vd.subs || []).find((x) => x.lang === vd.sub);
     send({ cmd: "video-start", url: vd.url, key: c.key, fmt: c.fmt || "", dir: vd.dir, name: vd.name, sub: c.kind === "audio" ? "" : vd.sub || "",
-      subAuto: !!(sb && sb.auto), embed: !!vd.embed, later: !!later });
+      subAuto: !!(sb && sb.auto), embed: !!vd.embed, srt: !!vd.srt, later: !!later });
     closeVidDlg();
   }
   function renderVidDlg() {
@@ -1353,6 +1525,10 @@
     const emb = el("input", { type: "checkbox", checked: !!vd.embed, disabled: audio || !vd.sub }); emb.dataset.k = "embed";
     emb.onchange = () => { vd.embed = emb.checked; vd.embedTouched = true; };
     p.append(el("div", { className: "row" }, sel, el("label", { className: "chk" }, emb, w.embed)));
+    // Windows Media Player tidak membaca subtitle di dalam MP4: simpan juga .srt bernama sama.
+    const srt = el("input", { type: "checkbox", checked: !!vd.srt, disabled: audio || !vd.sub || !vd.embed }); srt.dataset.k = "srt";
+    srt.onchange = () => { vd.srt = srt.checked; };
+    if (vd.sub && vd.embed && !audio) p.append(el("div", { className: "row" }, el("label", { className: "chk", title: w.srtTip }, srt, w.srt)));
     if (vd.tools && (!vd.tools[0] || !vd.tools[1])) p.append(el("div", { className: "note", textContent: w.tools }));
     const ready = !vd.loading && !!c;
     const now = el("button", { className: "btn pri", textContent: w.now, disabled: !ready, onclick: () => vdStart(false) });
