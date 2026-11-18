@@ -71,6 +71,24 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.20
+
+- **Preview PDF Infor kembali.** Cetakan permintaan pembelian/pembayaran di Infor LN tampil lagi
+  di halamannya sendiri (penampil PDF dengan tombol unduh dan cetak), tidak langsung terunduh
+  sebagai `tmp….pdf`. Penyebab: server Infor tidak menyebut ukuran PDF-nya dan alamatnya
+  berisi "download", sehingga aturan "Unduh PDF besar" menganggapnya PDF besar.
+- **Aturan PDF baru** (Pengaturan → Unduhan):
+  - Ukuran disebut server: sama seperti dulu (≥ batas = unduh, mis. kartu SIPP BPJS 17 MB;
+    lebih kecil = tampil).
+  - Ukuran tidak disebut: **Ukur dulu** (bawaan) — dibaca dulu; selesai di bawah batas =
+    ditampilkan seperti aslinya, lewat batas = jadi unduhan tanpa mengunduh ulang. Pilihan
+    lain: Selalu tampilkan, atau Selalu unduh (perilaku 0.8.19).
+  - **Situs yang PDF-nya selalu ditampilkan** (bawaan: inforcloudsuite.com) dan **situs yang
+    PDF-nya selalu diunduh** mengalahkan aturan ukuran.
+- Halaman "✓ PDF disimpan" punya tombol **Buka di sini (lihat & cetak)**: PDF yang tadi
+  disimpan dibuka di penampil bawaan di tab itu juga, langsung dari berkasnya (tidak diunduh
+  ulang dari server).
+
 ## Perbaikan 0.8.19
 
 - **Ovner bisa jadi browser default** untuk tautan http/https serta berkas .html/.htm dan .pdf,

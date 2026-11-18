@@ -1083,12 +1083,12 @@ fn build_tab_view(
             &wv,
             move |url, len, name| {
                 let s = st.borrow();
-                let min = s.pdf_download_mb as u64 * 1_048_576;
-                // Ukuran tidak diketahui (PDF dibuat di server): unduh bila alamatnya jelas unduhan.
-                let yes = s.pdf_download && len.map_or(url.to_ascii_lowercase().contains("download"), |l| l >= min);
-                if !yes {
-                    return None;
-                }
+                // Daftar situs → ukuran dari server → setelan "ukuran tidak diketahui".
+                let measure = match s.pdf_action(&host_of(url).unwrap_or_default(), len) {
+                    settings::PdfAction::Show => return None,
+                    settings::PdfAction::Download => None,
+                    settings::PdfAction::Measure(n) => Some(n),
+                };
                 let dir = if s.download_dir.trim().is_empty() {
                     std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
                 } else {
@@ -1097,7 +1097,7 @@ fn build_tab_view(
                 let _ = std::fs::create_dir_all(&dir);
                 let path = dir.join(name);
                 let path = if s.dl_box_v2 { dlengine::categorized(&path) } else { path };
-                Some(free_download_path(&path).display().to_string())
+                Some((free_download_path(&path).display().to_string(), measure))
             },
             move |ev| send(&p_pdf, UserEvent::Download(id, ev)),
         );

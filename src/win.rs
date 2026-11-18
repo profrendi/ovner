@@ -1195,6 +1195,181 @@ mod imp {
         last: std::time::Instant,
         started: std::time::Instant,
         cb: std::rc::Rc<dyn Fn(DlEvent)>,
+        /// Alamat PDF (untuk tombol "Buka di sini").
+        url: String,
+        /// Ukuran tidak disebut server: isi ditahan di memori dulu (lihat `Measure`).
+        measure: Option<Measure>,
+    }
+
+    /// PDF tanpa Content-Length yang sedang diukur. Selesai di bawah `limit` = diserahkan ke
+    /// penampil PDF (Fetch.fulfillRequest dengan isi dan tajuk aslinya), lewat = jadi unduhan
+    /// dan `buf` menjadi awal berkasnya.
+    struct Measure {
+        buf: Vec<u8>,
+        limit: u64,
+        status: i64,
+        headers: Vec<(String, String)>,
+        url: String,
+        referer: String,
+        agent: String,
+        waiting: Option<u64>,
+    }
+
+    /// Tombol "Buka di sini" pada halaman "PDF disimpan" membuka alamat PDF aslinya ditambah
+    /// `ovner_saved=<token>`. Permintaan itu dilayani Ovner dari berkas di disk (tahap
+    /// permintaan Fetch) dan tidak sampai ke server. Alamatnya tetap satu situs dengan halaman
+    /// (bingkai Infor/SIPP), jadi tidak diblokir aturan keamanan situs (CSP).
+    const SAVED_PARAM: &str = "ovner_saved=";
+
+    fn saved_link(url: &str, token: &str) -> String {
+        let base = url.split('#').next().unwrap_or(url);
+        let sep = if base.contains('?') { '&' } else { '?' };
+        format!("{base}{sep}{SAVED_PARAM}{token}")
+    }
+
+    fn saved_param(url: &str) -> Option<&str> {
+        let query = url.split('#').next()?.split_once('?')?.1;
+        query.split('&').find_map(|kv| kv.strip_prefix(SAVED_PARAM))
+    }
+
+    thread_local! {
+        /// Token acak → path PDF yang disimpan dari respons (untuk "Buka di sini").
+        static SAVED: std::cell::RefCell<std::collections::HashMap<String, String>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    fn saved_token(path: &str) -> String {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        path.hash(&mut h);
+        std::time::SystemTime::now().hash(&mut h);
+        let token = format!("{:016x}", h.finish());
+        SAVED.with(|m| m.borrow_mut().insert(token.clone(), path.to_string()));
+        token
+    }
+
+    /// Nama berkas untuk `filename*=UTF-8''…` dan alamat (persen-enkode, spasi = %20).
+    fn pct(name: &str) -> String {
+        url::form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>().replace('+', "%20")
+    }
+
+    /// Layani alamat "Buka di sini" (`…ovner_saved=<token>`): PDF yang tadi disimpan, dibuka
+    /// di penampil PDF bawaan (dengan tombol unduh dan cetak).
+    fn serve_saved(core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, req: &str, token: &str) {
+        use base64::Engine as _;
+        let path = SAVED.with(|m| m.borrow().get(token).cloned());
+        let params = match path.as_ref().map(|p| (p, std::fs::read(p))) {
+            Some((p, Ok(bytes))) => {
+                let name = Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                serde_json::json!({
+                    "requestId": req,
+                    "responseCode": 200,
+                    "responseHeaders": [
+                        {"name": "Content-Type", "value": "application/pdf"},
+                        {"name": "Content-Disposition", "value": format!("inline; filename*=UTF-8''{}", pct(&name))},
+                    ],
+                    "body": base64::prelude::BASE64_STANDARD.encode(&bytes),
+                })
+            }
+            _ => {
+                let html = "<!doctype html><meta charset=utf-8><title>PDF</title><body style=\"font:15px Segoe UI,sans-serif;background:#202124;color:#e8eaed;padding:40px\">Berkas PDF ini sudah dipindah atau dihapus, atau Ovner sudah dimulai ulang. Buka dari daftar Unduhan (Ctrl+J).</body>";
+                serde_json::json!({
+                    "requestId": req,
+                    "responseCode": 404,
+                    "responseHeaders": [{"name": "Content-Type", "value": "text/html; charset=utf-8"}],
+                    "body": base64::prelude::BASE64_STANDARD.encode(html.as_bytes()),
+                })
+            }
+        };
+        cdp_core(core, "Fetch.fulfillRequest", &params.to_string());
+    }
+
+    /// Pengukuran selesai di bawah batas: serahkan PDF ke penampil bawaan seperti aslinya.
+    fn show_measured(id: u64) {
+        use base64::Engine as _;
+        let Some(mut st) = STREAMS.with(|m| m.borrow_mut().remove(&id)) else { return };
+        let Some(ms) = st.measure.take() else { return };
+        if !st.handle.is_empty() {
+            cdp_core(&st.core, "IO.close", &serde_json::json!({"handle": st.handle}).to_string());
+        }
+        // Isi sudah dibuka kompresinya dan utuh: tajuk panjang/kompresi lama tidak berlaku lagi.
+        let headers: Vec<serde_json::Value> = ms
+            .headers
+            .iter()
+            .filter(|(n, _)| !["content-length", "content-encoding", "transfer-encoding"].contains(&n.to_ascii_lowercase().as_str()))
+            .map(|(n, v)| serde_json::json!({"name": n, "value": v}))
+            .collect();
+        let code = if ms.status > 0 { ms.status } else { 200 };
+        let params = serde_json::json!({
+            "requestId": st.request,
+            "responseCode": code,
+            "responseHeaders": headers,
+            "body": base64::prelude::BASE64_STANDARD.encode(&ms.buf),
+        });
+        cdp_core(&st.core, "Fetch.fulfillRequest", &params.to_string());
+        if let Some(w) = ms.waiting {
+            (st.cb)(DlEvent::WaitEnd { id: w });
+        }
+        (st.cb)(DlEvent::Log(format!(
+            "PDF ditampilkan di tab: {} KB dalam {:.1} dtk (ukuran tidak disebut server, di bawah batas {} MB): {}",
+            ms.buf.len() / 1024,
+            st.started.elapsed().as_secs_f64(),
+            ms.limit / 1_048_576,
+            ms.url
+        )));
+    }
+
+    /// Pengukuran melewati batas: lanjutkan sebagai unduhan. Yang sudah dibaca menjadi awal
+    /// berkas, jadi tidak ada yang diunduh ulang. false = gagal (unduhan sudah diakhiri).
+    fn switch_to_download(id: u64) -> bool {
+        use std::io::Write as _;
+        let info = STREAMS.with(|m| {
+            let mut m = m.borrow_mut();
+            let st = m.get_mut(&id)?;
+            let ms = st.measure.take()?;
+            Some((st.part.clone(), st.path.clone(), st.received, ms, st.cb.clone(), st.core.clone()))
+        });
+        let Some((part, path, received, ms, cb, core)) = info else { return false };
+        cb(DlEvent::Log(format!("PDF tanpa ukuran melewati {} MB, dialihkan ke unduhan: {} → {path}", ms.limit / 1_048_576, ms.url)));
+        cb(DlEvent::Started { id, url: ms.url.clone(), path: path.clone(), total: 0 });
+        emit_race(&core, &cb, id, &ms.url, ms.referer, ms.agent, 0);
+        let file = std::fs::File::create(&part).and_then(|mut f| f.write_all(&ms.buf).map(|_| f));
+        match file {
+            Ok(f) => {
+                STREAMS.with(|m| {
+                    if let Some(st) = m.borrow_mut().get_mut(&id) {
+                        st.file = Some(f);
+                        st.last = std::time::Instant::now();
+                    }
+                });
+                cb(DlEvent::Progress { id, received, total: received });
+                true
+            }
+            Err(e) => {
+                finish_stream(id, false, &format!("tidak bisa menulis {}: {e}", part.display()));
+                false
+            }
+        }
+    }
+
+    /// Minta aliran isi respons `req` lalu mulai membacanya.
+    fn take_stream(sender: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, req: &str, id: u64) {
+        cdp_then(sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
+            let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
+            let known = STREAMS.with(|m| {
+                m.borrow_mut().get_mut(&id).map(|s| {
+                    s.handle = handle.clone();
+                })
+            });
+            if known.is_none() {
+                // Dibatalkan sebelum aliran didapat.
+                return;
+            }
+            if handle.is_empty() {
+                return finish_stream(id, false, "aliran respons tidak didapat");
+            }
+            read_stream(id);
+        });
     }
 
     thread_local! {
@@ -1239,6 +1414,15 @@ mod imp {
         if !st.handle.is_empty() {
             cdp_core(&st.core, "IO.close", &serde_json::json!({"handle": st.handle}).to_string());
         }
+        if let Some(ms) = st.measure.take() {
+            // Masih diukur (belum jadi unduhan): tidak ada berkas, cukup hentikan halamannya.
+            cdp_core(&st.core, "Fetch.failRequest", &serde_json::json!({"requestId": st.request, "errorReason": "Aborted"}).to_string());
+            if let Some(w) = ms.waiting {
+                (st.cb)(DlEvent::WaitEnd { id: w });
+            }
+            (st.cb)(DlEvent::Log(format!("PDF: pengukuran dihentikan ({reason}; {} KB): {}", ms.buf.len() / 1024, ms.url)));
+            return;
+        }
         let mut reason = reason.to_string();
         // Aliran berakhir lebih pendek dari Content-Length: koneksi putus, berkas tidak utuh.
         let mut ok = ok;
@@ -1268,10 +1452,13 @@ mod imp {
         if ok {
             use base64::Engine as _;
             let name = Path::new(&st.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let link = saved_link(&st.url, &saved_token(&st.path));
+            let big = if st.received >= 20 * 1_048_576 { "<br><small style=\"color:#9aa0a6\">PDF sebesar ini bisa lambat atau kosong di penampil; lebih aman dibuka dengan aplikasi PDF dari daftar Unduhan.</small>" } else { "" };
             let html = format!(
-                "<!doctype html><meta charset=utf-8><title>{n}</title><body style=\"font:15px Segoe UI,sans-serif;background:#202124;color:#e8eaed;padding:40px\">&#10003; PDF disimpan: <b>{n}</b><br><small style=\"color:#9aa0a6\">{p}</small></body>",
+                "<!doctype html><meta charset=utf-8><title>{n}</title><body style=\"font:15px Segoe UI,sans-serif;background:#202124;color:#e8eaed;padding:40px\">&#10003; PDF disimpan: <b>{n}</b><br><small style=\"color:#9aa0a6\">{p}</small><p><a href=\"{l}\" target=\"_self\" style=\"display:inline-block;background:#8ab4f8;color:#202124;padding:8px 16px;border-radius:6px;text-decoration:none;font-weight:600\">Buka di sini (lihat &amp; cetak)</a>{big}</p></body>",
                 n = html_escape(&name),
-                p = html_escape(&st.path)
+                p = html_escape(&st.path),
+                l = html_escape(&link)
             );
             let params = serde_json::json!({
                 "requestId": st.request,
@@ -1327,7 +1514,8 @@ mod imp {
         let _ = unsafe { cm.GetCookies(&HSTRING::from(url), &h) };
     }
 
-    /// Baca potongan berikutnya dari aliran respons PDF `id` dan tulis ke berkas.
+    /// Baca potongan berikutnya dari aliran respons PDF `id` dan tulis ke berkas (atau tahan
+    /// di memori selama diukur).
     fn read_stream(id: u64) {
         let Some((core, handle)) = STREAMS.with(|m| m.borrow().get(&id).map(|s| (s.core.clone(), s.handle.clone()))) else { return };
         // Satu permintaan baca menunggu sampai `size` terkumpul: 256 KB supaya kemajuan sering terlihat.
@@ -1346,29 +1534,56 @@ mod imp {
                 data.as_bytes().to_vec()
             };
             let eof = v["eof"].as_bool().unwrap_or(false);
-            let progress = STREAMS.with(|m| {
+            enum Step {
+                Fail,
+                Show,
+                Switch,
+                Measuring,
+                Wrote(bool, i64, i64, std::rc::Rc<dyn Fn(DlEvent)>),
+            }
+            let step = STREAMS.with(|m| {
                 let mut m = m.borrow_mut();
-                let st = m.get_mut(&id)?;
-                let f = st.file.as_mut()?;
+                let Some(st) = m.get_mut(&id) else { return Step::Fail };
+                if let Some(ms) = st.measure.as_mut() {
+                    ms.buf.extend_from_slice(&bytes);
+                    st.received += bytes.len() as i64;
+                    return if eof {
+                        Step::Show
+                    } else if ms.buf.len() as u64 > ms.limit {
+                        Step::Switch
+                    } else {
+                        Step::Measuring
+                    };
+                }
+                let Some(f) = st.file.as_mut() else { return Step::Fail };
                 if !bytes.is_empty() && f.write_all(&bytes).is_err() {
-                    return None;
+                    return Step::Fail;
                 }
                 st.received += bytes.len() as i64;
                 let due = st.last.elapsed() >= std::time::Duration::from_millis(300);
                 if due {
                     st.last = std::time::Instant::now();
                 }
-                Some((due, st.received, st.total, st.cb.clone()))
+                Step::Wrote(due, st.received, st.total, st.cb.clone())
             });
-            let Some((due, received, total, cb)) = progress else {
+            match step {
                 // Dibatalkan (sudah dihapus dari daftar) atau gagal menulis.
-                return finish_stream(id, false, "gagal menulis berkas");
-            };
-            if eof {
-                return finish_stream(id, true, "");
-            }
-            if due {
-                cb(DlEvent::Progress { id, received, total: total.max(received) });
+                Step::Fail => return finish_stream(id, false, "gagal menulis berkas"),
+                Step::Show => return show_measured(id),
+                Step::Switch => {
+                    if !switch_to_download(id) {
+                        return;
+                    }
+                }
+                Step::Measuring => {}
+                Step::Wrote(due, received, total, cb) => {
+                    if eof {
+                        return finish_stream(id, true, "");
+                    }
+                    if due {
+                        cb(DlEvent::Progress { id, received, total: total.max(received) });
+                    }
+                }
             }
             read_stream(id);
         });
@@ -1384,9 +1599,10 @@ mod imp {
     /// mati, atau unduhannya macet di 0 KB dan tidak bisa dibatalkan. Cara ini tidak membuat
     /// unduhan WebView2 sama sekali, dan server tidak perlu membuat PDF dua kali.
     ///
-    /// `decide(alamat, ukuran, nama)` = path tujuan bila PDF ini diunduh. `cb` menerima
-    /// Started/Progress/Done seperti unduhan lain.
-    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>, &str) -> Option<String> + 'static, cb: impl Fn(DlEvent) + 'static) {
+    /// `decide(alamat, ukuran, nama)` = None bila PDF ditampilkan seperti biasa; Some((path,
+    /// None)) = diunduh; Some((path, Some(batas))) = ukuran tidak disebut server, diukur dulu
+    /// (lihat `Measure`). `cb` menerima Started/Progress/Done seperti unduhan lain.
+    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, cb: impl Fn(DlEvent) + 'static) {
         use webview2_com::DevToolsProtocolEventReceivedEventHandler;
         use wry::WebViewExtWindows;
         let core = webview.webview();
@@ -1408,6 +1624,10 @@ mod imp {
             // Tahap permintaan (hanya alamat yang mirip unduhan): tampilkan "menunggu server"
             // segera, jangan tunggu server selesai membuat berkasnya.
             if v.get("responseStatusCode").is_none() && v.get("responseErrorReason").is_none() {
+                if let Some(token) = saved_param(&url) {
+                    serve_saved(&sender, &req, token);
+                    return Ok(());
+                }
                 if looks_like_download(&url) && !WAITING.with(|m| m.borrow().contains_key(&job)) {
                     let id = next_download_id();
                     WAITING.with(|m| m.borrow_mut().insert(job.clone(), (id, false)));
@@ -1451,13 +1671,56 @@ mod imp {
             } else {
                 None
             };
-            let Some(path) = target else {
+            let Some((path, measure)) = target else {
                 if let Some((wid, _)) = waiting {
                     cb(DlEvent::WaitEnd { id: wid });
                 }
                 continue_req(&sender);
                 return Ok(());
             };
+            if let Some(limit) = measure {
+                // Ukuran tidak disebut (PDF dibuat saat itu juga, mis. cetakan Infor LN): baca
+                // dulu; kecil = tampilkan seperti aslinya, besar = jadi unduhan.
+                let id = waiting.map(|(w, _)| w).unwrap_or_else(next_download_id);
+                let rh = &v["request"]["headers"];
+                let rhv = |name: &str| rh.as_object().and_then(|o| o.iter().find(|(k, _)| k.eq_ignore_ascii_case(name))).and_then(|(_, v)| v.as_str()).unwrap_or("").to_string();
+                let all: Vec<(String, String)> = headers
+                    .iter()
+                    .filter_map(|h| Some((h["name"].as_str()?.to_string(), h["value"].as_str().unwrap_or("").to_string())))
+                    .collect();
+                STREAMS.with(|m| {
+                    m.borrow_mut().insert(
+                        id,
+                        PdfStream {
+                            core: sender.clone(),
+                            request: req.clone(),
+                            handle: String::new(),
+                            file: None,
+                            part: std::path::PathBuf::from(format!("{path}.ovnerpart")),
+                            path: path.clone(),
+                            received: 0,
+                            total: 0,
+                            last: std::time::Instant::now(),
+                            started: std::time::Instant::now(),
+                            cb: cb.clone(),
+                            url: url.clone(),
+                            measure: Some(Measure {
+                                buf: Vec::new(),
+                                limit,
+                                status,
+                                headers: all,
+                                url: url.clone(),
+                                referer: rhv("referer"),
+                                agent: rhv("user-agent"),
+                                waiting: waiting.map(|(w, _)| w),
+                            }),
+                        },
+                    )
+                });
+                cb(DlEvent::Log(format!("PDF tanpa ukuran dari server, diukur dulu (batas {} MB): {url}", limit / 1_048_576)));
+                take_stream(&sender, &req, id);
+                return Ok(());
+            }
             let part = std::path::PathBuf::from(format!("{path}.ovnerpart"));
             let file = match std::fs::File::create(&part) {
                 Ok(f) => f,
@@ -1487,6 +1750,8 @@ mod imp {
                         last: std::time::Instant::now(),
                         started: std::time::Instant::now(),
                         cb: cb.clone(),
+                        url: url.clone(),
+                        measure: None,
                     },
                 )
             });
@@ -1503,22 +1768,7 @@ mod imp {
             )));
             cb(DlEvent::Started { id, url: url.clone(), path, total });
             emit_race(&sender, &cb, id, &url, referer, agent, total);
-            cdp_then(&sender, "Fetch.takeResponseBodyAsStream", &serde_json::json!({"requestId": req}).to_string(), move |v| {
-                let handle = v.as_ref().and_then(|v| v["stream"].as_str()).unwrap_or("").to_string();
-                let known = STREAMS.with(|m| {
-                    m.borrow_mut().get_mut(&id).map(|s| {
-                        s.handle = handle.clone();
-                    })
-                });
-                if known.is_none() {
-                    // Dibatalkan sebelum aliran didapat.
-                    return;
-                }
-                if handle.is_empty() {
-                    return finish_stream(id, false, "aliran respons tidak didapat");
-                }
-                read_stream(id);
-            });
+            take_stream(&sender, &req, id);
             Ok(())
         }));
         unsafe {
@@ -1530,7 +1780,7 @@ mod imp {
         // Tahap respons: semua dokumen (cek PDF). Tahap permintaan: hanya alamat yang mirip
         // unduhan, supaya bisa langsung ditampilkan "menunggu server".
         let mut patterns = vec![serde_json::json!({"urlPattern": "*", "resourceType": "Document", "requestStage": "Response"})];
-        for k in ["*download*", "*Download*", "*cetak*", "*.pdf*", "*export*", "*unduh*"] {
+        for k in ["*download*", "*Download*", "*cetak*", "*.pdf*", "*export*", "*unduh*", "*ovner_saved=*"] {
             patterns.push(serde_json::json!({"urlPattern": k, "resourceType": "Document", "requestStage": "Request"}));
         }
         cdp(webview, "Fetch.enable", &serde_json::json!({"patterns": patterns}).to_string());
@@ -1999,7 +2249,7 @@ mod imp {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
-    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>, &str) -> Option<String> + 'static, _cb: impl Fn(DlEvent) + 'static) {}
+    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, _cb: impl Fn(DlEvent) + 'static) {}
     pub fn post_text(_webview: &wry::WebView, _text: &str) -> bool {
         false
     }

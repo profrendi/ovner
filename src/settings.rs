@@ -197,6 +197,14 @@ pub struct Settings {
     pub pdf_download: bool,
     /// Batas ukuran PDF (MB) untuk diunduh langsung.
     pub pdf_download_mb: u32,
+    /// PDF yang ukurannya tidak disebut server (dibuat saat itu juga, mis. cetakan Infor LN):
+    /// "measure" = dibaca dulu, ditampilkan bila selesai di bawah batas, diunduh bila melewatinya;
+    /// "show" = selalu ditampilkan; "download" = selalu diunduh (perilaku sampai 0.8.19).
+    pub pdf_unknown: String,
+    /// Situs yang PDF-nya selalu ditampilkan (preview), berapa pun ukurannya.
+    pub pdf_show_sites: Vec<String>,
+    /// Situs yang PDF-nya selalu diunduh, berapa pun ukurannya.
+    pub pdf_download_sites: Vec<String>,
 
     // ---------- saat mulai ----------
     pub restore_tabs: bool,
@@ -360,6 +368,9 @@ impl Default for Settings {
             dl_server_info: true,
             pdf_download: true,
             pdf_download_mb: 5,
+            pdf_unknown: "measure".into(),
+            pdf_show_sites: vec!["inforcloudsuite.com".into()],
+            pdf_download_sites: Vec::new(),
             sleep_never_sites: Vec::new(),
             sleep_skip_forms: true,
             user_css: String::new(),
@@ -493,6 +504,44 @@ fn escape_param(v: &str) -> String {
 
 pub fn norm_host(h: &str) -> String {
     h.trim().trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Apa yang dilakukan pada respons PDF (bukan attachment) dari `host`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdfAction {
+    /// Biarkan penampil PDF bawaan (preview dengan tombol unduh dan cetak).
+    Show,
+    /// Simpan sebagai unduhan.
+    Download,
+    /// Ukuran tidak disebut server: baca dulu sampai `n` byte. Selesai di bawah itu = tampilkan,
+    /// lewat = unduhan (bagian yang sudah dibaca tidak diulang).
+    Measure(u64),
+}
+
+/// Batas byte PDF yang ditahan di memori untuk diukur, berapa pun batas unduh yang dipilih.
+pub const PDF_MEASURE_CAP: u64 = 32 * 1_048_576;
+
+impl Settings {
+    /// Aturan PDF: daftar situs lebih dulu, lalu ukuran dari server, lalu setelan "ukuran tidak
+    /// diketahui". `len` = Content-Length (None bila tidak disebut).
+    pub fn pdf_action(&self, host: &str, len: Option<u64>) -> PdfAction {
+        if !self.pdf_download || host_in(&self.pdf_show_sites, host) {
+            return PdfAction::Show;
+        }
+        if host_in(&self.pdf_download_sites, host) {
+            return PdfAction::Download;
+        }
+        let limit = self.pdf_download_mb.max(1) as u64 * 1_048_576;
+        match len {
+            Some(l) if l >= limit => PdfAction::Download,
+            Some(_) => PdfAction::Show,
+            None => match self.pdf_unknown.as_str() {
+                "show" => PdfAction::Show,
+                "download" => PdfAction::Download,
+                _ => PdfAction::Measure(limit.min(PDF_MEASURE_CAP)),
+            },
+        }
+    }
 }
 
 /// `host` (atau domain induknya) ada di daftar.
@@ -691,6 +740,8 @@ impl Settings {
             self.yt_codec_migrated = true;
         }
         pick(&mut self.yt_codec, &["auto", "manual", "off"], "auto");
+        pick(&mut self.pdf_unknown, &["measure", "show", "download"], "measure");
+        self.pdf_download_mb = self.pdf_download_mb.clamp(1, 2000);
         if self.codec_hw.len() > 64 {
             self.codec_hw.clear();
         }
@@ -718,6 +769,8 @@ impl Settings {
             &mut self.allow_copy_sites,
             &mut self.sleep_never_sites,
             &mut self.video_button_never,
+            &mut self.pdf_show_sites,
+            &mut self.pdf_download_sites,
         ] {
             *list = list.iter().map(|h| norm_host(h)).filter(|h| !h.is_empty()).collect();
             list.sort();
@@ -994,6 +1047,32 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pdf_rules() {
+        use super::PdfAction::*;
+        let mut s = Settings::default();
+        let mb = 1_048_576u64;
+        // SIPP: ukuran disebut 17 MB → unduh; kecil disebut → tampil.
+        assert_eq!(s.pdf_action("sipp.bpjsketenagakerjaan.go.id", Some(17 * mb)), Download);
+        assert_eq!(s.pdf_action("sipp.bpjsketenagakerjaan.go.id", Some(mb)), Show);
+        // Infor (ada di daftar tampil bawaan) selalu tampil.
+        assert_eq!(s.pdf_action("eln-lnui-apne1prda.eln.ne1.inforcloudsuite.com", None), Show);
+        assert_eq!(s.pdf_action("eln.ne1.inforcloudsuite.com", Some(40 * mb)), Show);
+        // Situs lain tanpa ukuran: diukur dulu sampai batas.
+        assert_eq!(s.pdf_action("contoh.go.id", None), Measure(5 * mb));
+        s.pdf_unknown = "download".into();
+        assert_eq!(s.pdf_action("contoh.go.id", None), Download);
+        s.pdf_unknown = "show".into();
+        assert_eq!(s.pdf_action("contoh.go.id", None), Show);
+        s.pdf_download_sites = vec!["contoh.go.id".into()];
+        assert_eq!(s.pdf_action("www.contoh.go.id", Some(10)), Download);
+        s.pdf_unknown = "measure".into();
+        s.pdf_download_mb = 500;
+        assert_eq!(s.pdf_action("lain.id", None), Measure(super::PDF_MEASURE_CAP));
+        s.pdf_download = false;
+        assert_eq!(s.pdf_action("contoh.go.id", Some(99 * mb)), Show);
+    }
+
 
     #[test]
     fn yt_codec_migration_and_modes() {
