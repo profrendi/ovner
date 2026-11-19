@@ -1913,9 +1913,18 @@
   // ---- Baca keras (seperti Read aloud Edge): suara Windows atau suara online ----
   const RD = { open: false, n: 0, paras: [], i: 0, playing: false, paused: false, engine: "local", voice: "", rate: 100, lang: "", title: "",
     online: { edge: null, azure: null }, err: "", audio: null, chunks: [], ck: 0, req: 0, cache: new Map(), waiting: null, azure: false };
-  const synth = window.speechSynthesis;
-  function localVoices() { try { return synth ? synth.getVoices() : []; } catch (e) { return []; } }
-  if (synth) synth.onvoiceschanged = () => { if (readOptsOpen) renderReadOpts(); };
+  // speechSynthesis baru disentuh saat baca keras dipakai: menyentuhnya saat toolbar dimuat membuat
+  // Chromium memuat mesin suara Windows (SAPI) dan daftar suara walau fitur ini tidak dipakai.
+  let synthObj = null;
+  function getSynth() {
+    if (!synthObj && window.speechSynthesis) {
+      synthObj = window.speechSynthesis;
+      window.__ovnerSynth = true;
+      synthObj.onvoiceschanged = () => { if (readOptsOpen) renderReadOpts(); };
+    }
+    return synthObj;
+  }
+  function localVoices() { try { const sy = getSynth(); return sy ? sy.getVoices() : []; } catch (e) { return []; } }
   const baseLang = (l) => (l || "").toLowerCase().split(/[-_]/)[0];
   function pickLocal() {
     const vs = localVoices();
@@ -1941,7 +1950,7 @@
   }
   function mark(i, a, len) { send({ cmd: "read-mark", n: RD.n, i, a, len }); }
   function stopSound() {
-    try { if (synth) synth.cancel(); } catch (e) {}
+    try { if (synthObj) synthObj.cancel(); } catch (e) {}
     if (RD.audio) { try { RD.audio.pause(); } catch (e) {} RD.audio = null; }
     RD.waiting = null;
   }
@@ -1953,6 +1962,7 @@
     const text = RD.paras[i];
     mark(i, 0, 0);
     if (RD.engine === "local") {
+      const synth = getSynth();
       if (!synth) { RD.err = LX() ? "Windows voices are unavailable" : "Suara Windows tidak tersedia"; renderReadbar(); return; }
       const u = new SpeechSynthesisUtterance(text);
       const v = pickLocal(); if (v) { u.voice = v; u.lang = v.lang; }
@@ -2020,11 +2030,11 @@
     if (!RD.playing) { playPara(RD.i); return; }
     if (RD.paused) {
       RD.paused = false;
-      if (RD.engine === "local") { try { synth.resume(); } catch (e) {} if (synth && !synth.speaking) playPara(RD.i); }
+      if (RD.engine === "local") { const synth = getSynth(); try { synth.resume(); } catch (e) {} if (synth && !synth.speaking) playPara(RD.i); }
       else if (RD.audio) RD.audio.play(); else playPara(RD.i);
     } else {
       RD.paused = true;
-      if (RD.engine === "local") { try { synth.pause(); } catch (e) {} } else if (RD.audio) RD.audio.pause();
+      if (RD.engine === "local") { try { getSynth().pause(); } catch (e) {} } else if (RD.audio) RD.audio.pause();
     }
     renderReadbar();
   }

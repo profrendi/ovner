@@ -32,6 +32,7 @@ const STEPS: &[(&str, u64)] = &[
     ("mulai", 60),
     ("patokan_ram_awal", 30),
     ("isi_ram_ovner_dan_pemblokir", 20),
+    ("isi_ram_toolbar", 20),
     ("pdf_tanpa_ukuran_kecil_tampil", 30),
     ("pdf_dalam_bingkai_seperti_infor", 30),
     ("pdf_tanpa_ukuran_besar_jadi_unduhan", 90),
@@ -82,6 +83,7 @@ const PROBATION: &[&str] = &[
     "font_tampilan_ovner",
     "layanan_online_terjemah_dan_suara",
     "isi_ram_ovner_dan_pemblokir",
+    "isi_ram_toolbar",
     "ekstensi_pasang_dari_crx",
     "ekstensi_skrip_konten_jalan",
     "ekstensi_panel_samping_terbuka",
@@ -747,6 +749,30 @@ impl App {
                     b.iter().filter(|(k, _)| k.starts_with("RAM")).map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("; "),
                     self.ram_breakdown()
                 ))
+            }
+            "isi_ram_toolbar" => {
+                if let Some(v) = self.ci.as_ref().unwrap().eval.clone() {
+                    let v: serde_json::Value = serde_json::from_str(&v).ok().and_then(|x: serde_json::Value| x.as_str().and_then(|s| serde_json::from_str(s).ok())).unwrap_or_default();
+                    let mb = |k: &str| v[k].as_f64().unwrap_or(0.0) / 1_048_576.0;
+                    let kind = self.ram_by_kind();
+                    let proc_mb = kind.get("toolbar").map(|k| k.1 / 1_048_576).unwrap_or(0);
+                    self.ci.as_mut().unwrap().bench.push(("Toolbar: heap JS (KB)".into(), (mb("used") * 1024.0) as u64));
+                    return Out::Pass(format!(
+                        "proses toolbar {proc_mb} MB; heap JavaScript {:.1} MB terpakai / {:.1} MB dipesan; {} elemen DOM; HTML toolbar {} KB; mesin suara {}",
+                        mb("used"),
+                        mb("total"),
+                        v["nodes"],
+                        v["html"].as_u64().unwrap_or(0) / 1024,
+                        if v["synth"].as_bool().unwrap_or(false) { "sudah dimuat" } else { "belum dimuat (baru saat baca keras dipakai)" }
+                    ));
+                }
+                if sub == 2 || sub % 10 == 0 {
+                    self.request_renderer_frames(true);
+                    let p = self.proxy.clone();
+                    let js = "JSON.stringify({used: performance.memory ? performance.memory.usedJSHeapSize : 0, total: performance.memory ? performance.memory.totalJSHeapSize : 0, nodes: document.getElementsByTagName('*').length, html: document.documentElement.outerHTML.length, synth: !!window.__ovnerSynth})";
+                    let _ = self.toolbar.evaluate_script_with_callback(js, move |r| crate::send(&p, UserEvent::CiEval(r)));
+                }
+                Out::Wait
             }
             "ekstensi_pasang_dari_crx" | "ekstensi_copyclip_dari_web_store" => {
                 let store = name.contains("copyclip");
