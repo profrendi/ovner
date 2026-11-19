@@ -30,6 +30,11 @@ mod versions;
 mod win;
 mod memtrim;
 mod defaults;
+mod logging;
+mod metrics;
+mod selftest;
+mod citest;
+mod testserver;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -215,18 +220,9 @@ fn data_dir() -> &'static Path {
     DATA_DIR.get().map(PathBuf::as_path).unwrap_or(Path::new("."))
 }
 
-/// Catatan sederhana di `<data>/ovner.log` untuk menelusuri masalah.
+/// Catatan di `<data>/ovner.log` (lihat logging.rs: kategori, tingkat, riwayat 5 × 1 MB).
 pub fn log(msg: &str) {
-    let p = data_dir().join("ovner.log");
-    if std::fs::metadata(&p).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
-        let _ = std::fs::rename(&p, data_dir().join("ovner.old.log"));
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{} {msg}", store::now());
-    }
-    if cfg!(debug_assertions) {
-        eprintln!("[ovner] {msg}");
-    }
+    logging::log(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +418,56 @@ fn is_heavy_tab(t: &Tab) -> bool {
     playing_audio(wv) || video::is_youtube(&t.url) || video::is_video_page(&t.url) || (t.proc_pid != 0 && t.proc_shared <= 1 && t.proc_ram > 250 * 1_048_576)
 }
 
+/// Baris pembuka log setiap kali Ovner mulai: versi, lingkungan, setelan yang berbeda dari
+/// bawaan, perpindahan versi, dan (di latar) versi alat video.
+static STARTUP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn log_start_header(exe: &Path, portable: bool, tray: bool, s: &Settings) {
+    let ver = update::display_version();
+    log(&format!("[sistem] ==== Ovner {ver} mulai (portabel: {portable}, terpasang: {}, tray: {tray}, kanal: {}) ====", install::is_installed_copy(exe) || install::is_machine_copy(exe), s.update_channel));
+    let (total, avail) = win::mem_status().unwrap_or((0, 0));
+    log(&format!(
+        "[sistem] {} · WebView2 {} · CPU {} ({} inti logis) · RAM {} MB, tersedia {} MB",
+        win::os_version(),
+        wry::webview_version().unwrap_or_else(|_| "?".into()),
+        win::cpu_name(),
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        total / 1_048_576,
+        avail / 1_048_576
+    ));
+    log(&format!("[sistem] exe: {} · data: {}", exe.display(), data_dir().display()));
+    let nd = s.non_default();
+    log(&format!("[sistem] setelan berbeda dari bawaan ({}): {}", nd.len(), nd.join("; ")));
+    let mark = data_dir().join("last-version.txt");
+    let before = std::fs::read_to_string(&mark).unwrap_or_default().trim().to_string();
+    if before != ver {
+        log(&format!("[sistem] versi berganti: {} → {ver}", if before.is_empty() { "(pertama kali dicatat)" } else { &before }));
+        let _ = std::fs::write(&mark, &ver);
+    }
+    // Versi alat video: menjalankan yt-dlp/ffmpeg butuh waktu dan CPU, jadi paling sering sekali
+    // sehari (di latar); selebihnya dibaca dari catatan terakhir.
+    let data = data_dir().to_path_buf();
+    let cache = data.join("tools").join("versions.txt");
+    let fresh = std::fs::metadata(&cache).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() < 86_400);
+    if fresh {
+        log(&format!("[sistem] alat video (dicek < 1 hari lalu): {}", std::fs::read_to_string(&cache).unwrap_or_default().trim()));
+    } else {
+        std::thread::spawn(move || {
+            let v = video::tool_versions(&data).join(" · ");
+            log(&format!("[sistem] alat video: {v}"));
+            if data.join("tools").is_dir() {
+                let _ = std::fs::write(&cache, &v);
+            }
+        });
+    }
+}
+
+/// Berkas video (untuk tombol "Ambil subtitle (.srt)").
+fn is_video_file(path: &str) -> bool {
+    let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(ext.as_str(), "mp4" | "mkv" | "webm" | "mov" | "m4v" | "avi" | "ts")
+}
+
 fn host_of(url: &str) -> Option<String> {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string))
 }
@@ -498,7 +544,14 @@ enum UserEvent {
     /// Halaman meminta jendelanya ditutup (window.close).
     ScriptClose(u64),
     /// Hasil uji diagnostik di latar.
-    DiagResult(String, bool, String),
+    /// Detak --self-test (tiap 300 ms).
+    CiTick,
+    /// Hasil ExecuteScript untuk --self-test.
+    CiEval(String),
+    /// Hasil uji fitur (Diagnostik); true = kelompok terakhir.
+    DiagItems(Vec<Value>, bool),
+    /// Tabel setelan dari "Uji semua fitur".
+    DiagRows(Vec<Value>),
     /// Ikon situs hasil unduhan untuk bookmark (host, isi berkas).
     IconFetched(String, Vec<u8>),
     /// Navigasi halaman utama selesai (berhasil?, kode galat WebView2).
@@ -528,10 +581,14 @@ enum UserEvent {
     Video(u64, video::Event),
     /// Hasil "Coba unduh subtitle lagi" untuk unduhan `.0`.
     VideoSubs(u64, Result<String, String>),
+    /// Hasil "Ambil subtitle (.srt) dari video": unduhan (0 = dari menu), berkas, hasil.
+    SubsExtracted(u64, PathBuf, Result<String, String>),
     /// Hasil skrip subtitle di halaman YouTube untuk unduhan `.0` (JSON dari ExecuteScript).
     PageSubs(u64, String),
     /// Saatnya memeriksa lagi skrip subtitle unduhan `.0`.
     PageSubsPoll(u64),
+    /// Statistik pemutaran YouTube dari tab `.0` (JSON dari ExecuteScript).
+    YtStats(u64, String),
     VideoJob(u64, video::Job),
     /// Hasil penelusuran format video (nomor penelusuran, data dialog).
     VideoInfo(u64, Result<Value, String>),
@@ -558,6 +615,8 @@ struct Tab {
     viewed: bool,
     /// Penjaga tab membengkak sudah memberi tahu untuk ukuran ini (MB); dikosongkan saat tidur.
     bloat_noted: u64,
+    /// Kapan tab dibangunkan/dibuat (lama memuat dicatat saat navigasi pertama selesai).
+    woke_at: Option<Instant>,
     blocked: Rc<Cell<u32>>,
     page: Rc<RefCell<String>>,
     cos_exceptions: HashSet<String>,
@@ -681,7 +740,13 @@ struct App {
     /// Ovner harus keluar (bukan buka ulang), mis. setelah dihapus dari Pengaturan.
     quit_requested: bool,
     /// Hasil uji diagnostik terakhir: nama → (berhasil, keterangan).
-    diag: Vec<(String, bool, String)>,
+    diag: Vec<Value>,
+    /// Tabel setelan dari "Uji semua fitur".
+    diag_rows: Vec<Value>,
+    /// Uji --self-test yang sedang berjalan.
+    ci: Option<citest::CiRun>,
+    /// "" = belum diuji, "berjalan", atau waktu selesai.
+    diag_state: String,
     /// Daftar tab vertikal di kiri (bila dinyalakan).
     sidebar: Option<WebView>,
     toolbar_ready: bool,
@@ -749,6 +814,10 @@ struct App {
     update_prompt: bool,
     last_sleep_check: Instant,
     last_diag: Instant,
+    /// Pengukuran tiap menit terakhir.
+    last_metrics: Instant,
+    /// Pemutaran YouTube yang terakhir dicatat per tab: (video|codec|resolusi, kapan).
+    yt_seen: HashMap<u64, (String, Instant)>,
     last_render_key: String,
     /// Ikon terakhir yang dikirim ke toolbar (dikirim ulang hanya bila berubah).
     last_icons_key: String,
@@ -779,6 +848,10 @@ struct App {
     next_trim: Option<Instant>,
     /// Rapikan berikutnya diminta pengguna/diminimalkan (abaikan jarak dan syarat bertambah).
     trim_force: bool,
+    /// Alasan tidur untuk panggilan sleep_tab berikutnya (dicatat di log).
+    sleep_why: String,
+    /// Kapan Ovner mulai (lama berjalan di log dan pengukuran).
+    started: Instant,
     /// Tab video/berat baru saja ditutup atau ditidurkan: rapikan berikutnya boleh menyentuh
     /// proses GPU (buffer dekoder video) walau jendela terbuka.
     gpu_trim: bool,
@@ -1362,6 +1435,7 @@ fn build_menus(lang: Lang) -> Menus {
         &item("tasks", "m.tasks"),
         &item("sessions", "m.sessions"),
         &item("sleep-all", "m.sleep_all"),
+        &item("sub-extract", "m.sub_extract"),
         &item("close-duplicates", "m.close_duplicates"),
         &item("trim", "m.trim"),
         &PredefinedMenuItem::separator(),
@@ -1529,6 +1603,7 @@ impl App {
             last_active: Instant::now(),
             viewed: false,
             bloat_noted: 0,
+            woke_at: None,
             blocked: Rc::new(Cell::new(0)),
             page: Rc::new(RefCell::new(String::new())),
             cos_exceptions: HashSet::new(),
@@ -1648,6 +1723,7 @@ impl App {
                 self.tabs[i].webview = Some(wv);
                 self.tabs[i].suspended = false;
                 self.tabs[i].script_gen = self.script_gen;
+                self.tabs[i].woke_at = Some(Instant::now());
             }
             Err(e) => log(&format!("gagal membuat tab: {e}")),
         }
@@ -1871,7 +1947,15 @@ impl App {
         let freed = if t.proc_pid != 0 { t.proc_ram / t.proc_shared.max(1) as u64 } else { t.js_heap };
         t.proc_pid = 0;
         t.frame_id = None;
-        log(&format!("tab ditidurkan: {}", if t.url.is_empty() || is_newtab(&t.url) { "(tab baru)".to_string() } else { display_url(&t.url) }));
+        let why = std::mem::take(&mut self.sleep_why);
+        log(&format!(
+            "tab ditidurkan: {} (±{} MB; alasan: {})",
+            if t.url.is_empty() || is_newtab(&t.url) { "(tab baru)".to_string() } else { display_url(&t.url) },
+            freed / 1_048_576,
+            if why.is_empty() { "lain" } else { why.as_str() }
+        ));
+        metrics::count("tab_ditidurkan", 1);
+        metrics::count("mb_dibebaskan_tidur", freed / 1_048_576);
         self.tab_stats.slept += 1;
         self.tab_stats.ram_freed += freed;
         self.save_tab_stats();
@@ -2197,6 +2281,8 @@ impl App {
         let (before, after) = done.iter().fold((0u64, 0u64), |(b, a), t| (b + t.before, a + t.after));
         let mut why: Vec<String> = skipped.iter().map(|(k, w)| format!("{k}: {w}")).collect();
         why.dedup();
+        metrics::count("proses_dirapikan", n as u64);
+        metrics::count("mb_dirapikan", before.saturating_sub(after) / 1_048_576);
         if n > 0 || force {
             log(&format!(
                 "RAM dirapikan ({n} proses{}): {} → {} MB{}",
@@ -2273,6 +2359,7 @@ impl App {
         if self.switch_to(no) {
             if let Some(j) = self.tab_index(id) {
                 log(&format!("RAM Windows sesak: tab {} ditidurkan", display_url(&self.tabs[j].url)));
+                self.sleep_why = "RAM Windows hampir habis".into();
                 self.sleep_tab(j);
                 self.render();
             }
@@ -2324,6 +2411,7 @@ impl App {
                     continue;
                 }
                 log(&format!("penjaga tab: {} memakai {mb} MB (batas {} MB), ditidurkan", display_url(&t.url), limit / 1_048_576));
+                a.sleep_why = format!("membengkak {mb} MB");
                 a.sleep_tab(j);
                 changed = true;
             }
@@ -2444,7 +2532,7 @@ impl App {
     ///   jendela diminimalkan/di tray dan setelan itu menyala; yang lebih cepat yang dipakai);
     /// - berada di luar `keep_live_tabs` tab yang terakhir dipakai (tab terlindung tidak memakai
     ///   jatah; tab yang belum pernah dilihat hanya ikut aturan waktu).
-    fn sleep_plan(&self) -> Vec<usize> {
+    fn sleep_plan(&self) -> Vec<(usize, String)> {
         let (mins, keep, fast, fast_secs) = {
             let s = self.settings.borrow();
             (s.sleep_tabs_minutes, s.keep_live_tabs as usize, s.sleep_minimized, s.sleep_minimized_secs as u64)
@@ -2455,27 +2543,30 @@ impl App {
             limit = Some(limit.map_or(f, |l| l.min(f)));
         }
         let mut free: Vec<usize> = (0..self.tabs.len()).filter(|&j| self.sleep_guard(j).is_none()).collect();
-        let mut out: Vec<usize> = free.iter().copied().filter(|&j| limit.is_some_and(|l| self.tabs[j].last_active.elapsed() >= l)).collect();
+        let fast_on = self.background && fast && limit.is_some_and(|l| l.as_secs() == fast_secs);
+        let why_time = if fast_on { format!("diminimalkan/di tray > {fast_secs} detik") } else { format!("tidak dibuka > {mins} menit") };
+        let mut out: Vec<(usize, String)> = free.iter().copied().filter(|&j| limit.is_some_and(|l| self.tabs[j].last_active.elapsed() >= l)).map(|j| (j, why_time.clone())).collect();
         if keep > 0 {
             // Urutkan dari yang paling baru dipakai; tab yang baru saja ditinggal (<3 detik)
             // dibiarkan dulu supaya bolak-balik cepat tidak memuat ulang halaman.
             free.retain(|&j| self.tabs[j].viewed && !self.tabs[j].loading);
             free.sort_by_key(|&j| std::cmp::Reverse(self.tabs[j].last_active));
             for &j in free.iter().skip(keep) {
-                if self.tabs[j].last_active.elapsed() >= Duration::from_secs(3) && !out.contains(&j) {
-                    out.push(j);
+                if self.tabs[j].last_active.elapsed() >= Duration::from_secs(3) && !out.iter().any(|(k, _)| *k == j) {
+                    out.push((j, format!("di luar {keep} tab terakhir")));
                 }
             }
         }
-        out.sort_unstable();
+        out.sort_unstable_by_key(|(j, _)| *j);
         out
     }
 
     /// Tidurkan tab yang lama tidak dibuka atau di luar "N tab terakhir".
     fn sleep_idle_tabs(&mut self) {
         let plan = self.sleep_plan();
-        for &j in &plan {
-            self.sleep_tab(j);
+        for (j, why) in &plan {
+            self.sleep_why = why.clone();
+            self.sleep_tab(*j);
         }
         if !plan.is_empty() {
             self.render();
@@ -2646,6 +2737,7 @@ impl App {
         };
         json!({"id": d.id, "name": d.name, "url": d.url, "path": d.path, "total": d.total, "received": d.received, "state": d.state, "time": d.time,
             "engine": d.engine, "speed": d.speed, "video": d.video, "later": d.vspec.is_some(), "error": d.error, "subRetry": d.subs_retry.is_some() && d.state == "done",
+            "subExtract": d.state == "done" && d.subs_retry.is_none() && is_video_file(&d.path) && Path::new(&d.path).exists(),
             "note": self.dl_meta.get(&d.id).map(|m| m.note.clone()).unwrap_or_default(),
             "conns": if meta.is_some_and(|m| m.pdf) {
                 // PDF: respons halaman + koneksi kedua Ovner yang masih berjalan.
@@ -2664,6 +2756,36 @@ impl App {
     }
 
     fn save_downloads(&self) {
+        // Setiap unduhan yang baru selesai/gagal dicatat sekali (semua mesin lewat sini):
+        // ukuran, lama, kecepatan rata-rata, mesin.
+        static SEEN: std::sync::Mutex<Option<HashMap<u64, String>>> = std::sync::Mutex::new(None);
+        if let Ok(mut seen) = SEEN.lock() {
+            let seen = seen.get_or_insert_with(HashMap::new);
+            for d in &self.downloads {
+                let prev = seen.insert(d.id, d.state.clone());
+                // Hidup sebelumnya, atau unduhan baru di sesi ini yang langsung selesai.
+                let began = store::now().saturating_sub(self.started.elapsed().as_secs());
+                let was_live = matches!(prev.as_deref(), Some("progress" | "paused")) || (prev.is_none() && d.time >= began);
+                if !was_live || prev.as_deref() == Some(d.state.as_str()) {
+                    continue;
+                }
+                let secs = store::now().saturating_sub(d.time).max(1);
+                let mb = d.received.max(0) as f64 / 1_048_576.0;
+                let how = if d.video { "yt-dlp" } else if self.dl_meta.get(&d.id).is_some_and(|m| m.pdf) { "PDF" } else if d.engine { "mesin Ovner" } else { "WebView2" };
+                match d.state.as_str() {
+                    "done" => {
+                        metrics::count("unduhan_selesai", 1);
+                        metrics::count("mb_diunduh", mb as u64);
+                        log(&format!("[unduh] selesai: {} ({mb:.1} MB, {secs} dtk, {:.2} MB/dtk, {how}){}", d.name, mb / secs as f64, if d.error.is_empty() { String::new() } else { format!(" · catatan: {}", d.error) }));
+                    }
+                    "failed" => {
+                        metrics::count("unduhan_gagal", 1);
+                        log(&format!("[unduh] GALAT: gagal/dibatalkan: {} ({mb:.1} MB diterima, {how}){}", d.name, if d.error.is_empty() { String::new() } else { format!(": {}", d.error) }));
+                    }
+                    _ => {}
+                }
+            }
+        }
         let keep: Vec<&Download> = self.downloads.iter().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
         if let Ok(t) = serde_json::to_string(&keep) {
             let _ = std::fs::write(data_dir().join("downloads.json"), t);
@@ -3662,6 +3784,145 @@ impl App {
         self.refresh_pages("downloads");
     }
 
+    /// "Ambil subtitle (.srt) dari video": semua trek teks di dalam video jadi .srt di sampingnya.
+    fn extract_video_subs(&mut self, video: PathBuf, dl: u64) {
+        log(&format!("ambil subtitle dari video: {}", video.display()));
+        if dl != 0 {
+            self.dl_meta.entry(dl).or_default().note = "subtitle…".into();
+            self.refresh_pages("downloads");
+            self.last_render_key.clear();
+            self.render();
+        }
+        let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
+        std::thread::spawn(move || {
+            let r = video::ensure_ffmpeg(&data).and_then(|_| video::extract_subs(&data, &video)).map(|(made, skipped)| {
+                let mut m = made.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).collect::<Vec<_>>().join(", ");
+                if !skipped.is_empty() {
+                    m.push_str(&format!(" (dilewati: {})", skipped.join("; ")));
+                }
+                m
+            });
+            send(&p, UserEvent::SubsExtracted(dl, video, r));
+        });
+    }
+
+    fn on_subs_extracted(&mut self, dl: u64, video: &Path, r: Result<String, String>) {
+        match &r {
+            Ok(m) => log(&format!("subtitle diambil dari video: {m}")),
+            Err(e) => log(&format!("ambil subtitle dari video gagal: {e}")),
+        }
+        if dl != 0 {
+            if let Some(m) = self.dl_meta.get_mut(&dl) {
+                m.note.clear();
+            }
+            if let Some(d) = self.downloads.iter_mut().find(|d| d.id == dl) {
+                d.error = match &r {
+                    Ok(m) => format!("subtitle disimpan: {m}"),
+                    Err(e) => format!("ambil subtitle: {e}"),
+                };
+            }
+            self.save_downloads();
+            self.refresh_pages("downloads");
+            self.last_render_key.clear();
+            self.render();
+        }
+        match r {
+            Ok(m) => {
+                if dl == 0 {
+                    win::info(&format!("{}\n\n{m}", t(self.lang, "p.sub_extract_ok")));
+                }
+                let first = m.split(", ").next().unwrap_or("").split(" (dilewati").next().unwrap_or("").to_string();
+                if let Some(dir) = video.parent() {
+                    win::open_path(&dir.join(first).display().to_string(), true);
+                }
+            }
+            Err(e) if dl == 0 => win::info(&format!("{}\n\n{e}", t(self.lang, "p.sub_extract_fail"))),
+            Err(_) => {}
+        }
+    }
+
+    /// Satu baris pengukuran (tiap menit): RAM/commit/CPU per jenis proses, RAM Windows, tab,
+    /// unduhan, sisa disk, penghitung harian. Lihat metrics.rs.
+    fn write_metrics(&mut self) {
+        if self.stats.is_empty() || self.stats_at.elapsed() > Duration::from_secs(10) {
+            self.stats = self.sampler.sample(false);
+            self.stats_at = Instant::now();
+        }
+        let mb = |b: u64| b / 1_048_576;
+        let mut kinds: std::collections::BTreeMap<String, (u32, u64, u64, f64)> = std::collections::BTreeMap::new();
+        for p in &self.stats {
+            let e = kinds.entry(p.kind.clone()).or_default();
+            e.0 += 1;
+            e.1 += p.working;
+            e.2 += p.commit;
+            e.3 += p.cpu;
+        }
+        let per: serde_json::Map<String, Value> = kinds.into_iter().map(|(k, (n, w, c, cpu))| (k, json!({"n": n, "mb": mb(w), "commit": mb(c), "cpu": (cpu * 10.0).round() / 10.0}))).collect();
+        let t = usage::total(&self.stats);
+        let (wt, wa) = win::mem_status().unwrap_or((0, 0));
+        let dl_dir = PathBuf::from(&self.settings.borrow().download_dir);
+        let tabs: Vec<&Tab> = self.all_tabs().collect();
+        let line = json!({
+            "menit": self.started.elapsed().as_secs() / 60,
+            "ram": mb(t.working),
+            "commit": mb(self.stats.iter().map(|p| p.commit).sum()),
+            "cpu": (t.cpu * 10.0).round() / 10.0,
+            "gpu": (t.gpu * 10.0).round() / 10.0,
+            "gpu_mem": mb(t.gpu_mem),
+            "proses": t.procs,
+            "per_jenis": per,
+            "win_ram": mb(wt),
+            "win_sisa": mb(wa),
+            "tab": tabs.len(),
+            "tab_hidup": tabs.iter().filter(|t| t.webview.is_some()).count(),
+            "tab_beku": tabs.iter().filter(|t| t.suspended).count(),
+            "jendela": self.window_count(),
+            "tray": self.in_tray,
+            "diam_dtk": win::idle_secs(),
+            "unduhan_aktif": self.downloads.iter().filter(|d| d.state == "progress").count(),
+            "disk_sisa_mb": win::disk_free(&dl_dir).map(mb),
+        });
+        metrics::write(data_dir(), line);
+    }
+
+    /// Tab YouTube yang sedang memutar: baca codec, resolusi, dan frame hilang dari pemutar
+    /// (getStatsForNerds + getVideoPlaybackQuality), untuk membuktikan fitur codec di log.
+    fn probe_youtube(&mut self) {
+        const JS: &str = r#"(function(){try{var p=document.getElementById("movie_player"),v=document.querySelector("video");if(!p||!v||v.paused)return null;var s=p.getStatsForNerds?p.getStatsForNerds():{},q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():{},d=p.getVideoData?p.getVideoData():{};return JSON.stringify({id:d.video_id||"",codecs:s.codecs||"",res:s.resolution||"",w:v.videoWidth,h:v.videoHeight,dropped:q.droppedVideoFrames||0,total:q.totalVideoFrames||0,quality:p.getPlaybackQuality?p.getPlaybackQuality():""});}catch(e){return null;}})()"#;
+        let ids: HashSet<u64> = self.all_tabs().map(|t| t.id).collect();
+        self.yt_seen.retain(|id, _| ids.contains(id));
+        let targets: Vec<(u64, &WebView)> = self.all_tabs().filter(|t| video::is_youtube(&t.url)).filter_map(|t| t.webview.as_ref().filter(|w| playing_audio(w)).map(|w| (t.id, w))).collect();
+        for (id, wv) in targets {
+            let p = self.proxy.clone();
+            let _ = wv.evaluate_script_with_callback(JS, move |r| send(&p, UserEvent::YtStats(id, r)));
+        }
+    }
+
+    fn on_yt_stats(&mut self, tab: u64, r: &str) {
+        let v: Value = serde_json::from_str(r).ok().and_then(|o: Value| o.as_str().and_then(|s| serde_json::from_str(s).ok())).unwrap_or(Value::Null);
+        if v.is_null() {
+            return;
+        }
+        let key = format!("{}|{}|{}", v["id"].as_str().unwrap_or(""), v["codecs"].as_str().unwrap_or(""), v["res"].as_str().unwrap_or(""));
+        // Dicatat bila video/codec/resolusi berubah, atau tiap 10 menit selagi diputar.
+        let due = self.yt_seen.get(&tab).is_none_or(|(k, at)| *k != key || at.elapsed() >= Duration::from_secs(600));
+        if !due {
+            return;
+        }
+        self.yt_seen.insert(tab, (key, Instant::now()));
+        let (dropped, total) = (v["dropped"].as_u64().unwrap_or(0), v["total"].as_u64().unwrap_or(0));
+        log(&format!(
+            "[codec] YouTube {}: {} · {}x{} ({}) · frame hilang {dropped}/{total} ({:.2}%) · mode codec {}",
+            v["id"].as_str().unwrap_or("?"),
+            v["codecs"].as_str().unwrap_or("?"),
+            v["w"],
+            v["h"],
+            v["quality"].as_str().unwrap_or(""),
+            if total > 0 { dropped as f64 * 100.0 / total as f64 } else { 0.0 },
+            self.settings.borrow().yt_codec
+        ));
+    }
+
     /// Mulai mengambil subtitle unduhan `dl` lewat halaman YouTube: di tab yang sedang memutar
     /// video itu, atau di tab sementara di belakang (suara dimatikan, ditutup lagi). Mengisi
     /// `spec.page_srt`. false = bukan video YouTube / tab tidak bisa dibuka.
@@ -3975,6 +4236,7 @@ impl App {
             "dl-open" if Path::new(&path).exists() => win::open_path(&path, false),
             "dl-show" if Path::new(&path).exists() => win::open_path(&path, true),
             "video-sub-retry" => self.retry_video_subs(id),
+            "video-sub-extract" if Path::new(&path).exists() => self.extract_video_subs(PathBuf::from(&path), id),
             "dl-cancel" => match (self.dl_jobs.get(&id), self.video_jobs.get(&id)) {
                 (Some((job, _)), _) => job.cancel(),
                 (_, Some(v)) => v.cancel(),
@@ -4421,6 +4683,11 @@ impl App {
             self.icons_due = None;
             self.fetch_missing_icons();
         }
+        if self.settings.borrow().metrics && self.last_metrics.elapsed() >= Duration::from_secs(60) {
+            self.last_metrics = Instant::now();
+            self.write_metrics();
+            self.probe_youtube();
+        }
         if self.settings.borrow().diagnostics && self.last_diag.elapsed() >= DIAG_EVERY {
             self.last_diag = Instant::now();
             if self.stats.is_empty() || self.stats_at.elapsed() > Duration::from_secs(10) {
@@ -4494,10 +4761,17 @@ impl App {
             t.media_hidden_at = None;
             if let Some(wv) = &t.webview {
                 pause_media(wv);
-                if suspend && t.downloads_live == 0 {
+                let frozen = suspend && t.downloads_live == 0;
+                if frozen {
                     win::try_suspend(wv);
                     t.suspended = true;
                 }
+                log(&format!(
+                    "[tidur] media di belakang dijeda{}: {} (aturan: {policy}{})",
+                    if frozen { " dan tab dibekukan" } else { "" },
+                    display_url(&t.url),
+                    if policy == "timer" { format!(", {mins} menit") } else { String::new() }
+                ));
             }
         }
     }
@@ -4565,6 +4839,51 @@ impl App {
         json!({"app": app, "tab": tab, "title": cfg!(windows)})
     }
 
+    /// Paket diagnostik: satu berkas teks berisi laporan + hasil uji + tabel setelan, setelan
+    /// (tanpa kata sandi: kata sandi ada di brankas terpisah), pengukuran 7 hari, dan semua log.
+    /// `hide` = alamat situs dan nama pengguna Windows disembunyikan.
+    fn save_diag_package(&self, hide: bool) -> Result<PathBuf, String> {
+        let stamp: String = win::local_time().chars().take(16).filter(|c| c.is_ascii_digit()).collect();
+        let dir = PathBuf::from(&self.settings.borrow().download_dir);
+        let dir = if dir.is_dir() { dir } else { data_dir().to_path_buf() };
+        let path = dir.join(format!("ovner-diagnostik-{stamp}.txt"));
+        let mut t = String::new();
+        t.push_str(&format!("==== Paket diagnostik Ovner {} · {} ====\n", update::display_version(), win::local_time()));
+        t.push_str(if hide { "(alamat situs dan nama pengguna disembunyikan)\n" } else { "(alamat lengkap)\n" });
+        t.push_str("\n## Laporan, hasil uji, dan tabel setelan\n");
+        let mut report = self.diagnostics_report();
+        if let Some(o) = report.as_object_mut() {
+            o.remove("log");
+        }
+        t.push_str(&serde_json::to_string_pretty(&report).unwrap_or_default());
+        t.push_str("\n\n## Setelan\n");
+        t.push_str(&serde_json::to_string_pretty(&*self.settings.borrow()).unwrap_or_default());
+        t.push_str("\n\n## Pengukuran tiap menit (terlama dulu)\n");
+        let mut budget: usize = 8 * 1_048_576;
+        let mut parts = Vec::new();
+        for f in metrics::files(data_dir()) {
+            let body = std::fs::read_to_string(&f).unwrap_or_default();
+            if body.len() > budget {
+                break;
+            }
+            budget -= body.len();
+            parts.push(format!("# {}\n{body}", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+        }
+        parts.reverse();
+        t.push_str(&parts.join("\n"));
+        t.push_str("\n\n## Log (terlama dulu)\n");
+        logging::flush();
+        for f in logging::files(data_dir()).into_iter().rev() {
+            t.push_str(&format!("# {}\n", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+            t.push_str(&std::fs::read_to_string(&f).unwrap_or_default());
+            t.push('\n');
+        }
+        let t = if hide { selftest::redact(&t) } else { t };
+        std::fs::write(&path, t).map_err(|e| format!("{}: {e}", path.display()))?;
+        log(&format!("[diag] paket diagnostik disimpan: {}{}", path.display(), if hide { " (alamat disembunyikan)" } else { "" }));
+        Ok(path)
+    }
+
     /// Laporan lengkap untuk halaman diagnostik dan "Salin laporan".
     fn diagnostics_report(&self) -> Value {
         let s = self.settings.borrow();
@@ -4586,13 +4905,13 @@ impl App {
             .unwrap_or_default()
             .lines()
             .rev()
-            .take(150)
+            .take(400)
             .map(str::to_string)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()
             .collect();
-        let crashes: Vec<&String> = log_tail.iter().filter(|l| l.contains("CRASH") || l.contains("PANIC") || l.contains("gagal")).collect();
+        let crashes: Vec<&String> = log_tail.iter().filter(|l| l.contains("PANIC") || logging::line_level(l) == "GALAT" || (logging::line_level(l).is_empty() && l.contains("gagal"))).collect();
         let total = usage::total(&self.stats);
         let exe = std::env::current_exe().unwrap_or_default();
         json!({
@@ -4621,7 +4940,11 @@ impl App {
             "windows": self.window_count(),
             "procs": total.procs, "ram": total.working, "cpu": total.cpu, "gpu": total.gpu, "gpuMem": total.gpu_mem,
             "kinds": self.stats.iter().map(|p| format!("{}:{}", p.kind, p.pid)).collect::<Vec<_>>(),
-            "tests": self.diag.iter().map(|(n, ok, m)| json!({"name": n, "ok": ok, "msg": m})).collect::<Vec<_>>(),
+            "tests": self.diag,
+            "settingRows": self.diag_rows,
+            "diagState": self.diag_state,
+            "counts": metrics::counts(),
+            "logCategories": logging::CATEGORIES,
             "crashes": crashes,
             "log": log_tail,
         })
@@ -4665,6 +4988,15 @@ impl App {
             "run-tests" => {
                 self.run_diag_tests();
                 self.push_page_state(i);
+            }
+            "save-package" | "save-package-private" => {
+                match self.save_diag_package(name == "save-package-private") {
+                    Ok(p) => {
+                        win::open_path(&p.display().to_string(), true);
+                        win::info(&format!("{}\n\n{}", t(self.lang, "d.package_saved"), p.display()));
+                    }
+                    Err(e) => win::info(&format!("{}\n\n{e}", t(self.lang, "d.package_failed"))),
+                }
             }
             "copy-report" => {
                 let report = serde_json::to_string_pretty(&self.diagnostics_report()).unwrap_or_default();
@@ -4721,32 +5053,202 @@ impl App {
     }
 
     /// Uji yang butuh jaringan dijalankan di latar.
+    /// "Uji semua fitur": keadaan saat ini (langsung), lalu tabel setelan, uji tanpa internet,
+    /// dan uji jaringan di latar. Lihat selftest.rs.
     fn run_diag_tests(&mut self) {
+        if self.diag_state == "berjalan" {
+            return;
+        }
         self.diag.clear();
+        self.diag_rows.clear();
+        self.diag_state = "berjalan".into();
+        log("[diag] uji semua fitur dimulai");
+        let (items, special) = self.state_checks();
+        self.diag.extend(items);
         let p = self.proxy.clone();
         let lang_id = self.lang == Lang::Id;
+        let s = self.settings.borrow().clone();
+        let args = self.browser_args.clone();
+        let data = data_dir().to_path_buf();
         std::thread::spawn(move || {
-            let (ok, msg) = antiblock::self_test();
-            send(&p, UserEvent::DiagResult("doh".into(), ok, msg));
-            let tmp = std::env::temp_dir().join("ovner-uji-unduh.txt");
-            let r = win::download("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt", &tmp);
-            let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
-            let _ = std::fs::remove_file(&tmp);
-            send(&p, UserEvent::DiagResult("download".into(), r.is_ok() && size > 1000, format!("{r:?}, {size} byte")));
-            let up = update::latest_url("stable");
-            let tmp2 = std::env::temp_dir().join("ovner-uji-update.json");
-            let r2 = win::download(&up, &tmp2);
-            let body = std::fs::read_to_string(&tmp2).unwrap_or_default();
-            let _ = std::fs::remove_file(&tmp2);
-            send(&p, UserEvent::DiagResult("update".into(), r2.is_ok() && body.contains("version"), body.chars().take(120).collect()));
-            // WebView2 terbaru dari API resmi Microsoft dibanding yang terpasang.
-            let installed = wry::webview_version().unwrap_or_default();
-            let (ok, msg) = match versions::refresh_latest(&data_dir(), None, win::download) {
-                Ok(latest) => versions::status(&installed, &latest, lang_id),
-                Err(e) => (false, format!("{e} ({})", versions::EDGE_API)),
-            };
-            send(&p, UserEvent::DiagResult("webview2".into(), ok, msg));
+            send(&p, UserEvent::DiagRows(selftest::setting_rows(&s, &args, &special)));
+            send(&p, UserEvent::DiagItems(selftest::offline_tests(&data, &s), false));
+            send(&p, UserEvent::DiagItems(selftest::network_tests(&data, lang_id), true));
         });
+    }
+
+    fn on_diag_items(&mut self, items: Vec<Value>, done: bool) {
+        self.diag.extend(items);
+        if done {
+            self.diag_state = win::local_time().chars().take(19).collect();
+            let all: Vec<&Value> = self.diag.iter().chain(self.diag_rows.iter()).collect();
+            let n = |st: &str| all.iter().filter(|v| v["status"] == st).count();
+            log(&format!(
+                "[diag] uji selesai: {} ok, {} info, {} peringatan, {} gagal, {} dilewati ({} uji fitur + {} setelan)",
+                n("ok"),
+                n("info"),
+                n("peringatan"),
+                n("gagal"),
+                n("lewat"),
+                self.diag.len(),
+                self.diag_rows.len()
+            ));
+            for v in all.iter().filter(|v| v["status"] == "gagal" || v["status"] == "peringatan") {
+                let name = v["name"].as_str().or(v["key"].as_str()).unwrap_or("?");
+                log(&format!("[diag] {}: {} — {}", if v["status"] == "gagal" { "GALAT" } else { "PERINGATAN" }, name, v["msg"].as_str().unwrap_or("")));
+            }
+        }
+        self.refresh_pages("diagnostics");
+    }
+
+    /// Uji yang membaca keadaan Ovner saat ini (di thread UI, cepat). Juga hasil khusus per
+    /// setelan untuk tabel setelan.
+    fn state_checks(&mut self) -> (Vec<Value>, selftest::Special) {
+        use selftest::item;
+        let mut out = Vec::new();
+        let mut sp = selftest::Special::new();
+        let mut set = |k: &str, st: &str, m: String| {
+            sp.insert(k.to_string(), (st.to_string(), m));
+        };
+        let s = self.settings.borrow().clone();
+        // Sistem
+        out.push(item("Sistem", "Versi", "info", format!("Ovner {} · WebView2 {} · {}", update::display_version(), wry::webview_version().unwrap_or_default(), win::os_version())));
+        out.push(item(
+            "Sistem",
+            "Environment WebView2 Ovner",
+            if self.env_error.is_none() { "ok" } else { "peringatan" },
+            self.env_error.clone().unwrap_or_else(|| "dipakai (argumen dan folder data Ovner berlaku)".into()),
+        ));
+        let applied = self.browser_args.starts_with(s.browser_args().trim());
+        out.push(item(
+            "Sistem",
+            "Setelan mesin yang sedang berlaku",
+            if applied { "ok" } else { "peringatan" },
+            if applied { "argumen WebView2 sama dengan setelan".to_string() } else { "ada setelan mesin yang diubah setelah Ovner mulai: mulai ulang Ovner supaya berlaku".into() },
+        ));
+        out.push(item("Sistem", "Pemetaan proses per tab", if self.frames_ok { "ok" } else { "peringatan" }, format!("{} proses renderer terpetakan", self.renderer_frames.len())));
+        out.push(item("Sistem", "Brankas sandi (DPAPI)", if vault::self_test() { "ok" } else { "gagal" }, "enkripsi lalu buka kembali"));
+        let recent = std::fs::read_to_string(data_dir().join("ovner.log")).unwrap_or_default();
+        let panics = recent.lines().filter(|l| l.contains("PANIC")).count();
+        let errors = recent.lines().filter(|l| logging::line_level(l) == "GALAT").count();
+        out.push(item("Sistem", "Crash/galat di log terbaru", if panics > 0 { "gagal" } else if errors > 0 { "peringatan" } else { "ok" }, format!("{panics} panic, {errors} baris GALAT")));
+        // Shields
+        let blocked = self.blocker.borrow().check("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", "https://contoh.id/", "script").block;
+        out.push(item("Shields", "Uji blokir iklan (adsbygoogle.js)", if blocked || !s.block_ads { "ok" } else { "gagal" }, if s.block_ads { if blocked { "diblokir" } else { "TIDAK diblokir" } } else { "pemblokir dimatikan" }));
+        out.push(item("Shields", "Daftar filter lengkap", if self.blocker.borrow().full { "ok" } else { "peringatan" }, if self.blocker.borrow().full { "dipakai" } else { "belum, memakai daftar bawaan" }));
+        let res = blocker::load_resources(data_dir()).len();
+        out.push(item("Shields", "Scriptlet + resource pengganti", if res > 50 { "ok" } else { "peringatan" }, format!("{res}")));
+        let max_age = std::fs::read_dir(data_dir().join("filters")).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok()?.elapsed().ok()).map(|d| d.as_secs() / 3600).max().unwrap_or(0);
+        let stale = s.auto_update_filters && max_age > (s.filter_update_hours as u64).max(1) * 3;
+        out.push(item("Shields", "Umur daftar filter", if stale { "peringatan" } else { "ok" }, format!("tertua {max_age} jam (diperbarui tiap {} jam)", s.filter_update_hours)));
+        if stale {
+            set("auto_update_filters", "peringatan", format!("daftar filter tertua {max_age} jam"));
+        }
+        let (dok, dfail) = (antiblock::DOH_OK.load(std::sync::atomic::Ordering::Relaxed), antiblock::DOH_FAIL.load(std::sync::atomic::Ordering::Relaxed));
+        set("secure_dns", "info", format!("DoH sesi ini: {dok} berhasil, {dfail} gagal"));
+        // Tab dan tidur
+        let mut lines = Vec::new();
+        self.each_window(|a| {
+            let plan: Vec<(usize, String)> = a.sleep_plan();
+            for j in 0..a.tabs.len() {
+                let t = &a.tabs[j];
+                if t.webview.is_none() {
+                    continue;
+                }
+                let why = if let Some((_, w)) = plan.iter().find(|(k, _)| *k == j) {
+                    format!("akan ditidurkan ({w})")
+                } else if let Some(g) = a.sleep_guard(j) {
+                    format!("dilindungi: {g}")
+                } else {
+                    let mins = a.settings.borrow().sleep_tabs_minutes;
+                    let left = (mins * 60).saturating_sub(t.last_active.elapsed().as_secs());
+                    if mins == 0 { "hidup (slot N tab terakhir; aturan menit mati)".to_string() } else { format!("hidup (slot N tab terakhir / tidur dalam ±{} menit)", left.div_ceil(60)) }
+                };
+                lines.push(format!("{} — {why}{}", display_url(&t.url), if t.proc_ram > 0 { format!(" · {} MB", t.proc_ram / 1_048_576) } else { String::new() }));
+            }
+        });
+        let total = self.all_tabs().count();
+        out.push(item("Tab & tidur", &format!("{} tab hidup dari {total}", lines.len()), "info", lines.join("\n")));
+        // RAM
+        if let Some((tot, avail)) = win::mem_status() {
+            let thr = memtrim::low_memory_threshold(tot);
+            out.push(item(
+                "RAM",
+                "RAM Windows",
+                if avail < thr { "peringatan" } else { "ok" },
+                format!("tersedia {} MB dari {} MB; ambang \"hampir habis\" {} MB{}", avail / 1_048_576, tot / 1_048_576, thr / 1_048_576, if s.low_mem_sleep { "" } else { " (fitur mati)" }),
+            ));
+        }
+        let trims: Vec<String> = self.trimmer.describe().into_iter().map(|(pid, m, mb, b)| format!("pid {pid}: dirapikan {m} menit lalu, {mb} MB setelahnya, jeda ×{b}")).collect();
+        out.push(item("RAM", "Rapikan cerdas", "info", if trims.is_empty() { "belum ada proses yang dirapikan sesi ini".into() } else { trims.join("\n") }));
+        let biggest = self.all_tabs().filter(|t| t.proc_shared <= 1).map(|t| (t.proc_ram, display_url(&t.url))).max();
+        if let Some((ram, url)) = biggest.filter(|b| b.0 > 0) {
+            let over = s.bloat_guard && ram > s.bloat_mb as u64 * 1_048_576;
+            out.push(item("RAM", "Tab terbesar", if over { "peringatan" } else { "ok" }, format!("{url}: {} MB (batas penjaga {} MB)", ram / 1_048_576, s.bloat_mb)));
+        }
+        // Unduhan
+        let dl = PathBuf::from(&s.download_dir);
+        let probe = dl.join(".ovner-uji");
+        let writable = std::fs::write(&probe, b"x").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        let free = win::disk_free(&dl);
+        let st = if !writable { "gagal" } else if free.is_some_and(|f| f < 1024 * 1_048_576) { "peringatan" } else { "ok" };
+        let m = format!("{} · {} · sisa {}", dl.display(), if writable { "bisa ditulis" } else { "TIDAK bisa ditulis" }, free.map(|f| format!("{} MB", f / 1_048_576)).unwrap_or_else(|| "?".into()));
+        out.push(item("Unduhan", "Folder unduhan", st, m.clone()));
+        set("download_dir", st, m);
+        // Video / codec
+        let hw = if s.codec_hw.is_empty() { "belum diperiksa (diperiksa saat membuka YouTube)".to_string() } else { s.codec_hw.clone() };
+        let (blocks, no60) = s.yt_codec_blocks();
+        out.push(item("Video", "Codec YouTube", "info", format!("mode {} · dekoder GPU: {hw} · diblokir: {}{}", s.yt_codec, if blocks.is_empty() { "-".into() } else { blocks.join(", ") }, if no60 { " · tanpa 60 fps" } else { "" })));
+        set("yt_codec", "info", format!("dekoder GPU: {hw}; diblokir: {}", if blocks.is_empty() { "-".into() } else { blocks.join(", ") }));
+        let yt_open = self.all_tabs().any(|t| t.webview.is_some() && video::youtube_id(&t.url).is_some());
+        out.push(item(
+            "Video",
+            "Subtitle lewat halaman YouTube",
+            "lewat",
+            if !s.video_subs_page {
+                "dimatikan di Pengaturan".to_string()
+            } else if yt_open {
+                "tab video YouTube terbuka: dibuktikan saat mengunduh video dengan subtitle (log [subtitle])".into()
+            } else {
+                "butuh video YouTube sungguhan: dibuktikan saat mengunduh video dengan subtitle (log [subtitle])".into()
+            },
+        ));
+        // Browser default dan autostart
+        let ds = defaults::status();
+        let reg_ok = !s.default_browser_registered || ds.registered;
+        out.push(item(
+            "Windows",
+            "Browser default",
+            if reg_ok { if ds.http && ds.https { "ok" } else { "info" } } else { "gagal" },
+            format!("terdaftar {} · http {} · https {} · .html {} · .pdf {}", ds.registered, ds.http, ds.https, ds.html, ds.pdf),
+        ));
+        set("default_browser_registered", if reg_ok { "ok" } else { "gagal" }, format!("terdaftar di Windows: {}", ds.registered));
+        if cfg!(windows) {
+            let cmd = win::autostart_command();
+            let ok = cmd.is_some() == s.autostart;
+            let m = format!("registri Run: {}", cmd.unwrap_or_else(|| "(tidak ada)".into()));
+            out.push(item("Windows", "Mulai bersama Windows", if ok { "ok" } else { "gagal" }, m.clone()));
+            set("autostart", if ok { "ok" } else { "gagal" }, m);
+        }
+        // Isian teks yang bisa diperiksa.
+        if !s.home_url.trim().is_empty() {
+            let ok = url::Url::parse(s.home_url.trim()).is_ok();
+            set("home_url", if ok { "ok" } else { "gagal" }, if ok { "alamat sah".into() } else { "bukan alamat yang sah".into() });
+        }
+        if s.search_engine.starts_with("http") {
+            let ok = s.search_engine.contains("%s");
+            set("search_engine", if ok { "ok" } else { "gagal" }, if ok { "alamat pencarian sendiri berisi %s".into() } else { "alamat pencarian sendiri tanpa %s".into() });
+        }
+        let bad_bangs: Vec<&String> = s.custom_bangs.iter().filter(|l| !l.trim().is_empty() && !(l.contains("%s") && l.split_whitespace().count() >= 2)).collect();
+        if !s.custom_bangs.is_empty() {
+            set("custom_bangs", if bad_bangs.is_empty() { "ok" } else { "peringatan" }, if bad_bangs.is_empty() { format!("{} bang sah", s.custom_bangs.len()) } else { format!("baris tidak dikenali: {bad_bangs:?}") });
+        }
+        if s.extensions_enabled {
+            let missing: Vec<&String> = s.extension_dirs.iter().filter(|d| !Path::new(d.as_str()).is_dir()).collect();
+            set("extension_dirs", if missing.is_empty() { "ok" } else { "gagal" }, if missing.is_empty() { format!("{} folder ada", s.extension_dirs.len()) } else { format!("folder tidak ada: {missing:?}") });
+        }
+        (out, sp)
     }
 
     /// Segarkan semua tab yang menampilkan halaman internal `name`.
@@ -5489,7 +5991,7 @@ impl App {
                     }
                 }
             }
-            "dl-open" | "dl-show" | "dl-remove" | "dl-delete" | "dl-cancel" | "dl-pause" | "dl-resume" | "video-sub-retry" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
+            "dl-open" | "dl-show" | "dl-remove" | "dl-delete" | "dl-cancel" | "dl-pause" | "dl-resume" | "video-sub-retry" | "video-sub-extract" => self.download_action(kind, msg["id"].as_u64().unwrap_or(0)),
             "dl-clear" => {
                 if msg["files"].as_bool() == Some(true) {
                     for d in self.downloads.iter().filter(|d| d.state != "progress" && d.state != "paused") {
@@ -5741,6 +6243,7 @@ impl App {
                 }
                 if let Some(j) = msg["id"].as_u64().and_then(|id| self.tab_index(id)) {
                     if kind == "tab-sleep" {
+                        self.sleep_why = "diminta (menu tab)".into();
                         self.sleep_tab(j);
                     } else if j != self.active {
                         self.close_tab(j);
@@ -5836,7 +6339,7 @@ impl App {
                     self.clip_toolbar(&rects);
                 }
             }
-            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-delete" | "dl-pause" | "dl-resume" | "video-sub-retry" => self.download_action(&cmd, id),
+            "dl-open" | "dl-show" | "dl-cancel" | "dl-remove" | "dl-delete" | "dl-pause" | "dl-resume" | "video-sub-retry" | "video-sub-extract" => self.download_action(&cmd, id),
             "dl-toggle" => {
                 self.dl_bubble = !self.dl_bubble;
                 self.last_render_key.clear();
@@ -6644,6 +7147,7 @@ impl App {
                         if a.sleep_guard(j).is_some() {
                             kept += 1;
                         } else {
+                            a.sleep_why = "Tidurkan semua tab lain".into();
                             a.sleep_tab(j);
                             slept += 1;
                         }
@@ -6653,6 +7157,19 @@ impl App {
                 log(&format!("tidurkan semua tab lain: {slept} ditidurkan, {kept} dilindungi"));
                 self.trim_now();
                 self.render();
+            }
+            "sub-extract" => {
+                #[cfg(windows)]
+                let owner = {
+                    use tao::platform::windows::WindowExtWindows;
+                    Some(self.window.hwnd() as isize)
+                };
+                #[cfg(not(windows))]
+                let owner = None;
+                let start = PathBuf::from(&self.settings.borrow().download_dir);
+                if let Some(f) = win::pick_file(owner, t(self.lang, "m.sub_extract"), &start, ("Video", "*.mp4;*.mkv;*.webm;*.mov;*.m4v;*.avi;*.ts")) {
+                    self.extract_video_subs(f, 0);
+                }
             }
             "trim" => {
                 // Tab di belakang diminta membuang cache dulu (tab yang sedang dilihat tidak,
@@ -6785,9 +7302,11 @@ impl App {
                         let other = if j + 1 < self.tabs.len() { j + 1 } else { j.saturating_sub(1) };
                         if other != j {
                             self.activate(other);
+                            self.sleep_why = "diminta (menu)".into();
                             self.sleep_tab(j);
                         }
                     } else {
+                        self.sleep_why = "diminta (menu)".into();
                         self.sleep_tab(j);
                     }
                     self.render();
@@ -7434,10 +7953,12 @@ struct Args {
     /// `--new-window`: minta Ovner yang sedang jalan membuka jendela baru.
     new_window: bool,
     urls: Vec<String>,
+    /// `--self-test <folder>`: uji sungguhan dengan WebView2 (lihat citest.rs).
+    self_test: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { portable: false, uninstall: false, restarted: false, tray: false, install_machine: false, desktop: false, apply_update: false, new_window: false, urls: Vec::new() };
+    let mut a = Args { portable: false, uninstall: false, restarted: false, tray: false, install_machine: false, desktop: false, apply_update: false, new_window: false, urls: Vec::new(), self_test: None };
     // Dibuka Windows sebagai browser default: seluruh sisa baris perintah = satu alamat/berkas,
     // tidak ada opsi lain yang dibaca (tautan berbahaya tidak bisa menyelipkan --uninstall dsb.).
     if let Some(v) = defaults::single_argument(&defaults::raw_command_line()) {
@@ -7446,8 +7967,10 @@ fn parse_args() -> Args {
         }
         return a;
     }
-    for v in std::env::args().skip(1) {
+    let mut it = std::env::args().skip(1);
+    while let Some(v) = it.next() {
         match v.as_str() {
+            "--self-test" => a.self_test = it.next().map(PathBuf::from),
             "--portable" => a.portable = true,
             "--uninstall" => a.uninstall = true,
             "--restarted" => a.restarted = true,
@@ -7606,7 +8129,11 @@ fn main() {
     // Catat panic ke ovner.log sebelum proses berhenti, supaya penyebab "Ovner tiba-tiba
     // tertutup" bisa dilacak.
     std::panic::set_hook(Box::new(|info| {
-        log(&format!("PANIC: {info}"));
+        // Ditulis langsung (bukan lewat thread log) beserta jejaknya, lalu dipastikan tersimpan.
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let bt: String = bt.lines().take(60).collect::<Vec<_>>().join("\n    ");
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        logging::log_now(&format!("PANIC (thread {thread}): {info}\n    {bt}"));
     }));
     let args = parse_args();
     let exe = std::env::current_exe().unwrap_or_default();
@@ -7647,6 +8174,7 @@ fn main() {
     let data = std::env::var_os("OVNER_DATA").map(PathBuf::from).unwrap_or_else(|| install::data_dir(&exe, portable));
     let _ = std::fs::create_dir_all(&data);
     let _ = DATA_DIR.set(data);
+    logging::init(data_dir());
     win::install_crash_logger(&data_dir().join("ovner.log"));
     if install::is_installed_copy(&exe) {
         install::ensure_integration(&exe, false);
@@ -7665,7 +8193,6 @@ fn main() {
         return;
     }
     win::init_identity();
-    log(&format!("Ovner {} mulai (portabel: {portable}, tray: {})", update::display_version(), args.tray));
 
     let event_loop: EventLoop<UserEvent> = EventLoopBuilder::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -7689,9 +8216,21 @@ fn main() {
         }));
     }
 
-    let settings = Settings::load(data_dir());
+    #[allow(unused_mut)]
+    let mut settings = Settings::load(data_dir());
+    if args.self_test.is_some() {
+        // Uji sungguhan: tanpa layar sambutan, update, autostart, atau pemulihan tab; unduhan
+        // ke folder data uji.
+        settings.setup_done = true;
+        settings.restore_tabs = false;
+        settings.check_updates = false;
+        settings.autostart = false;
+        settings.download_dir = data_dir().join("unduhan").display().to_string();
+        let _ = std::fs::create_dir_all(&settings.download_dir);
+    }
     // Simpan selalu: menulis versi skema setelah migrasi.
     settings.save(data_dir());
+    log_start_header(&exe, portable, args.tray, &settings);
     // Sisa subtitle sementara dari sesi sebelumnya (unduhan yang dibatalkan/ditutup).
     if let Ok(rd) = std::fs::read_dir(data_dir().join("tmp")) {
         for e in rd.flatten() {
@@ -7752,6 +8291,17 @@ fn main() {
 
     usage::set_user_data_dir(&data_dir().join("WebView2"));
     let mut args_str = settings.browser_args();
+    let ci = match args.self_test.clone().map(citest::CiRun::new) {
+        Some(Ok(c)) => {
+            args_str.push_str(&citest::browser_args(c.port));
+            Some(c)
+        }
+        Some(Err(e)) => {
+            eprintln!("self-test: {e}");
+            std::process::exit(2);
+        }
+        None => None,
+    };
     // Anti-blokir: proxy lokal harus jalan sebelum WebView2 dibuat (port masuk argumen).
     let antiblock_port = if settings.antiblock {
         match antiblock::start() {
@@ -7768,6 +8318,7 @@ fn main() {
     } else {
         None
     };
+    log(&format!("[sistem] argumen WebView2 yang dipakai: {}", args_str.trim()));
     #[allow(unused_mut)]
     let mut env_error: Option<String> = None;
     let mut web_context = WebContext::new(Some(data_dir().join("WebView2")));
@@ -7894,6 +8445,8 @@ fn main() {
         update_prompt: false,
         last_sleep_check: Instant::now(),
         last_diag: Instant::now(),
+        last_metrics: Instant::now(),
+        yt_seen: HashMap::new(),
         last_render_key: String::new(),
         last_icons_key: String::new(),
         ui_frame: None,
@@ -7905,6 +8458,8 @@ fn main() {
         background: false,
         next_trim: None,
         trim_force: false,
+        sleep_why: String::new(),
+        started: Instant::now(),
         gpu_trim: false,
         trimmer: memtrim::Trimmer::new(),
         mem_low: false,
@@ -7949,6 +8504,9 @@ fn main() {
         antiblock_port,
         env_error,
         diag: Vec::new(),
+        diag_rows: Vec::new(),
+        ci,
+        diag_state: String::new(),
         quit_requested: false,
         icons_due: Some(Instant::now() + Duration::from_secs(20)),
         icons_tried: HashSet::new(),
@@ -8010,6 +8568,13 @@ fn main() {
 
     // Tenggat tick tetap: dulu tiap kejadian (gerak mouse, ketikan) menunda tick 2 detik lagi,
     // sehingga indikator pemakaian dan task manager tidak pernah diperbarui saat dipakai.
+    if app.ci.is_some() {
+        let p = app.proxy.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(300));
+            send(&p, UserEvent::CiTick);
+        });
+    }
     let mut next_tick = Instant::now() + TICK;
     event_loop.run(move |event, target, control_flow| {
         let mut quit = false;
@@ -8173,8 +8738,10 @@ fn main() {
                 }
                 UserEvent::Video(id, ev) => app.on_video(id, ev),
                 UserEvent::VideoSubs(id, r) => app.on_video_subs(id, r),
+                UserEvent::SubsExtracted(id, p, r) => app.on_subs_extracted(id, &p, r),
                 UserEvent::PageSubs(id, r) => app.on_page_subs(id, &r),
                 UserEvent::PageSubsPoll(id) => app.poll_page_subs(id),
+                UserEvent::YtStats(id, r) => app.on_yt_stats(id, &r),
                 UserEvent::VideoInfo(req, r) => app.on_video_info(req, r),
                 UserEvent::VideoJob(id, job) => {
                     app.video_jobs.insert(id, job);
@@ -8227,10 +8794,15 @@ fn main() {
                         app.render();
                     }
                 }
-                UserEvent::DiagResult(name, ok, msg) => {
-                    log(&format!("diagnostik {name}: {} {msg}", if ok { "OK" } else { "GAGAL" }));
-                    app.diag.retain(|d| d.0 != name);
-                    app.diag.push((name, ok, msg));
+                UserEvent::DiagItems(items, done) => app.on_diag_items(items, done),
+                UserEvent::CiTick => app.ci_tick(),
+                UserEvent::CiEval(r) => {
+                    if let Some(c) = app.ci.as_mut() {
+                        c.eval = Some(r);
+                    }
+                }
+                UserEvent::DiagRows(rows) => {
+                    app.diag_rows = rows;
                     app.refresh_pages("diagnostics");
                 }
                 UserEvent::TabMetrics(id, json_text) => {
@@ -8318,6 +8890,7 @@ fn main() {
                 }
                 UserEvent::ProcFailed(id, kind, detail) => {
                     log(&format!("proses tab {id} gagal: {kind:?} ({detail})"));
+                    metrics::count("proses_webview2_mati", 1);
                     if kind == win::ProcFail::Browser && !app.restarting {
                         log_crash_report();
                     }
@@ -8333,6 +8906,7 @@ fn main() {
                                         let _ = wv.reload();
                                     }
                                 } else {
+                                    app.sleep_why = "proses halamannya mati".into();
                                     app.sleep_tab(i);
                                     app.render();
                                 }
@@ -8367,6 +8941,15 @@ fn main() {
                     }
                     if let Some(i) = app.tab_index(id) {
                         let t = &mut app.tabs[i];
+                        if let Some(w) = t.woke_at.take() {
+                            let ms = w.elapsed().as_millis();
+                            if !STARTUP_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                log(&format!("[sistem] siap: tab pertama dimuat {ms} ms setelah dibuat, {} ms sejak Ovner mulai", app.started.elapsed().as_millis()));
+                            }
+                            if internal_page(&t.url).is_none() && !is_newtab(&t.url) {
+                                log(&format!("[tab] dimuat: {} dalam {ms} ms{}", display_url(&t.url), if ok { String::new() } else { format!(" (gagal, kode {status})") }));
+                            }
+                        }
                         // Situs tanpa HTTPS: kembali ke alamat http:// aslinya (seperti Brave).
                         // Galat koneksi/sertifikat (kode 1-12), bukan galat HTTP dari server.
                         if !ok && (1..=12).contains(&status) {
@@ -8494,6 +9077,8 @@ fn main() {
                 w.sidebar = None;
             }
             app.others.clear();
+            log(&format!("[sistem] Ovner keluar (berjalan {} menit)", app.started.elapsed().as_secs() / 60));
+            logging::flush();
             *control_flow = ControlFlow::Exit;
         }
     });

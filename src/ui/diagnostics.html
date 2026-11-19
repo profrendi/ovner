@@ -14,6 +14,17 @@
   pre { margin: 0; padding: 12px 14px; max-height: 360px; overflow: auto; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; word-break: break-all; }
   .acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .info { color: #2f7de1; font-weight: 700; }
+  .skip { color: var(--muted); font-weight: 700; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.t td, table.t th { padding: 6px 10px; border-top: 1px solid var(--line, rgba(128,128,128,.2)); vertical-align: top; text-align: left; }
+  table.t th { font-weight: 600; color: var(--muted); }
+  table.t td.m { white-space: pre-wrap; word-break: break-word; }
+  .sum { display: flex; flex-wrap: wrap; gap: 14px; padding: 12px 16px; font-size: 14px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .filters select, .filters input { padding: 5px 8px; }
+  .sec td { font-weight: 700; background: rgba(128,128,128,.08); }
+  code.k { font-size: 11.5px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -22,6 +33,8 @@
 <p class="muted" id="lead"></p>
 <div class="acts">
   <button class="primary" id="run"></button>
+  <button id="pack"></button>
+  <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="hide" checked><span id="hideL"></span></label>
   <button id="copy"></button>
   <button id="log"></button>
   <button id="data"></button>
@@ -41,16 +54,11 @@
     return `<h2>${title}</h2><div class="card"><div class="kv">${rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("")}</div></div>`;
   }
   function render(r) {
-    const tests = Object.fromEntries((r.tests || []).map((t) => [t.name, t]));
-    const test = (name, label) => {
-      const t = tests[name];
-      return [label, t ? `${mark(t.ok)} ${esc(t.msg)}` : `<span class="muted">${T("belum diuji", "not run yet")}</span>`];
-    };
     let h = "";
+    h += tests(r);
     h += card(T("Ringkasan", "Summary"), [
       [T("Versi Ovner", "Ovner version"), `${esc(r.version)} (${esc(r.channel)})`],
       ["Microsoft Edge WebView2", esc(r.engine) + (r.engineLatest ? ` · ${T("terbaru dari Microsoft", "latest from Microsoft")}: ${esc(r.engineLatest)}` : "")],
-      test("webview2", T("Cek WebView2 terbaru (Microsoft)", "Latest WebView2 check (Microsoft)")),
       [T("Komponen", "Components"), esc(r.components || "")],
       ["Windows", esc(r.os)],
       [T("Program", "Program"), esc(r.exe)],
@@ -72,9 +80,6 @@
     h += card(T("Anti-blokir dan jaringan", "Anti-block and network"), [
       [T("Anti-blokir", "Anti-block"), r.antiblock ? (r.antiblockPort ? `${mark(true)} 127.0.0.1:${r.antiblockPort} · ${r.antiblockConns} ${T("koneksi", "connections")}` : `${mark(false)} ${T("menyala tapi gagal jalan", "on but failed to start")}`) : `<span class="muted">${T("mati", "off")}</span>`],
       ["DoH", `${r.dohOk} ${T("berhasil", "ok")}, ${r.dohFail} ${T("gagal (memakai DNS Windows)", "failed (Windows DNS used)")}`],
-      test("doh", T("Uji DoH (1.1.1.1 / 8.8.8.8)", "DoH test (1.1.1.1 / 8.8.8.8)")),
-      test("download", T("Uji unduh daftar filter", "Filter list download test")),
-      test("update", T("Uji cek update", "Update check test")),
     ]);
     h += card(T("Data dan sandi", "Data and passwords"), [
       [T("Brankas sandi (DPAPI)", "Password vault (DPAPI)"), `${mark(r.vault)} ${r.vault ? T("enkripsi dan buka berhasil", "encrypt and decrypt ok") : T("gagal", "failed")}`],
@@ -87,11 +92,52 @@
       ["RAM / CPU / GPU", r.procs ? `${mb(r.ram)} / ${r.cpu.toFixed(1)}% / ${r.gpu.toFixed(1)}% · ${T("memori GPU", "GPU memory")} ${mb(r.gpuMem)}` : "—"],
       [T("Jenis:PID", "Type:PID"), esc((r.kinds || []).join("  "))],
     ]);
+    const c = r.counts || {};
+    const keys = Object.keys(c);
+    h += `<h2>${T("Penghitung hari ini", "Today's counters")}</h2><div class="card"><div class="kv">${keys.length ? keys.map((k) => `<div>${esc(k.replace(/_/g, " "))}</div><div>${c[k]}</div>`).join("") : `<div>${T("belum ada", "none yet")}</div><div></div>`}</div></div>`;
     h += `<h2>${T("Crash dan galat", "Crashes and errors")}</h2><div class="card"><pre>${esc((r.crashes || []).join("\n")) || T("Tidak ada.", "None.")}</pre></div>`;
-    h += `<h2>${T("Log terakhir", "Recent log")}</h2><div class="card"><pre id="logpre">${esc((r.log || []).join("\n"))}</pre></div>`;
+    h += `<h2>${T("Log terakhir", "Recent log")}</h2><div class="filters"><select id="lcat"><option value="">${T("Semua kategori", "All categories")}</option>${(r.logCategories || []).map((k) => `<option ${k === lcat ? "selected" : ""}>${k}</option>`).join("")}</select><select id="llev"><option value="">${T("Semua tingkat", "All levels")}</option>${["INFO", "PERINGATAN", "GALAT"].map((k) => `<option ${k === llev ? "selected" : ""}>${k}</option>`).join("")}</select></div><div class="card"><pre id="logpre"></pre></div>`;
     document.getElementById("out").innerHTML = h;
-    const pre = document.getElementById("logpre");
-    if (pre) pre.scrollTop = pre.scrollHeight;
+    const showLog = () => {
+      const lines = (r.log || []).filter((l) => (!lcat || l.includes(`[${lcat}]`)) && (!llev || l.includes(` ${llev} `)));
+      const pre = document.getElementById("logpre");
+      pre.textContent = lines.join("\n") || T("(kosong)", "(empty)");
+      pre.scrollTop = pre.scrollHeight;
+    };
+    document.getElementById("lcat").onchange = (e) => { lcat = e.target.value; showLog(); };
+    document.getElementById("llev").onchange = (e) => { llev = e.target.value; showLog(); };
+    const fs = document.getElementById("fstat"), fq = document.getElementById("fq");
+    if (fs) fs.onchange = (e) => { fstat = e.target.value; render(last); };
+    if (fq) fq.oninput = (e) => { fqv = e.target.value; clearTimeout(fqT); fqT = setTimeout(() => { render(last); const q = document.getElementById("fq"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250); };
+    showLog();
+  }
+  let last = null, lcat = "", llev = "", fstat = "", fqv = "", fqT = 0;
+  const icon = (st) => ({ ok: '<span class="ok">✓</span>', gagal: '<span class="bad">✗</span>', peringatan: '<span class="warn">!</span>', info: '<span class="info">i</span>', lewat: '<span class="skip">–</span>' })[st] || esc(st);
+  const SL = { ok: ["Lulus", "Pass"], gagal: ["Gagal", "Fail"], peringatan: ["Peringatan", "Warning"], info: ["Info", "Info"], lewat: ["Dilewati", "Skipped"] };
+  function tests(r) {
+    const items = r.tests || [], rows = r.settingRows || [];
+    if (!items.length && !rows.length) return `<div class="card"><div class="sum">${r.diagState === "berjalan" ? T("Menguji…", "Testing…") : T("Belum diuji. Tekan \"Uji semua fitur\".", "Not tested yet. Press \"Test all features\".")}</div></div>`;
+    const all = items.concat(rows);
+    const n = (st) => all.filter((x) => x.status === st).length;
+    let h = `<h2>${T("Hasil uji", "Test results")}</h2><div class="card"><div class="sum">${["ok", "info", "peringatan", "gagal", "lewat"].map((st) => `<span>${icon(st)} ${T(SL[st][0], SL[st][1])}: <b>${n(st)}</b></span>`).join("")}<span class="muted">${r.diagState === "berjalan" ? T("masih berjalan…", "still running…") : T("selesai ", "finished ") + esc(r.diagState)}</span></div></div>`;
+    h += `<div class="filters"><select id="fstat"><option value="">${T("Semua status", "All statuses")}</option>${["gagal", "peringatan", "info", "ok", "lewat"].map((st) => `<option value="${st}" ${st === fstat ? "selected" : ""}>${T(SL[st][0], SL[st][1])}</option>`).join("")}</select><input id="fq" placeholder="${T("Cari…", "Search…")}" value="${esc(fqv)}"></div>`;
+    const keep = (x) => (!fstat || x.status === fstat) && (!fqv || JSON.stringify(x).toLowerCase().includes(fqv.toLowerCase()));
+    const groups = {};
+    for (const it of items.filter(keep)) (groups[it.group] = groups[it.group] || []).push(it);
+    h += `<h2>${T("Fitur", "Features")}</h2><div class="card"><table class="t"><tr><th></th><th>${T("Uji", "Test")}</th><th>${T("Hasil", "Result")}</th></tr>`;
+    for (const g of Object.keys(groups)) {
+      h += `<tr class="sec"><td colspan="3">${esc(g)}</td></tr>`;
+      for (const it of groups[g]) h += `<tr><td>${icon(it.status)}</td><td>${esc(it.name)}</td><td class="m">${esc(it.msg)}</td></tr>`;
+    }
+    h += `</table></div>`;
+    const sec = {};
+    for (const x of rows.filter(keep)) (sec[x.section] = sec[x.section] || []).push(x);
+    h += `<h2>${T("Setelan", "Settings")} (${rows.length})</h2><div class="card"><table class="t"><tr><th></th><th>${T("Setelan", "Setting")}</th><th>${T("Nilai", "Value")}</th><th>${T("Berlaku lewat", "Takes effect via")}</th><th>${T("Catatan", "Notes")}</th></tr>`;
+    for (const k of Object.keys(sec)) {
+      h += `<tr class="sec"><td colspan="5">${esc(k)}</td></tr>`;
+      for (const x of sec[k]) h += `<tr><td>${icon(x.status)}</td><td>${esc(x.label)}<br><code class="k">${esc(x.key)}</code></td><td>${esc(x.value)}${x.default ? ` <span class="muted">(${T("bawaan", "default")})</span>` : ""}</td><td>${esc(x.how)}</td><td class="m">${esc(x.msg)}</td></tr>`;
+    }
+    return h + `</table></div>`;
   }
   window.ovnerPage = (s) => {
     L = s.lang;
@@ -99,14 +145,18 @@
     document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
     document.title = T("Diagnostik", "Diagnostics");
     document.getElementById("h1").textContent = T("Diagnostik Ovner", "Ovner diagnostics");
-    document.getElementById("lead").textContent = T("Periksa semua fungsi utama Ovner. Kalau ada masalah, klik Salin laporan lalu tempelkan ke percakapan.", "Check all of Ovner's main functions. If something is wrong, click Copy report and paste it into the conversation.");
-    document.getElementById("run").textContent = T("Jalankan uji jaringan", "Run network tests");
+    document.getElementById("lead").textContent = T("Uji semua fitur menguji setiap setelan (nilainya sah dan lewat apa efeknya berlaku) serta fitur Ovner: data, log, PDF, subtitle, ffmpeg, tab dan tidur, RAM, unduhan, Shields, jaringan, update, dan Windows. Yang hanya bisa dibuktikan di situs sungguhan (mis. YouTube, Infor) ditandai Dilewati beserta alasannya. Kirim hasilnya lewat Simpan paket diagnostik.", "Test all features checks every setting (its value is valid and how it takes effect) and Ovner's features: data, log, PDF, subtitles, ffmpeg, tabs and sleeping, RAM, downloads, Shields, network, update and Windows. What can only be proven on real sites (e.g. YouTube, Infor) is marked Skipped with the reason. Send the results with Save diagnostic package.");
+    document.getElementById("run").textContent = T("Uji semua fitur", "Test all features");
+    document.getElementById("pack").textContent = T("Simpan paket diagnostik", "Save diagnostic package");
+    document.getElementById("hideL").textContent = T("sembunyikan alamat situs", "hide site addresses");
     document.getElementById("copy").textContent = T("Salin laporan", "Copy report");
     document.getElementById("log").textContent = T("Buka log", "Open log");
     document.getElementById("data").textContent = T("Buka folder data", "Open data folder");
     document.getElementById("app").textContent = T("Buka folder aplikasi", "Open app folder");
+    last = s.report;
     render(s.report);
   };
+  document.getElementById("pack").onclick = () => post({ t: "action", name: document.getElementById("hide").checked ? "save-package-private" : "save-package" });
   for (const [id, name] of [["run", "run-tests"], ["copy", "copy-report"], ["log", "open-log"], ["data", "open-data-folder"], ["app", "open-app-folder"]]) {
     document.getElementById(id).onclick = () => post({ t: "action", name });
   }

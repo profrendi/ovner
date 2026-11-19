@@ -76,6 +76,13 @@ pub struct Trimmer {
 }
 
 impl Trimmer {
+    /// Keadaan per proses untuk Diagnostik: (pid, menit sejak dirapikan, MB setelahnya, jeda ×).
+    pub fn describe(&self) -> Vec<(u32, u64, u64, u32)> {
+        let mut v: Vec<(u32, u64, u64, u32)> = self.state.iter().map(|(pid, st)| (*pid, st.last.elapsed().as_secs() / 60, st.after / 1_048_576, st.backoff)).collect();
+        v.sort();
+        v
+    }
+
     pub fn new() -> Trimmer {
         Trimmer::default()
     }

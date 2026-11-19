@@ -295,6 +295,9 @@ pub struct Settings {
     /// "stable" atau "nightly".
     pub update_channel: String,
     pub diagnostics: bool,
+    /// Pengukuran tiap menit ke folder metrics (RAM, CPU, GPU, tab, disk, penghitung harian),
+    /// disimpan 7 hari, untuk Diagnostik dan paket diagnostik.
+    pub metrics: bool,
     pub devtools: bool,
     /// Muat ekstensi (eksperimen).
     pub extensions_enabled: bool,
@@ -452,6 +455,7 @@ impl Default for Settings {
             check_updates: true,
             update_channel: "stable".into(),
             diagnostics: false,
+            metrics: true,
             devtools: false,
             extensions_enabled: false,
             extension_dirs: Vec::new(),
@@ -508,6 +512,20 @@ fn escape_param(v: &str) -> String {
 
 pub fn norm_host(h: &str) -> String {
     h.trim().trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Nilai setelan untuk log: teks/daftar panjang dipendekkan.
+pub fn short_value(v: &serde_json::Value) -> String {
+    let t = match v {
+        serde_json::Value::String(s) => format!("\"{s}\""),
+        serde_json::Value::Array(a) if a.len() > 6 => format!("[{} item]", a.len()),
+        other => other.to_string(),
+    };
+    if t.chars().count() > 80 {
+        format!("{}…", t.chars().take(80).collect::<String>())
+    } else {
+        t
+    }
 }
 
 /// Apa yang dilakukan pada respons PDF (bukan attachment) dari `host`.
@@ -589,6 +607,27 @@ impl Settings {
         if let Ok(t) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(Self::path(data_dir), t);
         }
+        // Riwayat setelan: setiap perubahan (dari halaman Pengaturan, tombol toolbar, menu, atau
+        // preset) dicatat dengan nilai lama → baru, dibanding simpanan sebelumnya.
+        static LAST: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
+        let Ok(now) = serde_json::to_value(self) else { return };
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let (Some(old), Some(new)) = (last.as_ref().and_then(|v| v.as_object()), now.as_object()) {
+            for (k, v) in new {
+                let before = old.get(k).cloned().unwrap_or(serde_json::Value::Null);
+                if &before != v {
+                    crate::log(&format!("[setelan] diubah: {k}: {} → {}", short_value(&before), short_value(v)));
+                }
+            }
+        }
+        *last = Some(now);
+    }
+
+    /// Setelan yang berbeda dari bawaan (untuk baris pembuka log), nilai dipendekkan.
+    pub fn non_default(&self) -> Vec<String> {
+        let (Ok(cur), Ok(def)) = (serde_json::to_value(self), serde_json::to_value(Settings::default())) else { return Vec::new() };
+        let (Some(cur), Some(def)) = (cur.as_object(), def.as_object()) else { return Vec::new() };
+        cur.iter().filter(|(k, v)| def.get(*k) != Some(*v) && *k != "schema").map(|(k, v)| format!("{k}={}", short_value(v))).collect()
     }
 
     /// Ubah bawaan lama yang ternyata keliru untuk pengguna versi sebelumnya.

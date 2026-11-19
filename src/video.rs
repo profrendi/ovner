@@ -342,6 +342,32 @@ fn ffmpeg_works(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Versi alat yang sudah terpasang (tidak mengunduh apa pun), untuk baris pembuka log.
+pub fn tool_versions(data: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, exe, arg) in [("yt-dlp", ytdlp(data), "--version"), ("ffmpeg", ffmpeg(data), "-version"), ("ffprobe", ffprobe(data), "-version"), ("deno", deno(data), "--version")] {
+        if !exe.exists() {
+            out.push(format!("{name}: belum terpasang"));
+            continue;
+        }
+        out.push(match runs(&exe, arg) {
+            Ok(v) => format!("{name}: {}", v.trim()),
+            Err(e) => format!("{name}: GAGAL dijalankan ({e})"),
+        });
+    }
+    out
+}
+
+/// Pastikan ffmpeg/ffprobe ada dan bisa dijalankan (diunduh bila belum, bersama yt-dlp).
+pub fn ensure_ffmpeg(data: &Path) -> Result<(), String> {
+    if ffmpeg(data).exists() {
+        if let Ok(()) = ffmpeg_works(data) {
+            return Ok(());
+        }
+    }
+    ensure_tools(data, Needs { ffmpeg: true, deno: false }, &|_| {})
+}
+
 /// Pastikan yt-dlp (selalu), ffmpeg dan Deno (bila diminta) ada; yt-dlp diperbarui bila sudah
 /// lebih dari 3 hari (YouTube sering berubah). Memblokir: panggil dari thread latar.
 pub fn ensure_tools(data: &Path, needs: Needs, note: &dyn Fn(&str)) -> Result<(), String> {
@@ -474,7 +500,7 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-fn hide_window(cmd: &mut Command) {
+pub fn hide_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -852,14 +878,22 @@ pub fn subs_step(data: &Path, spec: &Spec, video: &Path, job: Option<&Job>, canc
     let lang = spec.sub.split(',').next().unwrap_or("").trim().to_string();
     if spec.embed {
         embed_subs(data, video, &srt, &lang, job)?;
+        // Bukti: trek subtitle benar-benar ada di video (ffprobe).
+        let check = match verify_embedded(data, video) {
+            Ok(n) => format!("terperiksa: {n} trek subtitle di video"),
+            Err(e) => format!("PERINGATAN: {e}"),
+        };
         if spec.keep_srt {
-            sidecar_srt(video);
+            if sidecar_srt(video).is_none() {
+                // .srt hilang: ambil dari video.
+                let _ = extract_subs(data, video);
+            }
         } else {
             let _ = std::fs::remove_file(&srt);
         }
         // Sisa .vtt yang tidak dikonversi.
         cleanup_vtt(video);
-        Ok(format!("subtitle {lang} dimasukkan ke video"))
+        Ok(format!("subtitle {lang} dimasukkan ke video ({check})"))
     } else {
         sidecar_srt(video);
         cleanup_vtt(video);
@@ -1192,8 +1226,181 @@ pub fn probe_result(data: &Path, file: &Path) -> Option<(u64, String)> {
     Some((h, codec))
 }
 
+fn ffprobe(data: &Path) -> PathBuf {
+    let exe = ffmpeg_dir(data).join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+    if exe.exists() {
+        exe
+    } else {
+        PathBuf::from("ffprobe")
+    }
+}
+
+/// Satu trek subtitle di dalam berkas video.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubTrack {
+    /// Urutan di antara trek subtitle (untuk `-map 0:s:N`).
+    pub n: usize,
+    pub codec: String,
+    pub lang: String,
+    pub title: String,
+}
+
+impl SubTrack {
+    /// Subtitle berupa teks (bisa jadi .srt). Subtitle gambar (Blu-ray PGS, DVD VobSub, DVB)
+    /// butuh OCR dan tidak didukung.
+    pub fn is_text(&self) -> bool {
+        matches!(self.codec.as_str(), "mov_text" | "subrip" | "srt" | "webvtt" | "ass" | "ssa" | "text" | "ttml" | "microdvd" | "sami" | "realtext" | "subviewer" | "subviewer1" | "mpl2" | "jacosub" | "pjs" | "stl" | "vplayer")
+    }
+}
+
+/// Trek subtitle di dalam video (ffprobe).
+pub fn probe_subs(data: &Path, video: &Path) -> Result<Vec<SubTrack>, String> {
+    let mut cmd = Command::new(ffprobe(data));
+    cmd.args(["-v", "error", "-select_streams", "s", "-show_entries", "stream=codec_name:stream_tags=language,title", "-of", "json"]).arg(video);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    hide_window(&mut cmd);
+    let o = cmd.output().map_err(|e| format!("ffprobe tidak bisa dijalankan: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("ffprobe: {}", String::from_utf8_lossy(&o.stderr).trim().chars().take(200).collect::<String>()));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).map_err(|e| format!("ffprobe: {e}"))?;
+    Ok(v["streams"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .enumerate()
+                .map(|(n, s)| SubTrack {
+                    n,
+                    codec: s["codec_name"].as_str().unwrap_or("").to_string(),
+                    lang: s["tags"]["language"].as_str().unwrap_or("").to_string(),
+                    title: s["tags"]["title"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Nama .srt untuk trek-trek teks: satu trek = "<stem>.srt" (bila belum ada), lebih dari satu
+/// = "<stem>.<bahasa>.srt" (ditambah nomor bila bahasanya sama).
+pub fn srt_names(video: &Path, tracks: &[SubTrack]) -> Vec<(usize, PathBuf)> {
+    let stem = video.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "video".into());
+    let dir = video.parent().map(Path::to_path_buf).unwrap_or_default();
+    let text: Vec<&SubTrack> = tracks.iter().filter(|t| t.is_text()).collect();
+    let mut used = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for t in &text {
+        let lang: String = t.lang.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+        let base = if text.len() == 1 && !dir.join(format!("{stem}.srt")).exists() {
+            format!("{stem}.srt")
+        } else if lang.is_empty() || lang == "und" {
+            format!("{stem}.{}.srt", t.n + 1)
+        } else {
+            format!("{stem}.{lang}.srt")
+        };
+        let mut name = base.clone();
+        let mut k = 2;
+        while !used.insert(name.clone()) {
+            name = format!("{}.{k}.srt", base.trim_end_matches(".srt"));
+            k += 1;
+        }
+        out.push((t.n, dir.join(name)));
+    }
+    out
+}
+
+/// Ambil semua subtitle teks di dalam video menjadi .srt di sampingnya (tanpa mengubah video).
+/// Ok = (berkas yang dibuat, keterangan trek yang dilewati).
+pub fn extract_subs(data: &Path, video: &Path) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+    let tracks = probe_subs(data, video)?;
+    if tracks.is_empty() {
+        return Err("video ini tidak punya subtitle di dalamnya".into());
+    }
+    let skipped: Vec<String> = tracks
+        .iter()
+        .filter(|t| !t.is_text())
+        .map(|t| format!("trek {} ({}{}) berupa gambar, tidak bisa jadi teks tanpa OCR", t.n + 1, t.codec, if t.lang.is_empty() { String::new() } else { format!(", {}", t.lang) }))
+        .collect();
+    let mut made = Vec::new();
+    for (n, out) in srt_names(video, &tracks) {
+        let mut cmd = Command::new(if ffmpeg(data).exists() { ffmpeg(data) } else { PathBuf::from("ffmpeg") });
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(video).args(["-map", &format!("0:s:{n}"), "-c:s", "srt"]).arg(&out);
+        let (ok, err) = run_tool(cmd, None);
+        if ok && std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0) > 0 {
+            made.push(out);
+        } else {
+            let _ = std::fs::remove_file(&out);
+            return Err(if err.is_empty() { format!("ffmpeg gagal mengambil trek {}", n + 1) } else { format!("ffmpeg: {err}") });
+        }
+    }
+    if made.is_empty() {
+        return Err(skipped.join("; "));
+    }
+    Ok((made, skipped))
+}
+
+/// Setelah subtitle dimasukkan: pastikan treknya benar-benar ada di video. Ok = jumlah trek teks.
+pub fn verify_embedded(data: &Path, video: &Path) -> Result<usize, String> {
+    let n = probe_subs(data, video)?.iter().filter(|t| t.is_text()).count();
+    if n == 0 {
+        Err("trek subtitle tidak ditemukan di video setelah dimasukkan".into())
+    } else {
+        Ok(n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Butuh ffmpeg/ffprobe di PATH: video uji 1 detik → masukkan subtitle → periksa → ambil lagi.
+    #[test]
+    fn embed_verify_extract_roundtrip() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ovner-subrt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = dir.join("data");
+        let v = dir.join("Uji 720p.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x90:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&v)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return;
+        }
+        let srt = dir.join("in.srt");
+        std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:00,900\nhalo dunia\n\n").unwrap();
+        super::embed_subs(&data, &v, &srt, "id", None).unwrap();
+        assert_eq!(super::verify_embedded(&data, &v).unwrap(), 1);
+        let tracks = super::probe_subs(&data, &v).unwrap();
+        assert_eq!(tracks[0].codec, "mov_text");
+        assert_eq!(tracks[0].lang, "ind");
+        let (made, skipped) = super::extract_subs(&data, &v).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(made, vec![dir.join("Uji 720p.srt")]);
+        assert!(std::fs::read_to_string(&made[0]).unwrap().contains("halo dunia"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn srt_names_for_tracks() {
+        use super::SubTrack;
+        let dir = std::env::temp_dir().join(format!("ovner-srtnames-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let v = dir.join("Video 1080p.mp4");
+        let t = |n, c: &str, l: &str| SubTrack { n, codec: c.into(), lang: l.into(), title: String::new() };
+        let one = super::srt_names(&v, &[t(0, "mov_text", "ind")]);
+        assert_eq!(one, vec![(0, dir.join("Video 1080p.srt"))]);
+        let many = super::srt_names(&v, &[t(0, "mov_text", "ind"), t(1, "hdmv_pgs_subtitle", "eng"), t(2, "subrip", "eng"), t(3, "ass", "eng"), t(4, "webvtt", "")]);
+        assert_eq!(
+            many,
+            vec![(0, dir.join("Video 1080p.ind.srt")), (2, dir.join("Video 1080p.eng.srt")), (3, dir.join("Video 1080p.eng.2.srt")), (4, dir.join("Video 1080p.5.srt"))]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn page_srt_is_used_before_ytdlp() {
         let dir = std::env::temp_dir().join(format!("ovner-page-srt-{}", std::process::id()));

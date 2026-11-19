@@ -45,9 +45,9 @@
   const $ = (id) => document.getElementById(id);
   const W = {
     id: { h1: "Unduhan", q: "Cari riwayat unduhan", clear: "Hapus semua dari daftar", empty: "Belum ada unduhan.", today: "Hari ini", yday: "Kemarin", loc: "id-ID",
-      deleted: "Dihapus", failed: "Gagal / dibatalkan", copy: "Salin tautan", show: "Tampilkan di folder", remove: "Hapus", delT: "Hapus unduhan ini?", delAllT: "Hapus semua unduhan?", delAllN: "Unduhan yang selesai dan gagal dihapus dari daftar.", delFiles: "Hapus berkasnya juga (permanen dari disk)", delOk: "Hapus", delNo: "Batal", cancel: "Batalkan", pause: "Jeda", resume: "Lanjutkan", subRetry: "Coba unduh subtitle lagi (video tidak diunduh ulang)", paused: "Dijeda", conns: "koneksi", engine: "Mesin unduh Ovner (multi-koneksi)" },
+      deleted: "Dihapus", failed: "Gagal / dibatalkan", copy: "Salin tautan", show: "Tampilkan di folder", remove: "Hapus", delT: "Hapus unduhan ini?", delAllT: "Hapus semua unduhan?", delAllN: "Unduhan yang selesai dan gagal dihapus dari daftar.", delFiles: "Hapus berkasnya juga (permanen dari disk)", delOk: "Hapus", delNo: "Batal", cancel: "Batalkan", pause: "Jeda", resume: "Lanjutkan", subRetry: "Coba unduh subtitle lagi (video tidak diunduh ulang)", subExtract: "Ambil subtitle dari dalam video jadi berkas .srt di sampingnya (untuk Media Player/pemutar lain)", paused: "Dijeda", conns: "koneksi", engine: "Mesin unduh Ovner (multi-koneksi)" },
     en: { h1: "Downloads", q: "Search download history", clear: "Clear all", empty: "No downloads yet.", today: "Today", yday: "Yesterday", loc: "en-US",
-      deleted: "Deleted", failed: "Failed / cancelled", copy: "Copy link", show: "Show in folder", remove: "Delete", delT: "Delete this download?", delAllT: "Clear all downloads?", delAllN: "Finished and failed downloads are removed from the list.", delFiles: "Delete files too (permanently from disk)", delOk: "Delete", delNo: "Cancel", cancel: "Cancel", pause: "Pause", resume: "Resume", subRetry: "Try downloading the subtitles again (the video isn't downloaded again)", paused: "Paused", conns: "connections", engine: "Ovner download engine (multi-connection)" },
+      deleted: "Deleted", failed: "Failed / cancelled", copy: "Copy link", show: "Show in folder", remove: "Delete", delT: "Delete this download?", delAllT: "Clear all downloads?", delAllN: "Finished and failed downloads are removed from the list.", delFiles: "Delete files too (permanently from disk)", delOk: "Delete", delNo: "Cancel", cancel: "Cancel", pause: "Pause", resume: "Resume", subRetry: "Try downloading the subtitles again (the video isn't downloaded again)", subExtract: "Extract the subtitles inside the video into an .srt file next to it (for Media Player/other players)", paused: "Paused", conns: "connections", engine: "Ovner download engine (multi-connection)" },
   };
   let w = W.id, items = [];
   const svg = {
@@ -104,6 +104,9 @@
       if ((d.engine || d.later) && d.state === "paused") btn("play", w.resume, () => post({ t: "dl-resume", id: d.id }));
       if (d.subRetry && !gone) {
         const b = document.createElement("button"); b.textContent = "CC↻"; b.title = w.subRetry; b.onclick = () => post({ t: "video-sub-retry", id: d.id }); acts.append(b);
+      }
+      if (d.subExtract && !gone) {
+        const b = document.createElement("button"); b.textContent = "SRT"; b.title = w.subExtract; b.onclick = () => post({ t: "video-sub-extract", id: d.id }); acts.append(b);
       }
       if (live) btn("x", w.cancel, () => post({ t: "dl-cancel", id: d.id }));
       else btn("x", w.remove, () => ask(w.delT, d.name, d.state === "done" && d.exists, (files) => post({ t: files ? "dl-delete" : "dl-remove", id: d.id })));

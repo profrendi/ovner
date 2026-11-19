@@ -195,10 +195,12 @@ pub fn attach(wv: &wry::WebView, ctx: FilterCtx) -> windows::core::Result<()> {
                     let resp = env.CreateWebResourceResponse(stream.as_ref(), 200, &HSTRING::from("OK"), &HSTRING::from(headers))?;
                     args.SetResponse(&resp)?;
                     ctx.blocked.set(ctx.blocked.get() + 1);
+                    crate::metrics::count("diblokir", 1);
                 } else if block {
                     let resp = env.CreateWebResourceResponse(None, 403, &HSTRING::from("Diblokir Ovner"), &HSTRING::new())?;
                     args.SetResponse(&resp)?;
                     ctx.blocked.set(ctx.blocked.get() + 1);
+                    crate::metrics::count("diblokir", 1);
                 } else if let Some(to) = rewritten {
                     // $removeparam: alihkan ke alamat tanpa parameter pelacak.
                     let headers = format!("Location: {to}\r\nAccess-Control-Allow-Origin: *");

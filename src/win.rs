@@ -191,6 +191,58 @@ mod imp {
         }
     }
 
+    /// Dialog pilih berkas Windows. `kinds` = nama jenis dan pola, mis. ("Video", "*.mp4;*.mkv").
+    pub fn pick_file(owner: Option<isize>, title: &str, start: &Path, kinds: (&str, &str)) -> Option<std::path::PathBuf> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+        use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+        use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH};
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            let opts = dlg.GetOptions().unwrap_or_default();
+            let _ = dlg.SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+            let _ = dlg.SetTitle(&HSTRING::from(title));
+            let (name, spec) = (HSTRING::from(kinds.0), HSTRING::from(kinds.1));
+            let specs = [COMDLG_FILTERSPEC { pszName: PCWSTR(name.as_ptr()), pszSpec: PCWSTR(spec.as_ptr()) }];
+            let _ = dlg.SetFileTypes(&specs);
+            if start.is_dir() {
+                if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(start.as_os_str()), None::<&windows::Win32::System::Com::IBindCtx>) {
+                    let _ = dlg.SetFolder(&item);
+                }
+            }
+            dlg.Show(owner.map(|h| HWND(h as *mut core::ffi::c_void))).ok()?;
+            let item = dlg.GetResult().ok()?;
+            let p = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+            s.map(std::path::PathBuf::from)
+        }
+    }
+
+    /// Ruang kosong (byte) di drive tempat `path` berada.
+    pub fn disk_free(path: &Path) -> Option<u64> {
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+        let mut dir = path.to_path_buf();
+        while !dir.exists() {
+            dir = dir.parent()?.to_path_buf();
+        }
+        let mut free = 0u64;
+        unsafe { GetDiskFreeSpaceExW(&HSTRING::from(dir.as_os_str()), Some(&mut free as *mut u64), None, None).ok()? };
+        Some(free)
+    }
+
+    /// Nama prosesor (registri), untuk baris pembuka log.
+    pub fn cpu_name() -> String {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            .and_then(|k| k.get_value::<String, _>("ProcessorNameString"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    }
+
     /// Identitas aplikasi untuk taskbar (ikon & pengelompokan jendela).
     pub fn init_identity() {
         use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
@@ -252,6 +304,11 @@ mod imp {
     }
 
     // ---------- mulai bersama Windows ----------
+
+    /// Perintah autostart Ovner yang terdaftar di registri (None = tidak ada).
+    pub fn autostart_command() -> Option<String> {
+        hkcu().open_subkey(RUN_KEY).ok()?.get_value::<String, _>(APP_REG_NAME).ok()
+    }
 
     pub fn set_autostart(enabled: bool, exe: &Path) -> std::io::Result<()> {
         let (run, _) = hkcu().create_subkey(RUN_KEY)?;
@@ -1944,6 +2001,25 @@ mod imp {
     }
 
     /// Minta WebView2 menangguhkan halaman (hanya berhasil bila webview tidak terlihat).
+    /// Simpan tampilan halaman sebagai PNG (untuk --self-test).
+    pub fn capture_png(webview: &wry::WebView, path: &Path) {
+        use webview2_com::{CapturePreviewCompletedHandler, Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG};
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
+        use windows::Win32::System::Com::{STGM_CREATE, STGM_WRITE};
+        use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
+        use wry::WebViewExtWindows;
+        unsafe {
+            let Ok(stream) = SHCreateStreamOnFileEx(&HSTRING::from(path.as_os_str()), (STGM_CREATE | STGM_WRITE).0, FILE_ATTRIBUTE_NORMAL.0, true, None::<&windows::Win32::System::Com::IStream>) else { return };
+            let keep = stream.clone();
+            // Aliran dilepas setelah selesai supaya berkasnya tertutup.
+            let handler = CapturePreviewCompletedHandler::create(Box::new(move |_| {
+                drop(keep);
+                Ok(())
+            }));
+            let _ = webview.webview().CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, &stream, &handler);
+        }
+    }
+
     pub fn try_suspend(webview: &wry::WebView) {
         use webview2_com::{Microsoft::Web::WebView2::Win32::ICoreWebView2_3, TrySuspendCompletedHandler};
         use wry::WebViewExtWindows;
@@ -2192,6 +2268,9 @@ mod imp {
     pub fn pick_folder(_owner: Option<isize>, _title: &str, _start: &Path) -> Option<std::path::PathBuf> {
         None
     }
+    pub fn pick_file(_owner: Option<isize>, _title: &str, _start: &Path, _kinds: (&str, &str)) -> Option<std::path::PathBuf> {
+        None
+    }
     pub fn create_shortcut(_lnk: &Path, _exe: &Path, _description: &str) -> Result<(), String> {
         Ok(())
     }
@@ -2205,6 +2284,9 @@ mod imp {
         } else {
             Err("unduh gagal".into())
         }
+    }
+    pub fn autostart_command() -> Option<String> {
+        None
     }
     pub fn set_autostart(_enabled: bool, _exe: &Path) -> std::io::Result<()> {
         let _ = RUN_KEY;
@@ -2238,6 +2320,12 @@ mod imp {
     pub fn cdp(_webview: &wry::WebView, _method: &str, _params: &str) {}
     pub fn cdp_call(_webview: &wry::WebView, _method: &str, _params: &str, _cb: impl FnOnce(String) + 'static) {}
     pub fn install_crash_logger(_log_file: &Path) {}
+    pub fn disk_free(_path: &Path) -> Option<u64> {
+        None
+    }
+    pub fn cpu_name() -> String {
+        std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|c| c.lines().find_map(|l| l.strip_prefix("model name").map(|v| v.trim_start_matches([' ', '\t', ':']).to_string()))).unwrap_or_default()
+    }
     pub fn os_version() -> String {
         std::fs::read_to_string("/etc/os-release")
             .ok()
@@ -2284,6 +2372,7 @@ mod imp {
     pub fn user_agent(_webview: &wry::WebView) -> String {
         String::new()
     }
+    pub fn capture_png(_webview: &wry::WebView, _path: &Path) {}
     pub fn try_suspend(_webview: &wry::WebView) {}
     pub fn resume(_webview: &wry::WebView) {}
     pub fn set_script_enabled(_webview: &wry::WebView, _enabled: bool) {}
@@ -2311,3 +2400,43 @@ mod imp {
 }
 
 pub use imp::*;
+
+/// Waktu setempat "YYYY-MM-DD HH:MM:SS.mmm" untuk log.
+pub fn local_time() -> String {
+    #[cfg(windows)]
+    {
+        let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds)
+    }
+    #[cfg(not(windows))]
+    {
+        let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        utc_string(d.as_secs(), d.subsec_millis())
+    }
+}
+
+/// Detik Unix (UTC) → "YYYY-MM-DD HH:MM:SS.mmm" (algoritme hari sipil Howard Hinnant).
+pub fn utc_string(secs: u64, ms: u32) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.{ms:03}", rem / 3600, rem / 60 % 60, rem % 60)
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn utc() {
+        assert_eq!(super::utc_string(0, 0), "1970-01-01 00:00:00.000");
+        assert_eq!(super::utc_string(1_795_053_184, 7), "2026-11-19 01:53:04.007");
+        assert_eq!(super::utc_string(951_782_400, 0), "2000-02-29 00:00:00.000");
+    }
+}

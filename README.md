@@ -71,6 +71,44 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.22
+
+- **Ambil subtitle (.srt) dari dalam video**: tombol **SRT** di daftar Unduhan untuk video yang
+  sudah selesai, dan menu Alat → "Ambil subtitle (.srt) dari video…" untuk video apa pun
+  (MP4/MKV/WebM/…). Semua trek teks diambil (satu trek = `nama.srt`, lebih dari satu =
+  `nama.bahasa.srt`) tanpa mengubah videonya. Subtitle gambar (Blu-ray PGS/DVD VobSub) dilewati
+  dengan keterangan karena butuh OCR. Setelah subtitle dimasukkan ke video, Ovner kini
+  memeriksa dengan ffprobe bahwa treknya benar-benar ada.
+- **Log baru** (`ovner.log`): waktu setempat, tingkat (INFO/PERINGATAN/GALAT), dan kategori
+  fitur `[pdf] [subtitle] [tidur] [ram] [unduh] [codec] [setelan] …`; ditulis di latar (UI
+  tidak menunggu disk); riwayat 5 berkas × 1 MB. Baris pembuka setiap mulai (versi, Windows,
+  WebView2, CPU, RAM, setelan yang berbeda dari bawaan, argumen mesin, versi alat video,
+  perpindahan versi), riwayat setiap perubahan setelan (lama → baru), alasan setiap tab tidur,
+  lama tab dimuat, setiap unduhan selesai/gagal (ukuran, lama, kecepatan, mesin), media di
+  belakang yang dijeda, codec/resolusi/frame hilang yang benar-benar diputar YouTube, dan
+  panic beserta jejaknya.
+- **Pengukuran tiap menit** (bisa dimatikan): RAM/commit/CPU per jenis proses, GPU, RAM Windows
+  tersisa, tab hidup/beku, unduhan, sisa disk, dan penghitung harian (iklan diblokir, tab
+  ditidurkan, MB dibebaskan, unduhan, galat per kategori), disimpan 7 hari di `Data\metrics`.
+- **Diagnostik → Uji semua fitur**: setiap setelan (138 + 12 yang tidak tampil) diperiksa
+  nilainya dan dilacak lewat apa efeknya berlaku (argumen mesin, skrip halaman, skrip per situs,
+  alamat/pencarian, identitas browser); fitur diuji: folder data, file setelan/unduhan/sesi,
+  log, pengukuran, aturan PDF, subtitle json3→SRT, yt-dlp/ffmpeg/ffprobe/Deno, ffmpeg sungguhan
+  (video uji → subtitle masuk → diperiksa → diambil lagi), keadaan setiap tab (kenapa hidup),
+  RAM Windows, rapikan cerdas, folder unduhan, codec, browser default, autostart, Shields, DNS
+  aman, unduhan, update + tanda tangan, WebView2. Yang hanya bisa dibuktikan di situs sungguhan
+  ditandai Dilewati beserta alasannya. Log bisa disaring per kategori/tingkat.
+- **Simpan paket diagnostik**: satu berkas teks berisi laporan, hasil uji, tabel setelan,
+  setelan, pengukuran 7 hari, dan semua log; opsi menyembunyikan alamat situs dan nama pengguna
+  Windows.
+- **Uji Ovner sungguhan dengan WebView2 di GitHub** (`--self-test`): setiap build menjalankan
+  Ovner di Windows dengan server uji lokal — PDF kecil/besar tanpa ukuran, PDF besar dengan
+  ukuran, PDF dalam bingkai seperti Infor, PDF lokal, unduhan 20 MB dicek byte per byte, iklan
+  diblokir, subtitle lewat pemutar YouTube tiruan, tidur N tab terakhir, formulir dilindungi,
+  tidurkan semua, daftar tab, rapikan RAM, browser default, dan patokan RAM (1 tab, 10 tab,
+  setelah ditidurkan). Hasil, tangkapan layar, log, dan pengukuran disimpan sebagai lampiran
+  build. Tahap awal: belum membatalkan rilis sampai terbukti stabil.
+
 ## Perbaikan 0.8.21
 
 - **Subtitle YouTube lewat halaman YouTube.** yt-dlp terus ditolak YouTube ("HTTP 429 Too Many
