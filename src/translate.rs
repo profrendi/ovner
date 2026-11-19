@@ -40,6 +40,15 @@ pub fn translate(engine: &str, texts: &[String], from: &str, to: &str) -> Result
     }
 }
 
+/// Satu layanan saja, tanpa cadangan (untuk uji diagnostik).
+pub fn translate_only(engine: &str, texts: &[String], from: &str, to: &str) -> Result<Out, String> {
+    if engine == "google" {
+        google(texts, from, to)
+    } else {
+        microsoft(texts, from, to)
+    }
+}
+
 // ---- Microsoft (seperti Edge) ----
 
 static TOKEN: Mutex<Option<(String, Instant)>> = Mutex::new(None);

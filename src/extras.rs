@@ -23,6 +23,18 @@ pub fn ctx_items(en: bool, info: &Value) -> Vec<win::CtxItem> {
         v.push(C::cmd(&l("Terjemahkan teks yang dipilih", "Translate selection"), "translate-sel"));
         return v;
     }
+    // Tautan dan gambar: menu bawaan sudah lengkap; tambahkan seperlunya saja.
+    if !info["link"].as_str().unwrap_or("").is_empty() && !matches!(kind, "video" | "audio") {
+        v.push(C::cmd(&l("Buat kode QR untuk tautan ini", "Create QR code for this link"), "qr-link"));
+        if kind == "image" {
+            v.push(C::cmd(&l("Blokir elemen…", "Block element…"), "pick"));
+        }
+        return v;
+    }
+    if kind == "image" {
+        v.push(C::cmd(&l("Blokir elemen…", "Block element…"), "pick"));
+        return v;
+    }
     if matches!(kind, "video" | "audio") {
         v.push(C::cmd(&l("Unduh video ini", "Download this video"), "video-dl"));
         v.push(C::sep());
@@ -152,6 +164,7 @@ impl App {
             }
             "shot" | "shot-full" => self.screenshot(i, cmd == "shot-full"),
             "qr" => self.show_qr(&page),
+            "qr-link" => self.show_qr(info["link"].as_str().unwrap_or("")),
             "pick" => {
                 self.on_menu("pick");
             }
@@ -212,8 +225,20 @@ impl App {
                 }
             }
             3 => {
-                // Sumber asli tidak ada di cache (mis. halaman POST): tampilkan DOM saat ini.
-                let _ = wv.evaluate_script_with_callback("document.documentElement.outerHTML", move |r| send(&p, UserEvent::Source(id, url.clone(), 4, r)));
+                // Tidak ada di cache (mis. server mengirim no-store): ambil ulang dari server
+                // dengan cookie halaman, seperti view-source Chrome.
+                let params = json!({"expression": "fetch(location.href,{credentials:'include',cache:'force-cache'}).then(r=>r.ok?r.text():Promise.reject(r.status))", "awaitPromise": true, "returnByValue": true}).to_string();
+                win::cdp_result(wv, "Runtime.evaluate", &params, move |r| send(&p, UserEvent::Source(id, url, 4, r.unwrap_or_default())));
+            }
+            4 => {
+                let v: Value = serde_json::from_str(&data).unwrap_or_default();
+                match v["result"]["value"].as_str().filter(|_| v.get("exceptionDetails").is_none()) {
+                    Some(text) => self.open_source_tab(url, text.to_string(), false),
+                    None => {
+                        // Halaman POST atau server menolak: tampilkan DOM saat ini.
+                        let _ = wv.evaluate_script_with_callback("document.documentElement.outerHTML", move |r| send(&p, UserEvent::Source(id, url.clone(), 5, r)));
+                    }
+                }
             }
             _ => {
                 let text: String = serde_json::from_str(&data).unwrap_or_default();
@@ -591,6 +616,9 @@ mod tests {
         assert!(ctx_items(true, &sel).iter().any(|x| x.cmd == "read-sel"));
         let internal = json!({"kind": "page", "page": format!("{INTERNAL_PREFIX}settings/"), "sel": "", "editable": false});
         assert!(ctx_items(false, &internal).is_empty());
+        let link = json!({"kind": "page", "page": "https://example.com/", "link": "https://example.com/x", "sel": "", "editable": false});
+        let li = ctx_items(false, &link);
+        assert!(li.iter().any(|x| x.cmd == "qr-link") && !li.iter().any(|x| x.cmd == "source"));
         let edit = json!({"kind": "page", "page": "https://example.com/", "editable": true});
         assert!(ctx_items(false, &edit).is_empty());
         assert_eq!(file_stem("a/b: c?"), "a b c");

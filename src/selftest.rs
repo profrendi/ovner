@@ -454,6 +454,21 @@ pub fn network_tests(data: &Path, lang_id: bool) -> Vec<Value> {
     let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
     let _ = std::fs::remove_file(&tmp);
     out.push(item("Jaringan", "Unduh daftar filter", if r.is_ok() && size > 1000 { "ok" } else { "gagal" }, format!("{r:?}, {size} byte")));
+    // Penerjemah dan suara online (jalur tidak resmi, bisa berubah): diuji dengan satu kalimat.
+    for (key, engine) in [("Microsoft", "microsoft"), ("Google", "google")] {
+        let r = crate::translate::translate_only(engine, &["Good morning".to_string()], "en", "id");
+        let (st, m) = match r {
+            Ok(o) if !o.texts.is_empty() && !o.texts[0].is_empty() => ("ok", format!("\"Good morning\" → \"{}\"", o.texts[0])),
+            Ok(_) => ("peringatan", "jawaban kosong".to_string()),
+            Err(e) => ("peringatan", e),
+        };
+        out.push(item("Jaringan", &format!("Penerjemah {key}"), st, m));
+    }
+    let r = crate::tts::edge_speak("Halo", "id-ID-GadisNeural", 100);
+    out.push(match r {
+        Ok(sp) => item("Jaringan", "Suara Natural online (seperti Edge)", "ok", format!("{} KB audio, {} batas kata", sp.mp3.len() / 1024, sp.marks.len())),
+        Err(e) => item("Jaringan", "Suara Natural online (seperti Edge)", "peringatan", format!("{e} (suara Windows tetap bisa dipakai)")),
+    });
     // Update: manifest terbaru + tanda tangannya diperiksa dengan kunci publik Ovner.
     let tmp2 = std::env::temp_dir().join("ovner-uji-update.json");
     let r2 = crate::win::download(&crate::update::latest_url("stable"), &tmp2);

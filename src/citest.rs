@@ -56,6 +56,7 @@ const STEPS: &[(&str, u64)] = &[
     ("gpc_dnt_terkirim", 25),
     ("parameter_pelacak_dibuang", 25),
     ("font_tampilan_ovner", 20),
+    ("layanan_online_terjemah_dan_suara", 60),
     ("patokan_ram_10_tab", 90),
 ];
 
@@ -72,6 +73,7 @@ const PROBATION: &[&str] = &[
     "gpc_dnt_terkirim",
     "parameter_pelacak_dibuang",
     "font_tampilan_ovner",
+    "layanan_online_terjemah_dan_suara",
 ];
 
 enum Out {
@@ -544,9 +546,10 @@ impl App {
                 }
                 let line = self.ci.as_ref().unwrap().logs().into_iter().find(|l| l.contains("baca keras dimulai"));
                 match line {
-                    Some(l) if l.contains(": 3 paragraf") => {
+                    // Judul halaman + 3 paragraf artikel.
+                    Some(l) if l.contains(": 4 paragraf") || l.contains(": 3 paragraf") => {
                         self.on_reader_cmd("read-stop", &Value::Null);
-                        Out::Pass("3 paragraf diambil dari halaman dan dikirim ke pemutar toolbar".into())
+                        Out::Pass(format!("teks halaman diambil per paragraf dan dikirim ke pemutar toolbar ({})", l.split("dimulai: ").nth(1).unwrap_or("").split(',').next().unwrap_or("")))
                     }
                     Some(l) => Out::Fail(l),
                     None => Out::Wait,
@@ -651,6 +654,38 @@ impl App {
                     );
                 }
                 Out::Wait
+            }
+            "layanan_online_terjemah_dan_suara" => {
+                // Jalur tidak resmi Microsoft/Google dari server GitHub: tanda dini bila berubah.
+                if sub == 1 {
+                    let p = self.proxy.clone();
+                    std::thread::spawn(move || {
+                        let mut parts = Vec::new();
+                        for e in ["microsoft", "google"] {
+                            parts.push(match crate::translate::translate_only(e, &["Good morning".to_string()], "en", "id") {
+                                Ok(o) => format!("{e}: ok \"{}\"", o.texts.first().cloned().unwrap_or_default()),
+                                Err(x) => format!("{e}: GAGAL {x}"),
+                            });
+                        }
+                        parts.push(match crate::tts::edge_speak("Halo, ini uji suara.", "id-ID-GadisNeural", 100) {
+                            Ok(sp) => format!("suara edge: ok {} KB, {} kata", sp.mp3.len() / 1024, sp.marks.len()),
+                            Err(x) => format!("suara edge: GAGAL {x}"),
+                        });
+                        crate::send(&p, UserEvent::CiEval(serde_json::to_string(&parts.join("; ")).unwrap_or_default()));
+                    });
+                    return Out::Wait;
+                }
+                match self.ci.as_mut().unwrap().eval.take() {
+                    Some(r) => {
+                        let txt: String = serde_json::from_str(&r).unwrap_or_default();
+                        if txt.contains("GAGAL") {
+                            Out::Fail(txt)
+                        } else {
+                            Out::Pass(txt)
+                        }
+                    }
+                    None => Out::Wait,
+                }
             }
             "patokan_ram_10_tab" => {
                 if sub == 1 {

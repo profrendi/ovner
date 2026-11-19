@@ -103,9 +103,9 @@ Rilis besar: 0.8.25 dan rencana 0.8.26 digabung jadi satu.
 **Diagnostik**:
 - "Crash/galat" hanya menghitung sesi ini (galat dari versi lama tidak lagi memberi peringatan) dan menampilkan baris terakhirnya.
 - Kolom bukti: setelan yang efeknya terlihat di log atau penghitung (tab ditidurkan, RAM dirapikan, iklan diblokir, PDF, unduhan, subtitle, codec, …) berubah dari Info menjadi OK beserta buktinya.
-- Daftar suara Windows (termasuk suara bahasa Indonesia) dan ketersediaan penerjemah offline ditampilkan.
+- Daftar suara Windows (termasuk suara bahasa Indonesia) dan ketersediaan penerjemah offline ditampilkan; uji jaringan ikut mencoba penerjemah Microsoft, Google, dan suara Natural online dengan satu kalimat.
 
-**Uji WebView2 di GitHub**: ditambah 10 langkah (tombol video di halaman Trusted Types dan di iframe, HLS tertangkap, terjemahan + Tampilkan asli, baca keras, lihat sumber, tangkapan layar, GPC/DNT, parameter pelacak dibuang, font tampilan). Langkah baru dalam masa percobaan: dilaporkan, tetapi belum ikut menentukan lulus sampai lulus di 3 rilis berturut-turut.
+**Uji WebView2 di GitHub**: ditambah 11 langkah (tombol video di halaman Trusted Types dan di iframe, HLS tertangkap, terjemahan + Tampilkan asli, baca keras, lihat sumber, tangkapan layar, GPC/DNT, parameter pelacak dibuang, font tampilan, serta penerjemah Microsoft/Google dan suara Natural online sungguhan). Langkah baru dalam masa percobaan: dilaporkan, tetapi belum ikut menentukan lulus sampai lulus di 3 rilis berturut-turut.
 
 ## Perbaikan 0.8.24
 

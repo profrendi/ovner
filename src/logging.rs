@@ -18,7 +18,7 @@ pub const KEEP: usize = 5;
 
 /// Semua kategori, untuk penyaring di halaman Diagnostik.
 pub const CATEGORIES: &[&str] = &[
-    "sistem", "setelan", "tab", "tidur", "ram", "ukur", "pdf", "unduh", "video", "subtitle", "codec", "shields", "update", "default", "sesi", "diag", "crash", "umum",
+    "sistem", "setelan", "tab", "tidur", "ram", "ukur", "pdf", "unduh", "video", "subtitle", "codec", "shields", "update", "default", "sesi", "terjemah", "baca", "diag", "crash", "umum",
 ];
 
 enum Msg {

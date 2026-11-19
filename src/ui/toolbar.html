@@ -1769,11 +1769,13 @@
     if (c) { e.preventDefault(); send({ cmd: "key", k: c }); }
   });
   // ===== 0.8.25: panel tertutup saat klik di luar/Esc, perekam berkedip, terjemahan, kode QR, baca keras =====
-  let lastTbClick = 0;
+  let lastTbClick = 0, panelOpenedAt = 0;
   document.addEventListener("pointerdown", () => { lastTbClick = Date.now(); }, true);
   // Halaman diklik (Ovner memberi tahu lewat fokus tab) atau Esc: semua panel ikon kanan atas ditutup.
   function closePanels(force) {
-    if (!force && Date.now() - lastTbClick < 350) return;
+    // Fokus yang kembali ke halaman sesaat setelah panel dibuka (mis. dari menu klik kanan)
+    // tidak dihitung sebagai klik di luar.
+    if (!force && Date.now() - Math.max(lastTbClick, panelOpenedAt) < 700) return;
     hideOmni(); closeDark(); closeCodec(); closeSleep(); closeVid(); closeBm(); closeTr(); closeQr(); closeReadOpts();
     $("bmctx").classList.remove("show");
     if (state && state.dlBubble && !state.pwOffer) send({ cmd: "bubble-close" });
@@ -2079,9 +2081,9 @@
   }
   Object.assign(window.ovner, {
     closePanels() { closePanels(false); },
-    trOpen() { closePanels(true); trOpen = true; trSelData = null; trPick = ""; $("trpanel").classList.add("show"); renderTr(); },
-    trSel(o) { closePanels(true); trOpen = true; trSelData = o; $("trpanel").classList.add("show"); renderTr(); },
-    qr(o) { closePanels(true); qrData = o; $("qrpanel").classList.add("show"); renderQr(); },
+    trOpen() { closePanels(true); panelOpenedAt = Date.now(); trOpen = true; trSelData = null; trPick = ""; $("trpanel").classList.add("show"); renderTr(); },
+    trSel(o) { if (!trOpen || !trSelData) closePanels(true); panelOpenedAt = Date.now(); trOpen = true; trSelData = o; $("trpanel").classList.add("show"); renderTr(); },
+    qr(o) { closePanels(true); panelOpenedAt = Date.now(); qrData = o; $("qrpanel").classList.add("show"); renderQr(); },
     reader(o) {
       stopSound();
       Object.assign(RD, { open: true, n: o.n, paras: o.paras || [], i: o.start || 0, playing: false, paused: false, engine: o.engine || "local", voice: o.voice || "", rate: o.rate || 100, lang: o.lang || "", title: o.title || "", err: "", azure: !!o.azure });
