@@ -71,6 +71,174 @@ pub fn is_youtube(url: &str) -> bool {
     host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com") || host.ends_with(".youtube-nocookie.com")
 }
 
+/// ID video YouTube dari alamat (watch?v=, youtu.be/, /shorts/, /live/, /embed/).
+pub fn youtube_id(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    if !is_youtube(url) {
+        return None;
+    }
+    let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+    let id = if host == "youtu.be" {
+        u.path_segments()?.next().map(str::to_string)
+    } else if let Some(v) = u.query_pairs().find(|(k, _)| k == "v").map(|(_, v)| v.to_string()) {
+        Some(v)
+    } else {
+        let mut seg = u.path_segments()?;
+        match seg.next() {
+            Some("shorts" | "live" | "embed") => seg.next().map(str::to_string),
+            _ => None,
+        }
+    }?;
+    (id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then_some(id)
+}
+
+/// Skrip yang dijalankan berulang (tiap ~0,5 detik) di tab YouTube untuk mengambil subtitle
+/// lewat pemutar YouTube sendiri: memakai sesi dan token "pot" yang dibuat pemutar, jadi tidak
+/// ditolak "HTTP 429 Too Many Requests" seperti permintaan yt-dlp. Mengembalikan "wait"
+/// (pemutar belum siap), {"state":"pending"}, {"state":"ok","json":…,"lang":…} (format json3),
+/// atau {"state":"fail","error":…}. `quiet` = tab sementara: suaranya dimatikan dan dijeda.
+pub fn page_subs_js(nonce: &str, vid: &str, lang: &str, auto: bool, quiet: bool) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        r#"(function(){{
+var K="__ovnerSubs_"+{nonce},D=K+"_done";
+if(window[D])return JSON.stringify({{state:"fail",error:"sudah diambil"}});
+var S=window[K];
+if(S){{if(S.state!=="pending"){{var o=JSON.stringify(S);delete window[K];window[D]=1;return o;}}return JSON.stringify({{state:"pending"}});}}
+var p=document.getElementById("movie_player");
+if(!p||typeof p.getPlayerResponse!=="function")return "wait";
+var pr=p.getPlayerResponse();
+if(!pr||!pr.videoDetails)return "wait";
+S=window[K]={{state:"pending"}};
+var VID={vid},WANT={lang},AUTO={auto},QUIET={quiet};
+var sleep=function(ms){{return new Promise(function(r){{setTimeout(r,ms);}});}};
+(async function(){{try{{
+if(QUIET){{try{{p.mute();p.pauseVideo();}}catch(e){{}}}}
+if(pr.videoDetails.videoId!==VID)throw "tab ini memutar video lain";
+var tracks=((pr.captions||{{}}).playerCaptionsTracklistRenderer||{{}}).captionTracks||[];
+if(!tracks.length)throw "video ini tidak punya subtitle";
+var base=function(c){{return String(c||"").toLowerCase().replace(/-orig$/,"").split(/[-_]/)[0];}};
+var wb=base(WANT),wl=String(WANT).toLowerCase().replace(/-orig$/,"");
+var exact=function(t){{return String(t.languageCode).toLowerCase()===wl;}},same=function(t){{return base(t.languageCode)===wb;}};
+var asr=function(t){{return t.kind==="asr";}},pick=null,tlang=null;
+if(!AUTO)pick=tracks.find(function(t){{return !asr(t)&&exact(t);}})||tracks.find(function(t){{return !asr(t)&&same(t);}});
+if(!pick)pick=tracks.find(function(t){{return asr(t)&&same(t);}})||tracks.find(same);
+if(!pick){{pick=tracks.find(asr)||tracks[0];tlang=wb;}}
+var seen=function(){{try{{return performance.getEntriesByType("resource").map(function(e){{return e.name;}}).filter(function(u){{return u.indexOf("/api/timedtext")>=0&&u.indexOf(VID)>=0&&u.indexOf("pot=")>=0;}}).pop()||null;}}catch(e){{return null;}}}};
+var got=seen();
+if(!got){{
+var hooked=null,oo=XMLHttpRequest.prototype.open,of=window.fetch;
+var note=function(u){{try{{var h=new URL(String(u),location.href).href;if(h.indexOf("/api/timedtext")>=0)hooked=h;}}catch(e){{}}}};
+XMLHttpRequest.prototype.open=function(m,u){{note(u);return oo.apply(this,arguments);}};
+window.fetch=function(i){{note(typeof i==="string"?i:(i&&i.url)||"");return of.apply(this,arguments);}};
+var prev=null;try{{prev=p.getOption("captions","track");}}catch(e){{}}
+try{{p.loadModule("captions");}}catch(e){{}}
+await sleep(300);
+try{{p.setOption("captions","track",{{languageCode:pick.languageCode,kind:pick.kind||""}});}}catch(e){{}}
+for(var i=0;i<40&&!hooked;i++){{await sleep(200);if(!hooked)hooked=seen();}}
+XMLHttpRequest.prototype.open=oo;window.fetch=of;
+got=hooked;
+try{{if(prev&&prev.languageCode)p.setOption("captions","track",prev);else{{p.setOption("captions","track",{{}});p.unloadModule("captions");}}}}catch(e){{}}
+}}
+var tries=[];if(got)tries.push(["pemutar",got]);tries.push(["langsung",pick.baseUrl]);
+var last="";
+for(var k=0;k<tries.length;k++){{
+var u=new URL(tries[k][1],location.href);
+u.searchParams.set("fmt","json3");u.searchParams.set("lang",pick.languageCode);
+if(pick.kind)u.searchParams.set("kind",pick.kind);else u.searchParams.delete("kind");
+if(tlang)u.searchParams.set("tlang",tlang);else u.searchParams.delete("tlang");
+try{{var r=await fetch(u.href,{{credentials:"include"}});
+if(!r.ok){{last="HTTP "+r.status;continue;}}
+var txt=await r.text();
+if(txt&&txt.indexOf('"events"')>=0){{S.json=txt;S.lang=tlang||pick.languageCode;S.kind=pick.kind||"";S.via=tries[k][0];S.state="ok";return;}}
+last="jawaban kosong";
+}}catch(e){{last=String(e&&e.message||e);}}
+}}
+throw "subtitle tidak didapat ("+last+")";
+}}catch(e){{S.state="fail";S.error=String(e&&e.message||e);}}}})();
+return JSON.stringify({{state:"pending"}});
+}})()"#,
+        nonce = q(nonce),
+        vid = q(vid),
+        lang = q(lang),
+        auto = auto,
+        quiet = quiet,
+    )
+}
+
+/// Subtitle format json3 YouTube → SRT. Baris otomatis (ASR) yang bertumpuk dipotong supaya
+/// hanya satu baris tampil pada satu waktu.
+pub fn json3_to_srt(text: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("subtitle rusak: {e}"))?;
+    let evs = v["events"].as_array().ok_or("subtitle kosong")?;
+    let mut cues: Vec<(u64, u64, String)> = Vec::new();
+    for e in evs {
+        let Some(segs) = e["segs"].as_array() else { continue };
+        let raw: String = segs.iter().filter_map(|s| s["utf8"].as_str()).collect();
+        let text = raw.replace('\r', "").lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        if text.is_empty() {
+            continue;
+        }
+        let start = e["tStartMs"].as_u64().unwrap_or(0);
+        let dur = e["dDurationMs"].as_u64().unwrap_or(2000).max(1);
+        cues.push((start, start + dur, text));
+    }
+    cues.sort_by_key(|c| c.0);
+    for i in 0..cues.len().saturating_sub(1) {
+        let next = cues[i + 1].0;
+        if next > cues[i].0 && cues[i].1 > next {
+            cues[i].1 = next;
+        }
+    }
+    if cues.is_empty() {
+        return Err("subtitle kosong".into());
+    }
+    let ts = |ms: u64| format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+    let mut out = String::new();
+    for (n, (a, b, t)) in cues.iter().enumerate() {
+        out.push_str(&format!("{}\n{} --> {}\n{}\n\n", n + 1, ts(*a), ts(*b), t));
+    }
+    Ok(out)
+}
+
+/// Subtitle dari halaman YouTube (lihat `Spec::page_srt`): tunggu Ovner selesai mengambilnya
+/// (paling lama `wait`), lalu pindahkan ke "<stem>.<bahasa>.srt" di samping video.
+fn take_page_srt(spec: &Spec, video: &Path, wait: std::time::Duration, cancelled: &dyn Fn() -> bool) -> Result<PathBuf, Option<String>> {
+    if spec.page_srt.is_empty() {
+        return Err(None);
+    }
+    let src = PathBuf::from(&spec.page_srt);
+    let fail = PathBuf::from(format!("{}.fail", spec.page_srt));
+    let until = std::time::Instant::now() + wait;
+    while !src.exists() {
+        if fail.exists() {
+            let why = std::fs::read_to_string(&fail).unwrap_or_default();
+            let _ = std::fs::remove_file(&fail);
+            return Err(Some(why));
+        }
+        if cancelled() || std::time::Instant::now() >= until {
+            return Err(Some("halaman YouTube tidak menjawab".into()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    take_page_file(spec, video, &src).ok_or(None)
+}
+
+fn take_page_file(spec: &Spec, video: &Path, src: &Path) -> Option<PathBuf> {
+    let stem = video.file_stem()?.to_string_lossy().to_string();
+    let lang = spec.sub.split(',').next().unwrap_or("").trim().trim_end_matches("-orig").to_string();
+    let dest = video.parent()?.join(format!("{stem}.{}.srt", if lang.is_empty() { "sub" } else { &lang }));
+    // Folder data dan folder unduhan bisa beda drive: rename gagal → salin.
+    if std::fs::rename(src, &dest).is_err() {
+        let ok = std::fs::copy(src, &dest).is_ok();
+        let _ = std::fs::remove_file(src);
+        if !ok {
+            return None;
+        }
+    }
+    Some(dest)
+}
+
 /// Komponen yang dibutuhkan sebuah pekerjaan.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Needs {
@@ -403,6 +571,10 @@ pub struct Spec {
     /// (Media Player bawaan Windows tidak membaca subtitle di dalam MP4).
     #[serde(default)]
     pub keep_srt: bool,
+    /// Berkas .srt yang diambil Ovner lewat halaman YouTube (sesi browser sendiri, tidak kena
+    /// HTTP 429 seperti yt-dlp). Kosong = tidak dipakai. Gagal = ada berkas "<ini>.fail".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub page_srt: String,
 }
 
 impl Spec {
@@ -666,7 +838,17 @@ pub fn embed_subs(data: &Path, video: &Path, srt: &Path, lang: &str, job: Option
 /// bila diminta, lalu .srt disimpan bernama sama dengan video (keep_srt / tanpa embed) atau
 /// dihapus. Ok = pesan singkat untuk log.
 pub fn subs_step(data: &Path, spec: &Spec, video: &Path, job: Option<&Job>, cancelled: &dyn Fn() -> bool) -> Result<String, String> {
-    let srt = fetch_subs(data, spec, video, job, cancelled)?;
+    // Lewat halaman YouTube dulu (sesi browser, tanpa 429); yt-dlp hanya sebagai cadangan.
+    let srt = match take_page_srt(spec, video, std::time::Duration::from_secs(45), cancelled) {
+        Ok(p) => {
+            crate::log(&format!("subtitle diambil lewat halaman YouTube: {}", p.display()));
+            p
+        }
+        Err(page) => fetch_subs(data, spec, video, job, cancelled).map_err(|e| match page {
+            Some(w) if !w.is_empty() => format!("{e} · lewat halaman YouTube: {w}"),
+            _ => e,
+        })?,
+    };
     let lang = spec.sub.split(',').next().unwrap_or("").trim().to_string();
     if spec.embed {
         embed_subs(data, video, &srt, &lang, job)?;
@@ -1012,6 +1194,61 @@ pub fn probe_result(data: &Path, file: &Path) -> Option<(u64, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_srt_is_used_before_ytdlp() {
+        let dir = std::env::temp_dir().join(format!("ovner-page-srt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("Judul 720p.mp4");
+        std::fs::write(&video, b"x").unwrap();
+        let page = dir.join("subs-1.srt");
+        std::fs::write(&page, "1\n00:00:00,000 --> 00:00:01,000\nhai\n\n").unwrap();
+        let spec = super::Spec { page: "https://www.youtube.com/watch?v=wtp3OolekmA".into(), key: "v:720".into(), dir: dir.display().to_string(), sub: "id".into(), page_srt: page.display().to_string(), ..Default::default() };
+        let m = super::subs_step(&dir, &spec, &video, None, &|| false).unwrap();
+        assert!(m.contains(".srt"), "{m}");
+        assert!(dir.join("Judul 720p.srt").exists());
+        assert!(!page.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn youtube_ids() {
+        use super::youtube_id as y;
+        assert_eq!(y("https://www.youtube.com/watch?v=wtp3OolekmA&t=5").as_deref(), Some("wtp3OolekmA"));
+        assert_eq!(y("https://youtu.be/wtp3OolekmA?si=x").as_deref(), Some("wtp3OolekmA"));
+        assert_eq!(y("https://m.youtube.com/shorts/wtp3OolekmA").as_deref(), Some("wtp3OolekmA"));
+        assert_eq!(y("https://www.youtube.com/"), None);
+        assert_eq!(y("https://example.com/watch?v=wtp3OolekmA"), None);
+    }
+
+    #[test]
+    fn json3_srt() {
+        let j = r#"{"events":[
+            {"tStartMs":0,"dDurationMs":5000,"wWinId":1,"segs":[{"utf8":"halo"},{"utf8":" semua","tOffsetMs":400}]},
+            {"tStartMs":2500,"dDurationMs":100,"aAppend":1,"segs":[{"utf8":"\n"}]},
+            {"tStartMs":2600,"dDurationMs":4000,"segs":[{"utf8":"baris dua\nbaris tiga"}]},
+            {"tStartMs":3723004,"dDurationMs":1500,"segs":[{"utf8":"akhir"}]},
+            {"tStartMs":9000,"dDurationMs":10}
+        ]}"#;
+        let srt = super::json3_to_srt(j).unwrap();
+        assert!(srt.starts_with("1\n00:00:00,000 --> 00:00:02,600\nhalo semua\n\n2\n00:00:02,600 --> 00:00:06,600\nbaris dua\nbaris tiga\n\n"), "{srt}");
+        assert!(srt.contains("3\n01:02:03,004 --> 01:02:04,504\nakhir"), "{srt}");
+        assert!(super::json3_to_srt(r#"{"events":[]}"#).is_err());
+        assert!(super::json3_to_srt("<html>").is_err());
+    }
+
+    #[test]
+    fn page_subs_script_is_valid_js() {
+        let js = super::page_subs_js("n1\"x", "wtp3OolekmA", "id", true, false);
+        let dir = std::env::temp_dir().join("ovner-js-check");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("subs.js");
+        std::fs::write(&f, format!("new Function({});", serde_json::to_string(&js).unwrap())).unwrap();
+        if let Ok(o) = std::process::Command::new("node").arg(&f).output() {
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        }
+    }
+
     use super::*;
 
     #[test]

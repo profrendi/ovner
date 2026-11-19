@@ -71,6 +71,28 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.21
+
+- **Subtitle YouTube lewat halaman YouTube.** yt-dlp terus ditolak YouTube ("HTTP 429 Too Many
+  Requests"), bahkan setelah 3 percobaan. Kini subtitle diambil oleh pemutar YouTube di tab
+  Ovner sendiri (sesi browser dan token pemutar), lalu diubah ke .srt dan dimasukkan ke video.
+  Bila tab videonya tidak terbuka, Ovner membukanya sebentar di belakang tanpa suara lalu
+  menutupnya. yt-dlp tetap jadi cadangan. Tombol CC↻ memakai cara yang sama. Bisa dimatikan:
+  Pengaturan → Unduhan → "Subtitle YouTube lewat halaman YouTube".
+- **RAM tidak "nyangkut" setelah menutup YouTube.** Penyebabnya bukan "tetap hidupkan N tab":
+  proses GPU masih memegang buffer dekoder video (100–300 MB) dan rapikan cerdas 0.8.19 tidak
+  menyentuh GPU selama jendela terbuka. Kini begitu tab video/berat ditutup atau ditidurkan,
+  4 detik kemudian GPU dan sisa proses tanpa tab dirapikan (kecuali ada video/suara lain yang
+  diputar).
+- Rapikan cerdas juga merapikan proses Ovner sendiri (±70 MB sisa saat mulai), dan proses
+  browser/penyimpanan WebView2 setelah 10 detik tidak ada ketikan/klik (dulu 30 detik).
+- **Penjaga tab membengkak** tidak memberi pemberitahuan selagi tab yang dilihat memutar video.
+  Kualitas video tidak pernah diturunkan.
+- PDF di komputer sendiri (file://) tidak lagi dicegat aturan "Unduh PDF besar": langsung
+  dibuka di penampil.
+- Log lebih bersih: "efisiensi per proses" hanya dicatat bila jumlahnya berubah; tab baru yang
+  ditidurkan ditulis "(tab baru)".
+
 ## Perbaikan 0.8.20
 
 - **Preview PDF Infor kembali.** Cetakan permintaan pembelian/pembayaran di Infor LN tampil lagi

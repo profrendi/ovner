@@ -191,6 +191,9 @@ pub struct Settings {
     pub video_button: bool,
     /// Situs yang tidak pernah menampilkan tombol itu.
     pub video_button_never: Vec<String>,
+    /// Subtitle YouTube diambil lewat halaman YouTube di Ovner (sesi browser sendiri), bukan
+    /// hanya lewat yt-dlp yang sering ditolak "HTTP 429 Too Many Requests".
+    pub video_subs_page: bool,
     /// Cari lokasi server unduhan (negara/kota/penyedia) lewat ipwho.is.
     pub dl_server_info: bool,
     /// PDF besar langsung diunduh, tidak dibuka di penampil PDF bawaan.
@@ -365,6 +368,7 @@ impl Default for Settings {
             dl_box_v2: true,
             video_button: true,
             video_button_never: Vec::new(),
+            video_subs_page: true,
             dl_server_info: true,
             pdf_download: true,
             pdf_download_mb: 5,

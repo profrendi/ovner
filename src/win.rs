@@ -1621,6 +1621,11 @@ mod imp {
             let url = v["request"]["url"].as_str().unwrap_or("").to_string();
             let job = req.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or_else(|| req.clone());
             let continue_req = |sender: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2| cdp_core(sender, "Fetch.continueRequest", &serde_json::json!({"requestId": req}).to_string());
+            // Berkas di komputer sendiri (file://) tidak perlu dicegat sama sekali.
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                continue_req(&sender);
+                return Ok(());
+            }
             // Tahap permintaan (hanya alamat yang mirip unduhan): tampilkan "menunggu server"
             // segera, jangan tunggu server selesai membuat berkasnya.
             if v.get("responseStatusCode").is_none() && v.get("responseErrorReason").is_none() {

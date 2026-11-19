@@ -415,6 +415,13 @@ fn display_url(url: &str) -> String {
     }
 }
 
+/// Tab yang meninggalkan sisa memori besar di proses lain saat ditutup: video/YouTube, yang
+/// memutar suara, atau yang prosesnya sendiri sudah besar (>250 MB).
+fn is_heavy_tab(t: &Tab) -> bool {
+    let Some(wv) = &t.webview else { return false };
+    playing_audio(wv) || video::is_youtube(&t.url) || video::is_video_page(&t.url) || (t.proc_pid != 0 && t.proc_shared <= 1 && t.proc_ram > 250 * 1_048_576)
+}
+
 fn host_of(url: &str) -> Option<String> {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string))
 }
@@ -438,6 +445,23 @@ enum Remote {
     NewWindow,
     Open(String),
     Exit,
+}
+
+/// Pengambilan subtitle YouTube lewat halaman (lihat video::page_subs_js).
+struct PageSubs {
+    tab: u64,
+    nonce: String,
+    vid: String,
+    lang: String,
+    auto: bool,
+    /// Berkas .srt tujuan (Spec::page_srt).
+    path: PathBuf,
+    polls: u32,
+    max: u32,
+    /// Tab sementara yang dibuka di belakang khusus untuk ini (ditutup lagi setelahnya).
+    temp: bool,
+    /// Tombol "Coba unduh subtitle lagi": spec dan berkas video yang menunggu hasilnya.
+    retry: Option<(video::Spec, PathBuf)>,
 }
 
 enum UserEvent {
@@ -504,6 +528,10 @@ enum UserEvent {
     Video(u64, video::Event),
     /// Hasil "Coba unduh subtitle lagi" untuk unduhan `.0`.
     VideoSubs(u64, Result<String, String>),
+    /// Hasil skrip subtitle di halaman YouTube untuk unduhan `.0` (JSON dari ExecuteScript).
+    PageSubs(u64, String),
+    /// Saatnya memeriksa lagi skrip subtitle unduhan `.0`.
+    PageSubsPoll(u64),
     VideoJob(u64, video::Job),
     /// Hasil penelusuran format video (nomor penelusuran, data dialog).
     VideoInfo(u64, Result<Value, String>),
@@ -751,6 +779,9 @@ struct App {
     next_trim: Option<Instant>,
     /// Rapikan berikutnya diminta pengguna/diminimalkan (abaikan jarak dan syarat bertambah).
     trim_force: bool,
+    /// Tab video/berat baru saja ditutup atau ditidurkan: rapikan berikutnya boleh menyentuh
+    /// proses GPU (buffer dekoder video) walau jendela terbuka.
+    gpu_trim: bool,
     /// Rapikan RAM cerdas: status per proses dan penilaian hasil.
     trimmer: memtrim::Trimmer,
     /// RAM Windows sedang hampir habis (dengan histeresis) dan kapan terakhir bertindak.
@@ -763,6 +794,8 @@ struct App {
     mem_note: Option<(u64, u64)>,
     /// Pilihan unduhan video yang meminta subtitle (untuk "Coba unduh subtitle lagi").
     video_specs: HashMap<u64, video::Spec>,
+    /// Subtitle YouTube yang sedang diambil lewat halaman (per unduhan).
+    page_subs: HashMap<u64, PageSubs>,
     find_open: bool,
     /// Nomor jendela yang sedang dipegang App. Jendela lain disimpan di `others` dan ditukar
     /// masuk (lihat `switch_to`) saat ada kejadian untuknya, sehingga semua fungsi tab tetap
@@ -1083,6 +1116,11 @@ fn build_tab_view(
             &wv,
             move |url, len, name| {
                 let s = st.borrow();
+                // PDF di komputer sendiri (file://, dari Explorer atau "Buka di sini") selalu dibuka
+                // di penampil: tidak ada yang perlu diunduh.
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return None;
+                }
                 // Daftar situs → ukuran dari server → setelan "ukuran tidak diketahui".
                 let measure = match s.pdf_action(&host_of(url).unwrap_or_default(), len) {
                     settings::PdfAction::Show => return None,
@@ -1781,6 +1819,7 @@ impl App {
         if self.split == Some(t.id) {
             self.split = None;
         }
+        let heavy = is_heavy_tab(&t);
         if !is_newtab(&t.url) && !t.private {
             self.closed.push(t.url.clone());
             if self.closed.len() > 25 {
@@ -1788,6 +1827,9 @@ impl App {
             }
         }
         drop(t);
+        if heavy {
+            self.heavy_tab_gone();
+        }
         if self.tabs.is_empty() {
             // Seperti Brave: menutup tab terakhir menutup jendela (ke tray atau keluar).
             // Tab baru disiapkan supaya jendela tidak kosong saat dibuka lagi.
@@ -1812,6 +1854,7 @@ impl App {
         if t.webview.is_none() {
             return;
         }
+        let heavy = is_heavy_tab(t);
         if let Some(wv) = &t.webview {
             if let Ok(u) = wv.url() {
                 if !u.is_empty() {
@@ -1828,10 +1871,25 @@ impl App {
         let freed = if t.proc_pid != 0 { t.proc_ram / t.proc_shared.max(1) as u64 } else { t.js_heap };
         t.proc_pid = 0;
         t.frame_id = None;
-        log(&format!("tab ditidurkan: {}", display_url(&t.url)));
+        log(&format!("tab ditidurkan: {}", if t.url.is_empty() || is_newtab(&t.url) { "(tab baru)".to_string() } else { display_url(&t.url) }));
         self.tab_stats.slept += 1;
         self.tab_stats.ram_freed += freed;
         self.save_tab_stats();
+        if heavy {
+            self.heavy_tab_gone();
+        }
+    }
+
+    /// Tab video/berat ditutup atau ditidurkan: prosesnya sudah hilang, tetapi proses GPU masih
+    /// memegang buffer dekoder video (100–300 MB) dan proses lain sisa halamannya. Beberapa
+    /// detik kemudian (proses tab sempat berhenti) dirapikan, termasuk GPU.
+    fn heavy_tab_gone(&mut self) {
+        self.gpu_trim = true;
+        self.trim_force = true;
+        let due = Instant::now() + Duration::from_secs(4);
+        if self.next_trim.is_none_or(|t| t > due) {
+            self.next_trim = Some(due);
+        }
     }
 
     fn save_sessions(&self) {
@@ -2004,7 +2062,9 @@ impl App {
         if !stop.is_empty() {
             win::set_pids_eco(&stop, false);
         }
-        if !start.is_empty() || !stop.is_empty() {
+        // Dicatat hanya bila jumlahnya berubah (dulu tiap 10 detik, memenuhi log).
+        static LOGGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        if (!start.is_empty() || !stop.is_empty()) && LOGGED.swap(want.len(), std::sync::atomic::Ordering::Relaxed) != want.len() {
             log(&format!("efisiensi per proses: {} proses hemat (+{} -{})", want.len(), start.len(), stop.len()));
         }
         self.eco_pids = want;
@@ -2068,7 +2128,10 @@ impl App {
         let now = Instant::now();
         let procs = usage::snapshot();
         let all_bg = self.all_background();
-        let user_idle = win::idle_secs() >= 30;
+        let idle = win::idle_secs();
+        let user_idle = idle >= 30;
+        // Tab video/berat baru ditutup/ditidurkan: GPU dan proses tanpa tab boleh dirapikan.
+        let gone = std::mem::take(&mut self.gpu_trim);
         let net_busy = self.downloading() || !self.pdf_race.is_empty() || !self.video_jobs.is_empty();
         // Peta proses → tab dianggap segar bila diminta dalam 30 detik terakhir.
         let map_fresh = self.frames_ok && !self.renderer_frames.is_empty() && self.frames_at.elapsed() < Duration::from_secs(30);
@@ -2107,14 +2170,17 @@ impl App {
                     "renderer" if !map_fresh => (!all_bg).then_some("peta tab belum ada"),
                     "renderer" if shown.contains(&pid) => Some("tab terlihat"),
                     "renderer" if busy.contains(&pid) => Some("tab memutar suara/memuat/mengunduh"),
-                    "renderer" if !known.contains(&pid) => (!(all_bg || user_idle)).then_some("sedang dipakai"),
+                    "renderer" if !known.contains(&pid) => (!(all_bg || user_idle || gone)).then_some("sedang dipakai"),
                     "renderer" => None,
-                    "gpu" if !all_bg => Some("jendela terbuka (GPU menggambar)"),
                     "gpu" if audio => Some("video/suara diputar"),
+                    "gpu" if !(all_bg || gone || user_idle) => Some("jendela terbuka (GPU menggambar)"),
                     "gpu" => None,
                     "network" => (net_busy || loading).then_some("jaringan dipakai"),
                     "audio" => audio.then_some("suara diputar"),
-                    _ => (!(all_bg || user_idle)).then_some("sedang dipakai"),
+                    // Proses Ovner sendiri: jendela/toolbar digambar WebView2, prosesnya hampir
+                    // selalu menganggur; sisa saat mulai (mesin filter iklan) tidak perlu ditahan.
+                    "ovner" => None,
+                    _ => (!(all_bg || idle >= 10 || gone)).then_some("sedang dipakai"),
                 };
                 let blocked = blocked.or_else(|| fresh_cpu.get(&pid).filter(|c| **c > 5.0).map(|_| "CPU sibuk"));
                 memtrim::Candidate { pid, kind: p.kind.clone(), working: p.working, blocked }
@@ -2243,7 +2309,11 @@ impl App {
                 let mb = t.proc_ram / 1_048_576;
                 if a.is_shown(j) {
                     // Tab yang sedang dilihat tidak dimuat ulang sendiri: cukup diberi tahu (lagi
-                    // bila tumbuh 50% sejak pemberitahuan terakhir).
+                    // bila tumbuh 50% sejak pemberitahuan terakhir). Selagi memutar video/suara
+                    // tidak diganggu: buffer video memang besar dan kualitasnya tidak diturunkan.
+                    if t.webview.as_ref().is_some_and(playing_audio) {
+                        continue;
+                    }
                     if !a.background && (t.bloat_noted == 0 || mb >= t.bloat_noted * 3 / 2) {
                         a.tabs[j].bloat_noted = mb;
                         note = Some((a.tabs[j].id, mb));
@@ -3469,6 +3539,8 @@ impl App {
         let lang = self.lang;
         log(&format!("unduh video ({}): {}", spec.key, spec.page));
         if video::wants_subs(&spec) {
+            // Subtitle diambil lewat halaman YouTube selagi videonya diunduh.
+            self.start_page_subs(id, &mut spec, None);
             self.video_specs.insert(id, spec.clone());
         }
         std::thread::spawn(move || {
@@ -3573,16 +3645,145 @@ impl App {
             return;
         }
         let path = PathBuf::from(&d.path);
+        let mut spec = spec;
         self.dl_meta.entry(id).or_default().note = "subtitle…".into();
         log(&format!("coba unduh subtitle lagi: {}", d.name));
-        let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
-        std::thread::spawn(move || {
-            let r = video::retry_subs(&data, &spec, &path);
-            send(&p, UserEvent::VideoSubs(id, r));
-        });
+        // Lewat halaman YouTube dulu; hasilnya (berhasil atau tidak) lalu diteruskan ke
+        // retry_subs, yang memakai yt-dlp hanya bila halaman gagal.
+        if !self.start_page_subs(id, &mut spec, Some(path.clone())) {
+            let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
+            std::thread::spawn(move || {
+                let r = video::retry_subs(&data, &spec, &path);
+                send(&p, UserEvent::VideoSubs(id, r));
+            });
+        }
         self.last_render_key.clear();
         self.render();
         self.refresh_pages("downloads");
+    }
+
+    /// Mulai mengambil subtitle unduhan `dl` lewat halaman YouTube: di tab yang sedang memutar
+    /// video itu, atau di tab sementara di belakang (suara dimatikan, ditutup lagi). Mengisi
+    /// `spec.page_srt`. false = bukan video YouTube / tab tidak bisa dibuka.
+    fn start_page_subs(&mut self, dl: u64, spec: &mut video::Spec, retry: Option<PathBuf>) -> bool {
+        if !video::wants_subs(spec) || !self.settings.borrow().video_subs_page {
+            return false;
+        }
+        let Some(vid) = video::youtube_id(&spec.page) else { return false };
+        let dir = data_dir().join("tmp");
+        let _ = std::fs::create_dir_all(&dir);
+        let nonce = format!("{dl}{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0));
+        let path = dir.join(format!("subs-{nonce}.srt"));
+        let _ = std::fs::remove_file(&path);
+        let live = self
+            .all_tabs()
+            .filter(|t| !t.private)
+            .find(|t| t.webview.as_ref().and_then(|w| w.url().ok()).and_then(|u| video::youtube_id(&u)).as_deref() == Some(vid.as_str()))
+            .map(|t| t.id);
+        let (tab, temp) = match live {
+            Some(t) => (t, false),
+            None => {
+                let before: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
+                self.open_tab(&format!("https://www.youtube.com/watch?v={vid}"), false, false);
+                match self.tabs.iter().find(|t| !before.contains(&t.id)) {
+                    Some(t) => (t.id, true),
+                    None => return false,
+                }
+            }
+        };
+        spec.page_srt = path.display().to_string();
+        let lang = spec.sub.split(',').next().unwrap_or("").trim().to_string();
+        log(&format!("subtitle {lang} diambil lewat halaman YouTube ({}): {vid}", if temp { "tab sementara" } else { "tab yang terbuka" }));
+        self.page_subs.insert(
+            dl,
+            PageSubs { tab, nonce, vid, lang, auto: spec.sub_auto, path, polls: 0, max: if temp { 80 } else { 50 }, temp, retry: retry.map(|v| (spec.clone(), v)) },
+        );
+        self.poll_page_subs(dl);
+        true
+    }
+
+    fn poll_page_subs(&mut self, dl: u64) {
+        let Some(ps) = self.page_subs.get_mut(&dl) else { return };
+        ps.polls += 1;
+        if ps.polls > ps.max {
+            self.finish_page_subs(dl, Err("halaman YouTube tidak menjawab".into()));
+            return;
+        }
+        let js = video::page_subs_js(&ps.nonce, &ps.vid, &ps.lang, ps.auto, ps.temp);
+        let tab = ps.tab;
+        let p = self.proxy.clone();
+        let sent = self
+            .all_tabs()
+            .find(|t| t.id == tab)
+            .and_then(|t| t.webview.as_ref())
+            .is_some_and(|wv| wv.evaluate_script_with_callback(&js, move |r| send(&p, UserEvent::PageSubs(dl, r))).is_ok());
+        if !sent {
+            self.finish_page_subs(dl, Err("tab YouTube ditutup atau ditidurkan".into()));
+        }
+    }
+
+    fn on_page_subs(&mut self, dl: u64, r: &str) {
+        if !self.page_subs.contains_key(&dl) {
+            return;
+        }
+        let outer: Value = serde_json::from_str(r).unwrap_or(Value::Null);
+        let v: Value = match outer.as_str() {
+            Some("wait") | None => Value::Null,
+            Some(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        };
+        match v["state"].as_str() {
+            Some("ok") => {
+                let res = video::json3_to_srt(v["json"].as_str().unwrap_or("")).and_then(|srt| {
+                    let path = self.page_subs.get(&dl).map(|p| p.path.clone()).unwrap_or_default();
+                    let tmp = path.with_extension("part");
+                    std::fs::write(&tmp, &srt).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("tidak bisa menulis subtitle: {e}"))?;
+                    Ok(format!(
+                        "{} baris, bahasa {}{}, lewat {}",
+                        srt.matches(" --> ").count(),
+                        v["lang"].as_str().unwrap_or(""),
+                        if v["kind"] == "asr" { " (otomatis)" } else { "" },
+                        v["via"].as_str().unwrap_or("")
+                    ))
+                });
+                self.finish_page_subs(dl, res);
+            }
+            Some("fail") => self.finish_page_subs(dl, Err(v["error"].as_str().unwrap_or("gagal").to_string())),
+            // Pemutar belum siap / masih mengambil: periksa lagi sebentar lagi.
+            _ => {
+                let p = self.proxy.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(500));
+                    send(&p, UserEvent::PageSubsPoll(dl));
+                });
+            }
+        }
+    }
+
+    fn finish_page_subs(&mut self, dl: u64, r: Result<String, String>) {
+        let Some(ps) = self.page_subs.remove(&dl) else { return };
+        match &r {
+            Ok(m) => log(&format!("subtitle lewat halaman YouTube berhasil: {m}")),
+            Err(e) => {
+                log(&format!("subtitle lewat halaman YouTube gagal: {e}"));
+                // Tanda untuk langkah subtitle di belakang: berhenti menunggu, pakai yt-dlp.
+                let _ = std::fs::write(format!("{}.fail", ps.path.display()), e);
+            }
+        }
+        if ps.temp {
+            let tab = ps.tab;
+            self.each_window(|a| {
+                if let Some(j) = a.tab_index(tab) {
+                    a.close_tab(j);
+                }
+            });
+        }
+        if let Some((spec, video)) = ps.retry {
+            let (p, data) = (self.proxy.clone(), data_dir().to_path_buf());
+            std::thread::spawn(move || {
+                let r = video::retry_subs(&data, &spec, &video);
+                send(&p, UserEvent::VideoSubs(dl, r));
+            });
+        }
     }
 
     fn on_video_subs(&mut self, id: u64, r: Result<String, String>) {
@@ -5776,6 +5977,7 @@ impl App {
                     sub_auto: msg["subAuto"].as_bool().unwrap_or(false),
                     keep_srt: msg["srt"].as_bool().unwrap_or(false),
                     fmt: msg["fmt"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_')).collect(),
+                    page_srt: String::new(),
                 };
                 if spec.page.starts_with("http") && !spec.dir.is_empty() {
                     self.start_video_spec(spec, msg["later"].as_bool().unwrap_or(false));
@@ -7490,6 +7692,14 @@ fn main() {
     let settings = Settings::load(data_dir());
     // Simpan selalu: menulis versi skema setelah migrasi.
     settings.save(data_dir());
+    // Sisa subtitle sementara dari sesi sebelumnya (unduhan yang dibatalkan/ditutup).
+    if let Ok(rd) = std::fs::read_dir(data_dir().join("tmp")) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with("subs-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     // Browser default: versi terpasang selalu didaftarkan (muncul di Aplikasi default Windows);
     // versi portabel hanya bila pengguna pernah menekan "Jadikan browser default". Alamat exe
     // diperbarui bila berubah (dipindah/diperbarui).
@@ -7695,6 +7905,7 @@ fn main() {
         background: false,
         next_trim: None,
         trim_force: false,
+        gpu_trim: false,
         trimmer: memtrim::Trimmer::new(),
         mem_low: false,
         mem_low_at: Instant::now(),
@@ -7702,6 +7913,7 @@ fn main() {
         bloat_pending: false,
         mem_note: None,
         video_specs: HashMap::new(),
+        page_subs: HashMap::new(),
         find_open: false,
         win_no: 0,
         others: Vec::new(),
@@ -7961,6 +8173,8 @@ fn main() {
                 }
                 UserEvent::Video(id, ev) => app.on_video(id, ev),
                 UserEvent::VideoSubs(id, r) => app.on_video_subs(id, r),
+                UserEvent::PageSubs(id, r) => app.on_page_subs(id, &r),
+                UserEvent::PageSubsPoll(id) => app.poll_page_subs(id),
                 UserEvent::VideoInfo(req, r) => app.on_video_info(req, r),
                 UserEvent::VideoJob(id, job) => {
                     app.video_jobs.insert(id, job);
