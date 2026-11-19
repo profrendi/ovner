@@ -4,8 +4,7 @@
 //! - "google": jalur elemen terjemahan Google (translateHtml), seperti Chrome.
 //! Keduanya bukan API resmi untuk pihak ketiga; bila berubah, Ovner diperbaiki lewat update.
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
