@@ -79,11 +79,12 @@
       const gone = d.state === "done" && !d.exists;
       const el = document.createElement("div");
       el.className = "dl" + (gone || d.state === "failed" ? " gone" : "");
-      const ext = (d.name.split(".").pop() || "").toLowerCase().slice(0, 4);
+      const nm = d.shown || d.name;
+      const ext = (nm.split(".").pop() || "").toLowerCase().slice(0, 4);
       el.innerHTML = `<div class="ico"></div><div class="info"><a></a><div class="u"></div><div class="st"></div></div><div class="acts"></div>`;
       el.querySelector(".ico").textContent = ext;
       el.querySelector(".ico").style.background = color(ext);
-      el.querySelector("a").textContent = d.name;
+      el.querySelector("a").textContent = nm;
       el.querySelector(".u").textContent = d.url;
       const st = el.querySelector(".st");
       const live = d.state === "progress" || d.state === "paused";

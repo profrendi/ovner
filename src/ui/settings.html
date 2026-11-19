@@ -22,6 +22,12 @@
   #details { margin: 14px 0 4px; }
   @media (max-width: 640px) { .presets { grid-template-columns: 1fr; } }
   h2 { scroll-margin-top: 96px; }
+  /* 0.8.25: navigasi pil, kartu preset membulat. */
+  nav { padding: 12px 0; gap: 8px; backdrop-filter: blur(8px); background: color-mix(in srgb, var(--bg) 88%, transparent); }
+  nav a { padding: 5px 12px; border-radius: 999px; background: var(--card); border-color: color-mix(in srgb, var(--line) 80%, transparent); box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+  nav a:hover { background: color-mix(in srgb, var(--accent) 10%, var(--card)); }
+  .preset { border-radius: 16px; box-shadow: var(--shadow); }
+  textarea { border-radius: 12px; background: var(--card); }
 </style>
 </head>
 <body>

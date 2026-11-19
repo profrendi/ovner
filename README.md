@@ -71,6 +71,42 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.25
+
+Rilis besar: 0.8.25 dan rencana 0.8.26 digabung jadi satu.
+
+**Menu klik kanan Ovner** (disisipkan ke menu WebView2, gaya menu Edge):
+- Terjemahkan halaman…, Baca keras halaman ini (Ctrl+Shift+U), Lihat sumber halaman (Ctrl+U).
+- Submenu Tidur & daftar tab: tidurkan tab ini, tidurkan semua tab lain, pindahkan tab ke daftar, buka daftar tab (sama dengan tombol zzz).
+- Submenu Tangkapan layar: area yang terlihat atau satu halaman penuh (PNG, masuk daftar unduhan).
+- Buat kode QR untuk halaman ini (panel dengan tombol Unduh PNG), dan Blokir elemen… (seperti Brave).
+- Teks yang dipilih: Baca keras / Terjemahkan teks yang dipilih. Video: Unduh video ini.
+- Cast, Send to your device, dan Visual Search tidak ada di WebView2; item menu milik ekstensi juga belum didukung WebView2.
+
+**Terjemahan halaman** (seperti Edge): ikon terjemah di kolom alamat untuk halaman berbahasa selain Indonesia, panel "Terjemahkan ke" yang bisa diganti, Selesai, dan Tampilkan asli. Bawaan: bahasa lain → Indonesia, halaman Indonesia → Inggris. Penerjemah bisa dipilih (Microsoft seperti Edge, atau Google seperti Chrome; bila satu gagal, yang lain dicoba). Teks dikirim hanya saat Terjemahkan ditekan. Penerjemah offline bawaan Chromium dipakai bila tersedia. Susunan halaman tidak berubah (yang diganti hanya teksnya), kode tidak ikut diterjemahkan, dan konten baru saat digulir ikut diterjemahkan.
+
+**Baca keras** (seperti Read aloud Edge): bilah di bawah kolom alamat dengan ⏮ ⏯ ⏭, Opsi suara (kecepatan, sumber suara, pilihan suara), sorotan paragraf dan kata yang sedang dibaca. Sumber suara: suara Windows (offline), Natural online (suara yang sama dengan Edge, lewat jalur tidak resmi), atau Azure Speech berbayar dengan kunci sendiri (disimpan terenkripsi DPAPI). Bila suara online gagal, otomatis pindah ke suara Windows.
+
+**Unduh video**:
+- Tombol "Unduh video" kini muncul di YouTube (termasuk Shorts). Dulu tombol dibuat dengan innerHTML yang ditolak Trusted Types di YouTube, jadi diam-diam tidak pernah muncul.
+- Tombol juga muncul di video dalam iframe (pemutar situs berita).
+- Penangkap media seperti IDM: alamat HLS (.m3u8), DASH (.mpd), dan MP4/WebM yang dimuat halaman dicatat beserta Referer/cookie. Bila yt-dlp tidak mengenali halamannya (mis. detik Shorts: "Unsupported url scheme"), stream yang tertangkap itu yang diunduh. Cookie dikirim ke yt-dlp lewat berkas sementara yang langsung dihapus (tidak terlihat di log maupun daftar proses).
+- Video ber-DRM (Netflix, Disney+, Vidio Premier, dsb.) tetap tidak bisa diunduh.
+
+**Tampilan**: toolbar, tab, bookmark, menu, panel, dan halaman Ovner dibuat lebih membulat, berjarak, dan minimalis. Ada 10 pilihan font (Segoe UI bawaan, Albert Sans, Inter, Plus Jakarta Sans, Manrope, DM Sans, Outfit, Figtree, Geist, Nunito Sans; lisensi OFL, tersimpan di dalam Ovner, hanya yang dipilih yang dimuat). Font bisa dipakai untuk tampilan Ovner dan/atau dipaksakan ke halaman web; keduanya diatur terpisah di Pengaturan.
+
+**Panel dan ikon**:
+- Semua panel ikon kanan atas (zzz, codec, mode gelap, video, terjemah, QR) tertutup saat halaman diklik atau Esc ditekan, dan punya tombol ✕.
+- Selama Rekam masalah berjalan, tameng berubah jadi tombol rekam merah berkedip "REC". Sekali klik menghentikan dan menyimpan rekaman.
+- Daftar unduhan: lebih lebar dan tinggi, nama berkas panjang dibungkus sampai tampil semua, label jenis berwarna (Video/Audio/Subtitle/Dokumen/Gambar/…), dan tombol "Ambil .srt" / "Ulangi CC" bertulisan jelas.
+
+**Diagnostik**:
+- "Crash/galat" hanya menghitung sesi ini (galat dari versi lama tidak lagi memberi peringatan) dan menampilkan baris terakhirnya.
+- Kolom bukti: setelan yang efeknya terlihat di log atau penghitung (tab ditidurkan, RAM dirapikan, iklan diblokir, PDF, unduhan, subtitle, codec, …) berubah dari Info menjadi OK beserta buktinya.
+- Daftar suara Windows (termasuk suara bahasa Indonesia) dan ketersediaan penerjemah offline ditampilkan.
+
+**Uji WebView2 di GitHub**: ditambah 10 langkah (tombol video di halaman Trusted Types dan di iframe, HLS tertangkap, terjemahan + Tampilkan asli, baca keras, lihat sumber, tangkapan layar, GPC/DNT, parameter pelacak dibuang, font tampilan). Langkah baru dalam masa percobaan: dilaporkan, tetapi belum ikut menentukan lulus sampai lulus di 3 rilis berturut-turut.
+
 ## Perbaikan 0.8.24
 
 - Diagnostik tidak lagi memberi GALAT palsu: catatan RAM yang memuat nama proses "crashpad" dulu salah dianggap crash; kini tercatat sebagai INFO [ram].
