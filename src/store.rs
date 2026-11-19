@@ -698,7 +698,10 @@ mod tests {
     }
 
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ovner-store-{}", std::process::id()));
+        // Satu folder per pemanggilan: uji berjalan paralel dalam satu proses (dulu folder yang
+        // sama bisa dihapus uji lain di tengah jalan, gagal acak di Windows).
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!("ovner-store-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

@@ -29,11 +29,6 @@ fn find(key: &str) -> Option<&'static (&'static str, &'static str, &'static str,
     FONTS.iter().find(|f| f.0 == key && !f.3.is_empty())
 }
 
-/// Daftar untuk Pengaturan: [[kunci, nama], ...].
-pub fn choices() -> serde_json::Value {
-    serde_json::Value::Array(FONTS.iter().map(|f| serde_json::json!([f.0, f.1])).collect())
-}
-
 /// `font-family` untuk kunci ini (dengan cadangan font Windows).
 pub fn stack(key: &str) -> String {
     match find(key) {
