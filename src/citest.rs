@@ -299,8 +299,9 @@ impl App {
                 Out::Wait
             }
             "tidur_n_tab_terakhir" => {
-                // keep_live_tabs = 1, aturan menit 30: setelah membuka 3 halaman berurutan, dua
-                // yang pertama harus tidur karena "di luar 1 tab terakhir".
+                // keep_live_tabs = 1, aturan menit 30: setelah membuka 3 halaman berurutan, yang
+                // terlihat (page/3) + 1 tab terakhir sebelumnya (page/2) hidup, page/1 tidur
+                // "di luar 1 tab terakhir".
                 match sub {
                     1 => {
                         {
@@ -319,7 +320,7 @@ impl App {
                 }
                 let state = |p: &str| self.ci_tab(p).map(|j| self.tabs[j].webview.is_some());
                 match (state("/page/1"), state("/page/2"), state("/page/3")) {
-                    (Some(false), Some(false), Some(true)) if self.ci.as_ref().unwrap().logged("di luar 1 tab terakhir") => Out::Pass("2 tab lama tidur, tab terakhir hidup, alasan tercatat".into()),
+                    (Some(false), Some(true), Some(true)) if self.ci.as_ref().unwrap().logged("di luar 1 tab terakhir") => Out::Pass("tab yang dilihat + 1 tab terakhir hidup, tab lebih lama tidur, alasan tercatat".into()),
                     (a, b, c) => {
                         self.ci.as_mut().unwrap().note = format!("hidup: page1 {a:?}, page2 {b:?}, page3 {c:?}");
                         Out::Wait

@@ -71,6 +71,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.23
+
+- **PDF yang langsung dibuka di tab baru kini ikut aturan PDF.** Ditemukan oleh uji WebView2
+  sungguhan di GitHub (0.8.22): alamat pertama tab baru dimuat sebelum pencegatan PDF aktif,
+  sehingga PDF dari server yang cepat lolos — PDF besar tidak diunduh dan PDF tanpa ukuran
+  tidak diukur. Kini alamat pertama baru dimuat setelah pencegatan aktif.
+- "Tetap hidupkan N tab terakhir": keterangan diperjelas — N tab dihitung selain tab yang sedang
+  dilihat (N = 2: tab yang dilihat + 2 tab sebelumnya).
+- Log: "tab ditidurkan" dan "efisiensi per proses" selalu berkategori [tidur]/[ram] (dulu tab
+  PDF yang ditidurkan tercatat sebagai [pdf]).
+
 ## Perbaikan 0.8.22
 
 - **Ambil subtitle (.srt) dari dalam video**: tombol **SRT** di daftar Unduhan untuk video yang

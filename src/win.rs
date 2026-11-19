@@ -1659,7 +1659,9 @@ mod imp {
     /// `decide(alamat, ukuran, nama)` = None bila PDF ditampilkan seperti biasa; Some((path,
     /// None)) = diunduh; Some((path, Some(batas))) = ukuran tidak disebut server, diukur dulu
     /// (lihat `Measure`). `cb` menerima Started/Progress/Done seperti unduhan lain.
-    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, cb: impl Fn(DlEvent) + 'static) {
+    /// `ready` dipanggil setelah pencegatan aktif (Fetch.enable selesai): alamat pertama tab baru
+    /// baru dimuat sesudahnya, supaya PDF yang langsung dibuka di tab baru ikut dicegat.
+    pub fn pdf_downloads(webview: &wry::WebView, decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, cb: impl Fn(DlEvent) + 'static, ready: impl FnOnce() + 'static) {
         use webview2_com::DevToolsProtocolEventReceivedEventHandler;
         use wry::WebViewExtWindows;
         let core = webview.webview();
@@ -1845,7 +1847,7 @@ mod imp {
         for k in ["*download*", "*Download*", "*cetak*", "*.pdf*", "*export*", "*unduh*", "*ovner_saved=*"] {
             patterns.push(serde_json::json!({"urlPattern": k, "resourceType": "Document", "requestStage": "Request"}));
         }
-        cdp(webview, "Fetch.enable", &serde_json::json!({"patterns": patterns}).to_string());
+        cdp_then(&core, "Fetch.enable", &serde_json::json!({"patterns": patterns}).to_string(), move |_| ready());
     }
 
     pub fn on_window_close(webview: &wry::WebView, cb: impl Fn() + 'static) {
@@ -2342,7 +2344,9 @@ mod imp {
     }
     pub fn resolve_download(_id: u64, _take_over: bool) {}
     pub fn caption_text(_owner: isize, _parts: &[(String, bool)], _dark: bool, _scale: f64) {}
-    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, _cb: impl Fn(DlEvent) + 'static) {}
+    pub fn pdf_downloads(_webview: &wry::WebView, _decide: impl Fn(&str, Option<u64>, &str) -> Option<(String, Option<u64>)> + 'static, _cb: impl Fn(DlEvent) + 'static, ready: impl FnOnce() + 'static) {
+        ready();
+    }
     pub fn post_text(_webview: &wry::WebView, _text: &str) -> bool {
         false
     }

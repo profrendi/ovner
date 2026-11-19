@@ -1036,6 +1036,11 @@ fn build_tab_view(
     // switcher" (Access Temporarily Suspended, verifikasi gagal). Jadi alamat baru dimuat
     // setelah identitasnya terpasang.
     let ident_first = !shields::identity_overrides(&s, "Mozilla/5.0 Chrome/120.0.0.0 Edg/120.0.0.0").is_empty();
+    // Pencegatan PDF (Fetch) juga harus aktif sebelum alamat pertama dimuat: tanpa itu, PDF yang
+    // langsung dibuka di tab baru dari server yang cepat lolos dari aturan PDF (ditemukan oleh
+    // uji --self-test 0.8.22).
+    let pdf_on = s.pdf_download && !private;
+    let ident_first = ident_first || pdf_on;
     if let Some(u) = url.filter(|_| !ident_first) {
         builder = builder.with_url(u);
     }
@@ -1144,7 +1149,7 @@ fn build_tab_view(
     for (method, params) in shields::identity_overrides(&s, &win::user_agent(&wv)) {
         win::cdp(&wv, method, &params);
     }
-    if let Some(u) = url.filter(|_| ident_first) {
+    if let Some(u) = url.filter(|_| ident_first && !pdf_on) {
         let _ = wv.load_url(u);
     }
     #[cfg(windows)]
@@ -1182,7 +1187,7 @@ fn build_tab_view(
     let (dl_settings, dl_skip) = (tenv.settings.clone(), tenv.dl_skip.clone());
     // PDF besar langsung diunduh (setelan "pdf_download"): dibaca Ovner dari respons yang sudah
     // ada, bukan lewat unduhan WebView2 (lihat win::pdf_downloads).
-    if tenv.settings.borrow().pdf_download && !private {
+    if pdf_on {
         let st = tenv.settings.clone();
         let p_pdf = tenv.proxy.clone();
         win::pdf_downloads(
@@ -1211,6 +1216,15 @@ fn build_tab_view(
                 Some((free_download_path(&path).display().to_string(), measure))
             },
             move |ev| send(&p_pdf, UserEvent::Download(id, ev)),
+            {
+                let first = url.map(str::to_string);
+                let p_first = tenv.proxy.clone();
+                move || {
+                    if let Some(u) = first {
+                        send(&p_first, UserEvent::Navigate(id, u));
+                    }
+                }
+            },
         );
     }
     win::on_download(
@@ -1949,7 +1963,7 @@ impl App {
         t.frame_id = None;
         let why = std::mem::take(&mut self.sleep_why);
         log(&format!(
-            "tab ditidurkan: {} (±{} MB; alasan: {})",
+            "[tidur] tab ditidurkan: {} (±{} MB; alasan: {})",
             if t.url.is_empty() || is_newtab(&t.url) { "(tab baru)".to_string() } else { display_url(&t.url) },
             freed / 1_048_576,
             if why.is_empty() { "lain" } else { why.as_str() }
@@ -2149,7 +2163,7 @@ impl App {
         // Dicatat hanya bila jumlahnya berubah (dulu tiap 10 detik, memenuhi log).
         static LOGGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
         if (!start.is_empty() || !stop.is_empty()) && LOGGED.swap(want.len(), std::sync::atomic::Ordering::Relaxed) != want.len() {
-            log(&format!("efisiensi per proses: {} proses hemat (+{} -{})", want.len(), start.len(), stop.len()));
+            log(&format!("[ram] efisiensi per proses: {} proses hemat (+{} -{})", want.len(), start.len(), stop.len()));
         }
         self.eco_pids = want;
     }
