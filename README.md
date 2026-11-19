@@ -71,6 +71,16 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.24
+
+- Diagnostik tidak lagi memberi GALAT palsu: catatan RAM yang memuat nama proses "crashpad" dulu salah dianggap crash; kini tercatat sebagai INFO [ram].
+- Ringkasan "uji selesai" memakai tingkat yang benar (INFO bila tidak ada yang gagal).
+- Folder unduhan kosong di Pengaturan = folder Downloads Windows: uji folder, sisa disk di pengukuran, dan Paket diagnostik kini memakai folder itu (dulu dianggap "tidak bisa ditulis" dan paket tersimpan di folder data).
+- Umur daftar filter tidak lagi menghitung aturan buatan sendiri (zz-aturan-saya.txt) → tidak ada peringatan palsu "filter lama".
+- Paket diagnostik: penyamaran nama pengguna Windows di dalam JSON kini tetap menghasilkan JSON yang sah.
+- Log rapikan RAM lebih jelas: "X MB dilepas dari RAM aktif", lalu hasil 1 menit kemudian "sebelum → sekarang (n% tetap lepas)", tanpa angka "0 MB" yang membingungkan.
+- Keputusan "PDF ditampilkan seperti aslinya" (mis. pratinjau cetak Infor) kini tercatat di log beserta alasannya.
+
 ## Perbaikan 0.8.23
 
 - **PDF yang langsung dibuka di tab baru kini ikut aturan PDF.** Ditemukan oleh uji WebView2

@@ -462,6 +462,15 @@ fn log_start_header(exe: &Path, portable: bool, tray: bool, s: &Settings) {
     }
 }
 
+/// Folder unduhan yang benar-benar dipakai: kosong di Pengaturan = Downloads Windows.
+fn download_dir_of(s: &Settings) -> PathBuf {
+    if s.download_dir.trim().is_empty() {
+        std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
+    } else {
+        PathBuf::from(s.download_dir.trim())
+    }
+}
+
 /// Berkas video (untuk tombol "Ambil subtitle (.srt)").
 fn is_video_file(path: &str) -> bool {
     let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -1200,16 +1209,23 @@ fn build_tab_view(
                     return None;
                 }
                 // Daftar situs → ukuran dari server → setelan "ukuran tidak diketahui".
-                let measure = match s.pdf_action(&host_of(url).unwrap_or_default(), len) {
-                    settings::PdfAction::Show => return None,
+                let host = host_of(url).unwrap_or_default();
+                let measure = match s.pdf_action(&host, len) {
+                    settings::PdfAction::Show => {
+                        let why = if settings::host_in(&s.pdf_show_sites, &host) {
+                            "situs di daftar \"PDF selalu ditampilkan\"".to_string()
+                        } else if let Some(l) = len {
+                            format!("{} KB, di bawah batas {} MB", l / 1024, s.pdf_download_mb)
+                        } else {
+                            "setelan \"selalu tampilkan\"".into()
+                        };
+                        log(&format!("[pdf] PDF ditampilkan seperti aslinya ({why}): {url}"));
+                        return None;
+                    }
                     settings::PdfAction::Download => None,
                     settings::PdfAction::Measure(n) => Some(n),
                 };
-                let dir = if s.download_dir.trim().is_empty() {
-                    std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(|| data_dir().to_path_buf())
-                } else {
-                    PathBuf::from(s.download_dir.trim())
-                };
+                let dir = download_dir_of(&s);
                 let _ = std::fs::create_dir_all(&dir);
                 let path = dir.join(name);
                 let path = if s.dl_box_v2 { dlengine::categorized(&path) } else { path };
@@ -2299,10 +2315,9 @@ impl App {
         metrics::count("mb_dirapikan", before.saturating_sub(after) / 1_048_576);
         if n > 0 || force {
             log(&format!(
-                "RAM dirapikan ({n} proses{}): {} → {} MB{}",
+                "[ram] RAM dirapikan ({n} proses{}): {} MB dilepas dari RAM aktif (hasil sebenarnya diukur 1 menit kemudian){}",
                 if force { ", diminta" } else { "" },
-                before / 1_048_576,
-                after / 1_048_576,
+                before.saturating_sub(after) / 1_048_576,
                 if why.is_empty() { String::new() } else { format!("; dilewati: {}", why.join(", ")) }
             ));
         }
@@ -2322,9 +2337,8 @@ impl App {
             let mb = |b: u64| b / 1_048_576;
             let bounced: Vec<String> = v.bounced.iter().map(|(k, x)| format!("{k} (jeda ×{x})")).collect();
             log(&format!(
-                "hasil rapikan 1 menit kemudian: {} → {} → {} MB, bertahan {}%{}",
+                "[ram] hasil rapikan 1 menit kemudian: {} MB sebelum → {} MB sekarang ({}% tetap lepas){}",
                 mb(v.before),
-                mb(v.after),
                 mb(v.now),
                 v.held_pct(),
                 if bounced.is_empty() { String::new() } else { format!("; memantul: {}", bounced.join(", ")) }
@@ -3874,7 +3888,7 @@ impl App {
         let per: serde_json::Map<String, Value> = kinds.into_iter().map(|(k, (n, w, c, cpu))| (k, json!({"n": n, "mb": mb(w), "commit": mb(c), "cpu": (cpu * 10.0).round() / 10.0}))).collect();
         let t = usage::total(&self.stats);
         let (wt, wa) = win::mem_status().unwrap_or((0, 0));
-        let dl_dir = PathBuf::from(&self.settings.borrow().download_dir);
+        let dl_dir = download_dir_of(&self.settings.borrow());
         let tabs: Vec<&Tab> = self.all_tabs().collect();
         let line = json!({
             "menit": self.started.elapsed().as_secs() / 60,
@@ -4711,7 +4725,7 @@ impl App {
             // Jenis proses beserta RAM-nya (mis. "ovner 40MB"), supaya terlihat siapa yang membengkak.
             let kinds: Vec<String> = self.stats.iter().map(|p| format!("{} {}MB", p.kind, p.working / 1_048_576)).collect();
             log(&format!(
-                "RAM: {} MB, CPU {:.1}%, {} proses [{}], {} tab ({} hidup)",
+                "[ram] INFO: catatan RAM: {} MB, CPU {:.1}%, {} proses [{}], {} tab ({} hidup)",
                 t.working / 1_048_576,
                 t.cpu,
                 t.procs,
@@ -4858,7 +4872,7 @@ impl App {
     /// `hide` = alamat situs dan nama pengguna Windows disembunyikan.
     fn save_diag_package(&self, hide: bool) -> Result<PathBuf, String> {
         let stamp: String = win::local_time().chars().take(16).filter(|c| c.is_ascii_digit()).collect();
-        let dir = PathBuf::from(&self.settings.borrow().download_dir);
+        let dir = download_dir_of(&self.settings.borrow());
         let dir = if dir.is_dir() { dir } else { data_dir().to_path_buf() };
         let path = dir.join(format!("ovner-diagnostik-{stamp}.txt"));
         let mut t = String::new();
@@ -5097,8 +5111,9 @@ impl App {
             self.diag_state = win::local_time().chars().take(19).collect();
             let all: Vec<&Value> = self.diag.iter().chain(self.diag_rows.iter()).collect();
             let n = |st: &str| all.iter().filter(|v| v["status"] == st).count();
+            let lvl = if n("gagal") > 0 { "GALAT" } else if n("peringatan") > 0 { "PERINGATAN" } else { "INFO" };
             log(&format!(
-                "[diag] uji selesai: {} ok, {} info, {} peringatan, {} gagal, {} dilewati ({} uji fitur + {} setelan)",
+                "[diag] {lvl}: uji selesai: {} ok, {} info, {} peringatan, {} gagal, {} dilewati ({} uji fitur + {} setelan)",
                 n("ok"),
                 n("info"),
                 n("peringatan"),
@@ -5152,7 +5167,19 @@ impl App {
         out.push(item("Shields", "Daftar filter lengkap", if self.blocker.borrow().full { "ok" } else { "peringatan" }, if self.blocker.borrow().full { "dipakai" } else { "belum, memakai daftar bawaan" }));
         let res = blocker::load_resources(data_dir()).len();
         out.push(item("Shields", "Scriptlet + resource pengganti", if res > 50 { "ok" } else { "peringatan" }, format!("{res}")));
-        let max_age = std::fs::read_dir(data_dir().join("filters")).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok()?.elapsed().ok()).map(|d| d.as_secs() / 3600).max().unwrap_or(0);
+        // Hanya daftar yang diunduh (zz-aturan-saya.txt = aturan sendiri, tidak diperbarui).
+        let max_age = std::fs::read_dir(data_dir().join("filters"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.ends_with(".txt") && !n.starts_with("zz-")
+            })
+            .filter_map(|e| e.metadata().ok()?.modified().ok()?.elapsed().ok())
+            .map(|d| d.as_secs() / 3600)
+            .max()
+            .unwrap_or(0);
         let stale = s.auto_update_filters && max_age > (s.filter_update_hours as u64).max(1) * 3;
         out.push(item("Shields", "Umur daftar filter", if stale { "peringatan" } else { "ok" }, format!("tertua {max_age} jam (diperbarui tiap {} jam)", s.filter_update_hours)));
         if stale {
@@ -5193,7 +5220,13 @@ impl App {
                 format!("tersedia {} MB dari {} MB; ambang \"hampir habis\" {} MB{}", avail / 1_048_576, tot / 1_048_576, thr / 1_048_576, if s.low_mem_sleep { "" } else { " (fitur mati)" }),
             ));
         }
-        let trims: Vec<String> = self.trimmer.describe().into_iter().map(|(pid, m, mb, b)| format!("pid {pid}: dirapikan {m} menit lalu, {mb} MB setelahnya, jeda ×{b}")).collect();
+        let kinds: HashMap<u32, String> = self.stats.iter().map(|p| (p.pid, p.kind.clone())).collect();
+        let trims: Vec<String> = self
+            .trimmer
+            .describe()
+            .into_iter()
+            .map(|(pid, m, _, b)| format!("{} (pid {pid}): dirapikan {m} menit lalu, jeda ×{b}{}", kinds.get(&pid).map(String::as_str).unwrap_or("proses"), if b > 1 { " (pernah memantul)" } else { "" }))
+            .collect();
         out.push(item("RAM", "Rapikan cerdas", "info", if trims.is_empty() { "belum ada proses yang dirapikan sesi ini".into() } else { trims.join("\n") }));
         let biggest = self.all_tabs().filter(|t| t.proc_shared <= 1).map(|t| (t.proc_ram, display_url(&t.url))).max();
         if let Some((ram, url)) = biggest.filter(|b| b.0 > 0) {
@@ -5201,13 +5234,13 @@ impl App {
             out.push(item("RAM", "Tab terbesar", if over { "peringatan" } else { "ok" }, format!("{url}: {} MB (batas penjaga {} MB)", ram / 1_048_576, s.bloat_mb)));
         }
         // Unduhan
-        let dl = PathBuf::from(&s.download_dir);
+        let dl = download_dir_of(&s);
         let probe = dl.join(".ovner-uji");
         let writable = std::fs::write(&probe, b"x").is_ok();
         let _ = std::fs::remove_file(&probe);
         let free = win::disk_free(&dl);
         let st = if !writable { "gagal" } else if free.is_some_and(|f| f < 1024 * 1_048_576) { "peringatan" } else { "ok" };
-        let m = format!("{} · {} · sisa {}", dl.display(), if writable { "bisa ditulis" } else { "TIDAK bisa ditulis" }, free.map(|f| format!("{} MB", f / 1_048_576)).unwrap_or_else(|| "?".into()));
+        let m = format!("{}{} · {} · sisa {}", dl.display(), if s.download_dir.trim().is_empty() { " (bawaan: Downloads Windows)" } else { "" }, if writable { "bisa ditulis" } else { "TIDAK bisa ditulis" }, free.map(|f| format!("{} MB", f / 1_048_576)).unwrap_or_else(|| "?".into()));
         out.push(item("Unduhan", "Folder unduhan", st, m.clone()));
         set("download_dir", st, m);
         // Video / codec
@@ -7180,7 +7213,7 @@ impl App {
                 };
                 #[cfg(not(windows))]
                 let owner = None;
-                let start = PathBuf::from(&self.settings.borrow().download_dir);
+                let start = download_dir_of(&self.settings.borrow());
                 if let Some(f) = win::pick_file(owner, t(self.lang, "m.sub_extract"), &start, ("Video", "*.mp4;*.mkv;*.webm;*.mov;*.m4v;*.avi;*.ts")) {
                     self.extract_video_subs(f, 0);
                 }

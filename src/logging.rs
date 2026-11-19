@@ -187,7 +187,8 @@ fn split_level(msg: &str) -> (&'static str, &str) {
 
 /// Tebak kategori dari isi pesan (urutan penting: yang lebih khusus dulu).
 pub fn categorize(msg: &str) -> &'static str {
-    let m = msg.to_lowercase();
+    // "crashpad" = nama proses biasa (pelapor crash WebView2), bukan crash.
+    let m = msg.to_lowercase().replace("crashpad", "");
     let has = |w: &[&str]| w.iter().any(|x| m.contains(x));
     if has(&["panic", "crash"]) {
         "crash"
@@ -226,7 +227,7 @@ pub fn categorize(msg: &str) -> &'static str {
 
 /// Tebak tingkat dari isi pesan.
 pub fn level_of(msg: &str) -> &'static str {
-    let m = msg.to_lowercase();
+    let m = msg.to_lowercase().replace("crashpad", "");
     let has = |w: &[&str]| w.iter().any(|x| m.contains(x));
     if has(&["panic", "galat", "gagal", "error", "tidak bisa", "crash"]) && !has(&["tidak ada yang baru"]) {
         "GALAT"
@@ -257,6 +258,7 @@ mod tests {
         assert!(format_line(t, "tab ditidurkan: youtube.com").contains("[tidur]"));
         assert!(format_line(t, "unduhan selesai: a.zip").contains("[unduh]"));
         assert!(format_line(t, "PANIC: oops").contains("GALAT      [crash]"));
+        assert!(format_line(t, "RAM: 300 MB, 12 proses [crashpad 0MB, gpu 15MB]").contains("INFO       [ram]"));
         assert_eq!(line_level(&format_line(t, "x gagal")), "GALAT");
         assert_eq!(line_level("1795053184 lama"), "");
     }

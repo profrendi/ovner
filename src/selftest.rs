@@ -505,12 +505,19 @@ pub fn redact(text: &str) -> String {
         }
         rest = &tail[end..];
     }
-    // C:\Users\nama\… → C:\Users\…\…
+    // C:\Users\nama\… → C:\Users\…\… (juga bentuk JSON "C:\\Users\\nama\\…").
     let mut res = String::with_capacity(out.len());
     let mut s = out.as_str();
-    while let Some(i) = s.find("\\Users\\") {
-        res.push_str(&s[..i + 7]);
-        let t = &s[i + 7..];
+    while let Some(i) = s.find("Users\\") {
+        let ok = s[..i].ends_with('\\');
+        let after = &s[i + 5..];
+        let slashes = after.len() - after.trim_start_matches('\\').len();
+        res.push_str(&s[..i + 5 + slashes]);
+        let t = &after[slashes..];
+        if !ok {
+            s = t;
+            continue;
+        }
         let end = t.find(['\\', '"', ' ', '\n']).unwrap_or(t.len());
         res.push('…');
         s = &t[end..];
@@ -528,6 +535,11 @@ mod redact_tests {
             super::redact(t),
             "PDF tampil: https://eln.inforcloudsuite.com/… dan http://contoh.id ok; file:///… C:\\Users\\…\\Downloads\\a.mp4"
         );
+        // Bentuk JSON tetap JSON yang sah.
+        let j = serde_json::json!({"data": "C:\\Users\\14245\\AppData\\Local\\Ovner"}).to_string();
+        let r = super::redact(&j);
+        let v: serde_json::Value = serde_json::from_str(&r).expect(&r);
+        assert_eq!(v["data"], "C:\\Users\\…\\AppData\\Local\\Ovner");
     }
 }
 
