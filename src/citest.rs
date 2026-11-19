@@ -31,6 +31,7 @@ pub struct CiRun {
 const STEPS: &[(&str, u64)] = &[
     ("mulai", 60),
     ("patokan_ram_awal", 30),
+    ("isi_ram_ovner_dan_pemblokir", 20),
     ("pdf_tanpa_ukuran_kecil_tampil", 30),
     ("pdf_dalam_bingkai_seperti_infor", 30),
     ("pdf_tanpa_ukuran_besar_jadi_unduhan", 90),
@@ -58,6 +59,12 @@ const STEPS: &[(&str, u64)] = &[
     ("font_tampilan_ovner", 20),
     ("layanan_online_terjemah_dan_suara", 60),
     ("patokan_ram_10_tab", 90),
+    // 0.8.26 (masa percobaan): ekstensi Chrome. Dijalankan setelah patokan RAM supaya proses
+    // ekstensi tidak ikut terhitung di patokan.
+    ("ekstensi_pasang_dari_crx", 40),
+    ("ekstensi_skrip_konten_jalan", 30),
+    ("ekstensi_panel_samping_terbuka", 30),
+    ("ekstensi_copyclip_dari_web_store", 90),
 ];
 
 /// Langkah baru dalam masa percobaan: hasilnya dilaporkan, tetapi belum ikut menentukan lulus
@@ -74,7 +81,15 @@ const PROBATION: &[&str] = &[
     "parameter_pelacak_dibuang",
     "font_tampilan_ovner",
     "layanan_online_terjemah_dan_suara",
+    "isi_ram_ovner_dan_pemblokir",
+    "ekstensi_pasang_dari_crx",
+    "ekstensi_skrip_konten_jalan",
+    "ekstensi_panel_samping_terbuka",
+    "ekstensi_copyclip_dari_web_store",
 ];
+
+/// CopyClip (panel samping riwayat clipboard) di Chrome Web Store.
+pub const COPYCLIP_ID: &str = "pgjckoablokakigdlgbhdmeohbklphli";
 
 enum Out {
     Wait,
@@ -186,12 +201,24 @@ impl App {
                 }
             }
             "patokan_ram_awal" => {
+                if sub == 1 {
+                    self.request_renderer_frames(true);
+                }
                 if waited < Duration::from_secs(8) {
                     return Out::Wait;
                 }
                 let mb = self.ci_ram();
                 self.ci.as_mut().unwrap().bench.push(("RAM diam, 1 tab kosong (MB)".into(), mb));
-                Out::Pass(format!("{mb} MB, {} proses", self.stats.len()))
+                Out::Pass(format!("{mb} MB, {} proses — {}", self.stats.len(), self.ram_breakdown()))
+            }
+            "isi_ram_ovner_dan_pemblokir" => {
+                let rows = crate::selftest::ram_items(crate::data_dir());
+                let txt: Vec<String> = rows.iter().take(2).map(|r| format!("{}: {}", r["name"].as_str().unwrap_or(""), r["msg"].as_str().unwrap_or(""))).collect();
+                if let Some(e) = crate::blocker::measure_engine(crate::data_dir()) {
+                    self.ci.as_mut().unwrap().bench.push(("Mesin pemblokir iklan (KB)".into(), e.0 / 1024));
+                }
+                self.ci.as_mut().unwrap().bench.push(("Heap Rust Ovner (KB)".into(), crate::heap::now() / 1024));
+                Out::Pass(txt.join(" | "))
             }
             "pdf_tanpa_ukuran_kecil_tampil" | "pdf_dalam_bingkai_seperti_infor" => {
                 if sub == 1 {
@@ -695,10 +722,14 @@ impl App {
                     }
                     return Out::Wait;
                 }
+                if sub == 30 || sub == 70 {
+                    self.request_renderer_frames(true);
+                }
                 if sub == 40 {
                     let mb = self.ci_ram();
                     let live = self.tabs.iter().filter(|t| t.webview.is_some()).count();
                     self.ci.as_mut().unwrap().bench.push((format!("RAM dengan {live} tab hidup (MB)"), mb));
+                    self.ci.as_mut().unwrap().note = format!("rincian {live} tab hidup: {}", self.ram_breakdown());
                     self.on_menu("sleep-all");
                     return Out::Wait;
                 }
@@ -708,8 +739,88 @@ impl App {
                 let mb = self.ci_ram();
                 let live = self.tabs.iter().filter(|t| t.webview.is_some()).count();
                 self.ci.as_mut().unwrap().bench.push((format!("RAM setelah tidurkan semua ({live} tab hidup) (MB)"), mb));
-                let b = &self.ci.as_ref().unwrap().bench;
-                Out::Pass(b.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("; "))
+                let ci = self.ci.as_ref().unwrap();
+                let first = ci.note.clone();
+                let b = &ci.bench;
+                Out::Pass(format!(
+                    "{} | {first} | rincian setelah tidur: {}",
+                    b.iter().filter(|(k, _)| k.starts_with("RAM")).map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("; "),
+                    self.ram_breakdown()
+                ))
+            }
+            "ekstensi_pasang_dari_crx" | "ekstensi_copyclip_dari_web_store" => {
+                let store = name.contains("copyclip");
+                let (id, url) = if store { (COPYCLIP_ID.to_string(), None) } else { (crate::extensions::test_crx().0, Some(self.ci.as_ref().unwrap().url("/ext.crx"))) };
+                if sub == 1 {
+                    if !self.ext_env {
+                        return Out::Fail("mesin WebView2 dibuat tanpa dukungan ekstensi".into());
+                    }
+                    self.ext_install(&id, url);
+                    return Out::Wait;
+                }
+                if let Some((eid, e)) = self.ext_err.clone().filter(|(eid, _)| *eid == id) {
+                    return Out::Fail(format!("{eid}: {e}"));
+                }
+                let Some(info) = self.ext_infos.iter().find(|i| i.id == id).cloned() else { return Out::Wait };
+                match self.ext_loaded.get(&info.dir) {
+                    Some(Ok((wid, wname))) => {
+                        if *wid != id {
+                            return Out::Fail(format!("WebView2 memberi ID {wid}, seharusnya {id} (kunci manifest tidak dipakai)"));
+                        }
+                        Out::Pass(format!(
+                            "{wname} v{} terpasang dan dimuat WebView2 dengan ID Web Store yang sama; {}: {}; izin: {}",
+                            info.version,
+                            if info.kind == "side" { "panel samping" } else if info.kind == "popup" { "popup" } else { "tanpa panel" },
+                            if info.panel.is_empty() { "-" } else { info.panel.as_str() },
+                            if info.perms.is_empty() { "-".to_string() } else { info.perms.join(", ") }
+                        ))
+                    }
+                    Some(Err(e)) => Out::Fail(format!("dipasang, tetapi WebView2 menolak memuat: {e}")),
+                    None => Out::Wait,
+                }
+            }
+            "ekstensi_skrip_konten_jalan" => {
+                if sub == 1 {
+                    self.ci_open("/page/41");
+                    return Out::Wait;
+                }
+                if let Some(v) = self.ci.as_ref().unwrap().eval.clone() {
+                    if v.contains('1') {
+                        return Out::Pass("skrip konten ekstensi berjalan di halaman (penanda data-ovner-ext=1 ada)".into());
+                    }
+                    self.ci.as_mut().unwrap().note = format!("hasil: {v}");
+                }
+                if sub >= 6 && sub % 4 == 0 {
+                    if let Some(wv) = self.ci_tab("/page/41").and_then(|j| self.tabs[j].webview.as_ref()) {
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback("String(document.documentElement.getAttribute('data-ovner-ext'))", move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
+            }
+            "ekstensi_panel_samping_terbuka" => {
+                let id = crate::extensions::test_crx().0;
+                if sub == 1 {
+                    self.ext_open(&id);
+                    return Out::Wait;
+                }
+                if self.ext_panel.is_none() {
+                    return if sub > 5 { Out::Fail("panel ekstensi tidak terbuka".into()) } else { Out::Wait };
+                }
+                if let Some(v) = self.ci.as_ref().unwrap().eval.clone() {
+                    if v.contains("Panel Uji Ovner") {
+                        self.ext_close();
+                        return Out::Pass("panel samping ekstensi (chrome-extension://…/panel.html) terbuka di kanan jendela".into());
+                    }
+                    self.ci.as_mut().unwrap().note = format!("judul panel: {v}");
+                }
+                if sub >= 6 && sub % 4 == 0 {
+                    if let Some((_, wv)) = &self.ext_panel {
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback("document.title + ' @ ' + location.href", move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
             }
             _ => Out::Fail("langkah tidak dikenal".into()),
         }

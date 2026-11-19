@@ -403,6 +403,41 @@ pub fn offline_tests(data: &Path, s: &Settings) -> Vec<Value> {
         out.push(item("Video", v.split(':').next().unwrap_or("alat"), st, v.split_once(": ").map(|x| x.1).unwrap_or("").to_string() + if st == "info" { " — dipasang otomatis saat pertama kali mengunduh video" } else { "" }));
     }
     out.push(ffmpeg_roundtrip(data));
+    out.extend(ram_items(data));
+    out
+}
+
+/// Komposisi RAM proses Ovner sendiri, ukuran mesin pemblokir iklan, dan tren kebocoran.
+pub fn ram_items(data: &Path) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    let heap = crate::heap::now();
+    let engine = crate::blocker::measure_engine(data);
+    match crate::win::self_memory() {
+        Some((commit, threads)) => {
+            let eng = engine.map(|e| e.0).unwrap_or(0);
+            out.push(item(
+                "RAM",
+                "Isi proses ovner.exe",
+                "info",
+                format!(
+                    "komit {:.0} MB = heap Rust Ovner {:.1} MB (di dalamnya mesin pemblokir ±{:.1} MB) + DLL WebView2/Windows, tumpukan {threads} thread, dll. ±{:.0} MB · puncak heap Rust {:.1} MB",
+                    mb(commit),
+                    mb(heap),
+                    mb(eng),
+                    mb(commit.saturating_sub(heap)),
+                    mb(crate::heap::peak())
+                ),
+            ));
+        }
+        None => out.push(item("RAM", "Isi proses ovner.exe", "info", format!("heap Rust Ovner {:.1} MB", mb(heap)))),
+    }
+    out.push(match engine {
+        Some((used, ms, cache)) => item("RAM", "Mesin pemblokir iklan", "ok", format!("±{:.1} MB di memori (cache {:.1} MB di disk), dimuat {ms} ms", mb(used), mb(cache))),
+        None => item("RAM", "Mesin pemblokir iklan", "info", "belum ada cache daftar filter (dibuat setelah daftar terunduh)"),
+    });
+    let (msg, warn) = crate::metrics::analyze(data);
+    out.push(item("RAM", "Tren RAM (deteksi kebocoran)", if warn { "peringatan" } else if msg.starts_with("tidak ada") { "ok" } else { "info" }, msg));
     out
 }
 

@@ -71,6 +71,22 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.26
+
+**Ekstensi Chrome dari Chrome Web Store**
+- Buka halaman ekstensi di Chrome Web Store → tombol **+ Tambahkan ke Ovner** di toolbar. Ovner mengunduh berkas .crx dari server Google (sama seperti Chrome), mengekstraknya, dan memasang ekstensi dengan ID yang sama persis dengan di Web Store.
+- Tombol **Ekstensi** (ikon puzzle) di toolbar: daftar ekstensi, tombol **Buka** untuk popup atau panel samping ekstensi (dibuka di sisi kanan jendela, seperti panel samping Chrome), dan **Hapus**.
+- Pemasangan pertama menyalakan dukungan ekstensi; mesin WebView2 perlu dimulai ulang sekali (tombol "Mulai ulang sekarang").
+- Batasan WebView2: lencana ikon ekstensi, klik ikon ekstensi yang tidak punya popup/panel, dan ekstensi yang butuh aplikasi pendamping (native messaging) belum bisa.
+
+**RAM: pengukuran dan deteksi kebocoran**
+- Heap Rust Ovner dihitung sendiri (biaya satu operasi atomik per alokasi), dicatat tiap menit (`heap_rust`), dan tampil di Diagnostik.
+- Diagnostik → kelompok **RAM**: isi proses ovner.exe (heap Rust, mesin pemblokir iklan, sisanya DLL WebView2/Windows), ukuran mesin pemblokir iklan, dan **Tren RAM (deteksi kebocoran)** dari pengukuran 7 hari terakhir.
+- Pemantau kebocoran otomatis: tiap jam Ovner memeriksa 3 jam terakhir; bila RAM terus naik padahal jumlah tab hidup tetap, log mencatat PERINGATAN.
+- Pengukuran per menit memisahkan renderer toolbar/tab vertikal Ovner ("toolbar") dari renderer halaman.
+- Uji GitHub: patokan RAM kini dirinci per jenis proses, ditambah langkah isi RAM ovner.exe + mesin pemblokir, dan 4 langkah ekstensi (pasang .crx, skrip konten, panel samping, CopyClip dari Web Store sungguhan).
+- Workflow baru **RAM lintas versi** (dijalankan manual): mengukur RAM semua rilis Ovner dengan skrip yang sama.
+
 ## Perbaikan 0.8.25
 
 Rilis besar: 0.8.25 dan rencana 0.8.26 digabung jadi satu.

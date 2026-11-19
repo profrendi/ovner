@@ -1,0 +1,31 @@
+name: RAM lintas versi
+
+# Dijalankan manual (Actions → RAM lintas versi → Run workflow). Mengukur RAM semua rilis Ovner
+# dengan skrip yang sama di satu mesin, supaya kelihatan fitur/versi mana yang menambah RAM.
+on:
+  workflow_dispatch:
+    inputs:
+      versi:
+        description: 'Versi dipisah koma (mis. 0.8.24,0.8.25) atau "semua"'
+        default: semua
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  ukur:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ukur RAM tiap versi
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ram-lintas-versi.ps1 -Versions "${{ inputs.versi }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ram-lintas-versi
+          path: C:\ovner-bench\hasil.*

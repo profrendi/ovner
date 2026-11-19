@@ -38,9 +38,15 @@ mod memtrim;
 mod defaults;
 mod logging;
 mod metrics;
+mod heap;
+mod extensions;
 mod selftest;
 mod citest;
 mod testserver;
+
+/// Heap Rust Ovner dihitung untuk diagnostik RAM (lihat heap.rs).
+#[global_allocator]
+static HEAP: heap::Counting = heap::Counting;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -70,6 +76,8 @@ use store::Store;
 
 const TOOLBAR_HTML: &str = include_str!("ui/toolbar.html");
 const SIDEBAR_HTML: &str = include_str!("ui/sidebar.html");
+/// Lebar panel ekstensi (popup / panel samping ekstensi Chrome).
+const EXT_PANEL_W: f64 = 380.0;
 const SIDEBAR_W: f64 = 230.0;
 const NEWTAB_HTML: &str = include_str!("ui/newtab.html");
 const SETTINGS_HTML: &str = include_str!("ui/settings.html");
@@ -579,6 +587,10 @@ enum UserEvent {
     CiTick,
     /// Hasil ExecuteScript untuk --self-test.
     CiEval(String),
+    /// Ekstensi selesai dimuat WebView2: (folder, (id, nama) / alasan gagal).
+    ExtLoaded(String, Result<(String, String), String>),
+    /// Ekstensi dari Web Store selesai diunduh/dipasang: (id, folder / alasan gagal).
+    ExtInstalled(String, Result<String, String>),
     /// Penangkap media: video/audio yang dimuat tab.
     Media(u64, win::MediaHit),
     /// Halaman tab mendapat fokus (panel toolbar ditutup).
@@ -886,6 +898,9 @@ struct App {
     /// Frame utama toolbar dan PID proses rendernya (untuk task manager).
     ui_frame: Option<u32>,
     ui_pids: Vec<u32>,
+    /// Sampel RAM per menit (3 jam terakhir) untuk pemantau kebocoran.
+    ram_watch: std::collections::VecDeque<metrics::Sample>,
+    leak_warned: Option<Instant>,
     menus: Menus,
     menu_tab: Option<u64>,
     _tray: Option<TrayIcon>,
@@ -901,6 +916,19 @@ struct App {
 
     last_unresponsive: HashMap<u64, Instant>,
     extensions_loaded: bool,
+    /// Mesin WebView2 dibuat dengan dukungan ekstensi (setelan saat Ovner mulai).
+    ext_env: bool,
+    /// Info manifest ekstensi terpasang (untuk tombol ekstensi di toolbar).
+    ext_infos: Vec<extensions::Info>,
+    /// Hasil memuat tiap folder: (id, nama) atau alasan gagal.
+    ext_loaded: HashMap<String, Result<(String, String), String>>,
+    /// Ekstensi Web Store yang sedang dipasang / galat terakhir (id, pesan).
+    ext_busy: Option<String>,
+    ext_err: Option<(String, String)>,
+    /// Ekstensi baru dipasang tetapi mesin perlu dimulai ulang.
+    ext_restart: bool,
+    /// Panel ekstensi (popup / panel samping) di kanan jendela: (id ekstensi, WebView).
+    ext_panel: Option<(String, WebView)>,
     /// Setelan codec YouTube diubah di panel tapi tab YouTube belum dimuat ulang.
     codec_dirty: bool,
     /// Tersembunyi di tray.
@@ -963,6 +991,7 @@ struct WinState {
     tabs: Vec<Tab>,
     toolbar: WebView,
     sidebar: Option<WebView>,
+    ext_panel: Option<(String, WebView)>,
     window: Rc<Window>,
     no: u32,
     toolbar_ready: bool,
@@ -1630,9 +1659,20 @@ impl App {
     fn content_rect(&self) -> Rect {
         let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
         let x = self.side_w();
+        let right = if self.ext_panel.is_some() { EXT_PANEL_W.min((size.width - x) / 2.0) } else { 0.0 };
         Rect {
             position: WLogicalPosition::new(x, self.toolbar_h).into(),
-            size: WLogicalSize::new((size.width - x).max(1.0), (size.height - self.toolbar_h).max(1.0)).into(),
+            size: WLogicalSize::new((size.width - x - right).max(1.0), (size.height - self.toolbar_h).max(1.0)).into(),
+        }
+    }
+
+    /// Panel ekstensi di kanan jendela (lebar seperti panel samping Chrome).
+    fn ext_panel_rect(&self) -> Rect {
+        let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
+        let w = EXT_PANEL_W.min((size.width - self.side_w()) / 2.0);
+        Rect {
+            position: WLogicalPosition::new((size.width - w).max(0.0), self.toolbar_h).into(),
+            size: WLogicalSize::new(w.max(1.0), (size.height - self.toolbar_h).max(1.0)).into(),
         }
     }
 
@@ -1642,6 +1682,202 @@ impl App {
             position: WLogicalPosition::new(0.0, self.toolbar_h).into(),
             size: WLogicalSize::new(SIDEBAR_W, (size.height - self.toolbar_h).max(1.0)).into(),
         }
+    }
+
+    // ---- Ekstensi Chrome (lihat extensions.rs) ----
+
+    /// WebView tab biasa (bukan privat) untuk perintah profil WebView2.
+    fn profile_webview(&self) -> Option<&WebView> {
+        self.all_tabs().filter(|t| !t.private).find_map(|t| t.webview.as_ref())
+    }
+
+    fn refresh_ext_infos(&mut self) {
+        let dirs = self.settings.borrow().extension_dirs.clone();
+        self.ext_infos = dirs.iter().filter_map(|d| extensions::info(Path::new(d), data_dir())).collect();
+        for i in &mut self.ext_infos {
+            if i.id.is_empty() {
+                if let Some(Ok((id, _))) = self.ext_loaded.get(&i.dir) {
+                    i.id = id.clone();
+                }
+            }
+        }
+    }
+
+    fn ext_state(&self) -> Value {
+        let s = self.settings.borrow();
+        let store = self.tabs.get(self.active).and_then(|t| extensions::store_id(&t.url)).map(|id| {
+            json!({
+                "id": id,
+                "installed": self.ext_infos.iter().any(|i| i.id == id),
+                "busy": self.ext_busy.as_deref() == Some(id.as_str()),
+                "err": self.ext_err.as_ref().filter(|(e, _)| *e == id).map(|(_, m)| m.clone()),
+            })
+        });
+        let items: Vec<Value> = self
+            .ext_infos
+            .iter()
+            .map(|i| {
+                let st = self.ext_loaded.get(&i.dir);
+                json!({
+                    "id": i.id, "name": i.name, "version": i.version, "icon": i.icon, "kind": i.kind,
+                    "panel": !i.panel.is_empty(), "loaded": matches!(st, Some(Ok(_))),
+                    "err": st.and_then(|r| r.as_ref().err()).cloned(), "store": i.store, "dir": i.dir, "perms": i.perms,
+                    "open": !i.id.is_empty() && self.ext_panel.as_ref().is_some_and(|(id, _)| *id == i.id),
+                })
+            })
+            .collect();
+        json!({
+            "items": items,
+            "store": store,
+            "restart": self.ext_restart || (s.extensions_enabled && !self.ext_env && !s.extension_dirs.is_empty()),
+        })
+    }
+
+    /// Pasang ekstensi dari Chrome Web Store (`url` = sumber .crx lain, untuk uji).
+    fn ext_install(&mut self, id: &str, url: Option<String>) {
+        if !extensions::is_id(id) || self.ext_busy.is_some() {
+            return;
+        }
+        self.ext_busy = Some(id.to_string());
+        self.ext_err = None;
+        log(&format!("[ekstensi] memasang {id} dari {}", url.as_deref().unwrap_or("Chrome Web Store")));
+        let (p, data, id2) = (self.proxy.clone(), data_dir().to_path_buf(), id.to_string());
+        let chromium = wry::webview_version().unwrap_or_default();
+        std::thread::spawn(move || {
+            let crx = match &url {
+                Some(u) => extensions::download_from(u),
+                None => extensions::download(&id2, &chromium),
+            };
+            let r = crx.and_then(|c| extensions::install_crx(&data, &id2, &c)).map(|d| d.display().to_string());
+            send(&p, UserEvent::ExtInstalled(id2, r));
+        });
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    fn on_ext_installed(&mut self, id: String, r: Result<String, String>) {
+        self.ext_busy = None;
+        match r {
+            Err(e) => {
+                log(&format!("[ekstensi] GALAT: {id} gagal dipasang: {e}"));
+                self.ext_err = Some((id, e));
+            }
+            Ok(dir) => {
+                {
+                    let mut s = self.settings.borrow_mut();
+                    if !s.extension_dirs.contains(&dir) {
+                        s.extension_dirs.push(dir.clone());
+                    }
+                    s.extensions_enabled = true;
+                    s.save(data_dir());
+                }
+                self.ext_loaded.remove(&dir);
+                let mut loading = false;
+                if self.ext_env {
+                    if let Some(wv) = self.profile_webview() {
+                        let p = self.proxy.clone();
+                        win::load_extensions(wv, std::slice::from_ref(&dir), move |d, r| send(&p, UserEvent::ExtLoaded(d, r)));
+                        loading = true;
+                    }
+                    self.extensions_loaded = true;
+                } else {
+                    self.ext_restart = true;
+                }
+                log(&format!("[ekstensi] terpasang: {id} di {dir}{}", if loading { "" } else { " (aktif setelah Ovner dimulai ulang)" }));
+                self.refresh_ext_infos();
+            }
+        }
+        self.each_window(|a| {
+            a.last_render_key.clear();
+            a.render();
+        });
+    }
+
+    fn on_ext_loaded(&mut self, dir: String, r: Result<(String, String), String>) {
+        match &r {
+            Ok((id, name)) => log(&format!("[ekstensi] dimuat: {name} ({id})")),
+            Err(e) => log(&format!("[ekstensi] GALAT: {dir} gagal dimuat: {e}")),
+        }
+        self.ext_loaded.insert(dir, r);
+        self.refresh_ext_infos();
+        self.each_window(|a| {
+            a.last_render_key.clear();
+            a.render();
+        });
+    }
+
+    /// Buka (atau tutup bila sudah terbuka) popup/panel samping ekstensi di kanan jendela.
+    fn ext_open(&mut self, id: &str) {
+        if self.ext_panel.as_ref().is_some_and(|(cur, _)| cur == id) {
+            self.ext_close();
+            return;
+        }
+        let Some(info) = self.ext_infos.iter().find(|i| i.id == id && !i.panel.is_empty()).cloned() else { return };
+        self.ext_panel = None;
+        let url = extensions::ext_url(id, &info.panel);
+        let theme = self.settings.borrow().theme.clone();
+        let rect = {
+            // Hitung posisi seolah panel sudah terbuka.
+            let size: LogicalSize<f64> = self.window.inner_size().to_logical(self.window.scale_factor());
+            let w = EXT_PANEL_W.min((size.width - self.side_w()) / 2.0);
+            Rect { position: WLogicalPosition::new((size.width - w).max(0.0), self.toolbar_h).into(), size: WLogicalSize::new(w.max(1.0), (size.height - self.toolbar_h).max(1.0)).into() }
+        };
+        let b = WebViewBuilder::new_with_web_context(&mut self.web_context).with_url(&url).with_bounds(rect).with_devtools(true);
+        #[cfg(windows)]
+        let b = {
+            use wry::WebViewBuilderExtWindows;
+            let mut b = b.with_additional_browser_args(self.browser_args.clone()).with_theme(wry_theme(&theme));
+            if let Some(env) = &self.env {
+                b = b.with_environment(env.clone());
+            }
+            b
+        };
+        #[cfg(not(windows))]
+        let _ = theme;
+        match b.build_as_child(&*self.window) {
+            Ok(w) => {
+                log(&format!("[ekstensi] {} dibuka: {} ({url})", if info.kind == "side" { "panel samping" } else { "popup" }, info.name));
+                self.ext_panel = Some((id.to_string(), w));
+            }
+            Err(e) => log(&format!("[ekstensi] GALAT: panel {} gagal dibuat: {e}", info.name)),
+        }
+        self.layout();
+        self.last_render_key.clear();
+        self.render();
+    }
+
+    fn ext_close(&mut self) {
+        if self.ext_panel.take().is_some() {
+            self.layout();
+            self.last_render_key.clear();
+            self.render();
+        }
+    }
+
+    fn ext_remove(&mut self, dir: &str) {
+        let info = self.ext_infos.iter().find(|i| i.dir == dir).cloned();
+        let id = info.as_ref().map(|i| i.id.clone()).filter(|x| !x.is_empty()).or_else(|| self.ext_loaded.get(dir).and_then(|r| r.as_ref().ok()).map(|(id, _)| id.clone()));
+        if let Some(id) = &id {
+            if self.ext_panel.as_ref().is_some_and(|(cur, _)| cur == id) {
+                self.ext_close();
+            }
+            if let Some(wv) = self.profile_webview() {
+                win::remove_extension(wv, id);
+            }
+        }
+        {
+            let mut s = self.settings.borrow_mut();
+            s.extension_dirs.retain(|d| d != dir);
+            s.save(data_dir());
+        }
+        if Path::new(dir).starts_with(extensions::root(data_dir())) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        self.ext_loaded.remove(dir);
+        log(&format!("[ekstensi] dihapus: {}", info.map(|i| i.name).unwrap_or_else(|| dir.to_string())));
+        self.refresh_ext_infos();
+        self.last_render_key.clear();
+        self.render();
     }
 
     /// Buat/buang daftar tab vertikal sesuai setelan.
@@ -1835,9 +2071,10 @@ impl App {
         let tenv = self.tab_env();
         match build_tab_view(&tenv, &cells, Some(&url), rect, visible, visible && i == self.active, Some(&mut self.web_context)) {
             Ok(wv) => {
-                if s.extensions_enabled && !self.extensions_loaded && !cells.private {
+                if self.ext_env && s.extensions_enabled && !self.extensions_loaded && !cells.private {
                     self.extensions_loaded = true;
-                    win::load_extensions(&wv, &s.extension_dirs, log);
+                    let p = self.proxy.clone();
+                    win::load_extensions(&wv, &s.extension_dirs, move |d, r| send(&p, UserEvent::ExtLoaded(d, r)));
                 }
                 if zoom != 100 {
                     let _ = wv.zoom(zoom as f64 / 100.0);
@@ -2787,6 +3024,7 @@ impl App {
             "video": tab.is_some_and(|t| video::is_video_page(&t.url) || (s.video_sniff && !t.media.is_empty())),
             "mediaCount": tab.map(|t| t.media.len()).unwrap_or(0),
             "recording": tab.is_some_and(|t| t.recording),
+            "ext": self.ext_state(),
             "tr": tab.filter(|t| t.url.starts_with("http") && internal_page(&t.url).is_none()).map(|t| json!({
                 "lang": t.page_lang, "on": t.tr.on, "to": t.tr.to, "busy": t.tr.busy, "done": t.tr.done, "total": t.tr.total,
                 "err": t.tr.err, "device": t.tr.device, "engine": s.translate_engine,
@@ -4013,21 +4251,64 @@ impl App {
 
     /// Satu baris pengukuran (tiap menit): RAM/commit/CPU per jenis proses, RAM Windows, tab,
     /// unduhan, sisa disk, penghitung harian. Lihat metrics.rs.
+    /// RAM per jenis proses (jumlah, private working set, komit, CPU). Renderer milik toolbar
+    /// dan tab vertikal Ovner dipisah sebagai "toolbar" supaya biaya tampilan Ovner terlihat.
+    fn ram_by_kind(&self) -> std::collections::BTreeMap<String, (u32, u64, u64, f64)> {
+        let mut kinds: std::collections::BTreeMap<String, (u32, u64, u64, f64)> = std::collections::BTreeMap::new();
+        for p in &self.stats {
+            let k = if p.kind == "renderer" && self.ui_pids.contains(&p.pid) { "toolbar".to_string() } else { p.kind.clone() };
+            let e = kinds.entry(k).or_default();
+            e.0 += 1;
+            e.1 += p.working;
+            e.2 += p.commit;
+            e.3 += p.cpu;
+        }
+        kinds
+    }
+
+    /// Rincian RAM satu baris: "ovner 20 (heap Rust 9) · inti 52 · gpu 15 · toolbar 30 · tab 3×40 …".
+    fn ram_breakdown(&self) -> String {
+        let mb = |b: u64| b / 1_048_576;
+        let k = self.ram_by_kind();
+        let mut parts = Vec::new();
+        for (key, label) in [("ovner", "ovner.exe"), ("browser", "inti"), ("gpu", "gpu"), ("toolbar", "toolbar"), ("renderer", "tab"), ("network", "jaringan"), ("audio", "audio"), ("storage", "penyimpanan"), ("utility", "utilitas"), ("crashpad", "crashpad")] {
+            if let Some((n, w, c, _)) = k.get(key) {
+                let extra = if key == "ovner" { format!(" (komit {}, heap Rust {})", mb(*c), mb(heap::now())) } else { String::new() };
+                parts.push(if *n > 1 { format!("{label} {n}×{} = {}{extra}", mb(*w) / *n as u64, mb(*w)) } else { format!("{label} {}{extra}", mb(*w)) });
+            }
+        }
+        for (key, (n, w, _, _)) in &k {
+            if !["ovner", "browser", "gpu", "toolbar", "renderer", "network", "audio", "storage", "utility", "crashpad"].contains(&key.as_str()) {
+                parts.push(format!("{key} {n}× {}", mb(*w)));
+            }
+        }
+        parts.join(" · ")
+    }
+
     fn write_metrics(&mut self) {
         if self.stats.is_empty() || self.stats_at.elapsed() > Duration::from_secs(10) {
             self.stats = self.sampler.sample(false);
             self.stats_at = Instant::now();
         }
         let mb = |b: u64| b / 1_048_576;
-        let mut kinds: std::collections::BTreeMap<String, (u32, u64, u64, f64)> = std::collections::BTreeMap::new();
-        for p in &self.stats {
-            let e = kinds.entry(p.kind.clone()).or_default();
-            e.0 += 1;
-            e.1 += p.working;
-            e.2 += p.commit;
-            e.3 += p.cpu;
+        let per: serde_json::Map<String, Value> = self.ram_by_kind().into_iter().map(|(k, (n, w, c, cpu))| (k, json!({"n": n, "mb": mb(w), "commit": mb(c), "cpu": (cpu * 10.0).round() / 10.0}))).collect();
+        // Pemantau kebocoran: tiap jam, tren 3 jam terakhir dengan tab hidup tetap.
+        {
+            let live = self.all_tabs().filter(|t| t.webview.is_some()).count() as u64;
+            let commit = |k: &str| per.get(k).and_then(|v| v["commit"].as_f64()).unwrap_or(0.0);
+            let smp = metrics::Sample { min: self.started.elapsed().as_secs_f64() / 60.0, live, heap: Some(heap::now() as f64 / 1_048_576.0), ovner: commit("ovner"), browser: commit("browser") };
+            self.ram_watch.push_back(smp);
+            while self.ram_watch.len() > 180 {
+                self.ram_watch.pop_front();
+            }
+            if self.ram_watch.len() % 60 == 0 && self.leak_warned.is_none_or(|t| t.elapsed() > Duration::from_secs(3 * 3600)) {
+                let v: Vec<metrics::Sample> = self.ram_watch.iter().copied().collect();
+                if let Some(w) = metrics::trends(&v, metrics::MIN_SPAN_MIN).iter().filter_map(metrics::verdict).last() {
+                    self.leak_warned = Some(Instant::now());
+                    log(&format!("[ram] PERINGATAN: kemungkinan kebocoran RAM: {w}. Kirim Paket diagnostik supaya bisa diperiksa."));
+                }
+            }
         }
-        let per: serde_json::Map<String, Value> = kinds.into_iter().map(|(k, (n, w, c, cpu))| (k, json!({"n": n, "mb": mb(w), "commit": mb(c), "cpu": (cpu * 10.0).round() / 10.0}))).collect();
         let t = usage::total(&self.stats);
         let (wt, wa) = win::mem_status().unwrap_or((0, 0));
         let dl_dir = download_dir_of(&self.settings.borrow());
@@ -4041,6 +4322,8 @@ impl App {
             "gpu_mem": mb(t.gpu_mem),
             "proses": t.procs,
             "per_jenis": per,
+            "heap_rust": mb(heap::now()),
+            "heap_rust_puncak": mb(heap::peak()),
             "win_ram": mb(wt),
             "win_sisa": mb(wa),
             "tab": tabs.len(),
@@ -4517,6 +4800,9 @@ impl App {
         let _ = self.toolbar.set_bounds(self.toolbar_rect());
         if let Some(sb) = &self.sidebar {
             let _ = sb.set_bounds(self.sidebar_rect());
+        }
+        if let Some((_, ep)) = &self.ext_panel {
+            let _ = ep.set_bounds(self.ext_panel_rect());
         }
         for i in 0..self.tabs.len() {
             let r = self.rect_for(i);
@@ -5497,6 +5783,13 @@ impl App {
     fn apply_setting_side_effects(&mut self, key: &str) {
         let s = self.settings.borrow().clone();
         match key {
+            "extension_dirs" | "extensions_enabled" => {
+                self.refresh_ext_infos();
+                self.each_window(|a| {
+                    a.last_render_key.clear();
+                    a.render();
+                });
+            }
             "autostart" => {
                 let exe = if install::is_installed_copy(&std::env::current_exe().unwrap_or_default()) {
                     install::installed_exe()
@@ -6889,6 +7182,21 @@ impl App {
                 self.last_render_key.clear();
                 self.render();
             }
+            // ---- ekstensi Chrome ----
+            "ext-install" => {
+                let id = msg["id"].as_str().unwrap_or("").to_string();
+                self.ext_install(&id, None);
+            }
+            "ext-open" => {
+                let id = msg["id"].as_str().unwrap_or("").to_string();
+                self.ext_open(&id);
+            }
+            "ext-close" => self.ext_close(),
+            "ext-remove" => {
+                let dir = msg["dir"].as_str().unwrap_or("").to_string();
+                self.ext_remove(&dir);
+            }
+            "ext-restart" => return true,
             // ---- terjemahan, baca keras, kode QR, perekam masalah ----
             "tr-start" => {
                 let to = msg["to"].as_str().map(|x| x.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(8).collect::<String>());
@@ -7840,6 +8148,7 @@ impl App {
         swap(&mut self.window, &mut w.window);
         swap(&mut self.toolbar, &mut w.toolbar);
         swap(&mut self.sidebar, &mut w.sidebar);
+        swap(&mut self.ext_panel, &mut w.ext_panel);
         swap(&mut self.toolbar_ready, &mut w.toolbar_ready);
         swap(&mut self.toolbar_h, &mut w.toolbar_h);
         swap(&mut self.toolbar_over, &mut w.toolbar_over);
@@ -8198,6 +8507,7 @@ impl App {
             tabs: Vec::new(),
             toolbar,
             sidebar: None,
+            ext_panel: None,
             window,
             no,
             toolbar_ready: false,
@@ -8566,6 +8876,8 @@ fn main() {
         settings.autostart = false;
         settings.download_dir = data_dir().join("unduhan").display().to_string();
         let _ = std::fs::create_dir_all(&settings.download_dir);
+        // Uji ekstensi Chrome: mesin WebView2 harus dibuat dengan dukungan ekstensi.
+        settings.extensions_enabled = true;
     }
     // Simpan selalu: menulis versi skema setelah migrasi.
     settings.save(data_dir());
@@ -8710,6 +9022,7 @@ fn main() {
         usage::start_monitor(move |stats| send(&p, UserEvent::Usage(stats)));
     }
 
+    let ext_env = settings.extensions_enabled;
     let mut app = App {
         window,
         toolbar,
@@ -8796,6 +9109,8 @@ fn main() {
         last_icons_key: String::new(),
         ui_frame: None,
         ui_pids: Vec::new(),
+        ram_watch: std::collections::VecDeque::new(),
+        leak_warned: None,
         menus,
         menu_tab: None,
         _tray: tray,
@@ -8835,6 +9150,13 @@ fn main() {
         cname: Arc::new(Mutex::new(HashMap::new())),
         last_unresponsive: HashMap::new(),
         extensions_loaded: false,
+        ext_env,
+        ext_infos: Vec::new(),
+        ext_loaded: HashMap::new(),
+        ext_busy: None,
+        ext_err: None,
+        ext_restart: false,
+        ext_panel: None,
         codec_dirty: false,
         sampler: usage::Sampler::new(),
         stats: Vec::new(),
@@ -8856,6 +9178,7 @@ fn main() {
         icons_due: Some(Instant::now() + Duration::from_secs(20)),
         icons_tried: HashSet::new(),
     };
+    app.refresh_ext_infos();
     app.ensure_sidebar();
     // Unduhan dari riwayat mendapat id sendiri (id unduhan baru dimulai dari 1).
     for (k, d) in app.downloads.iter_mut().enumerate() {
@@ -9162,6 +9485,8 @@ fn main() {
                 UserEvent::Translated(id, n, b, r) => app.on_translated(id, n, b, r),
                 UserEvent::TrSel(v) => post_page(&app.toolbar, "trSel", &v.to_string(), "window.ovner && ovner.trSel"),
                 UserEvent::TtsResult(kind, v) => post_page(&app.toolbar, kind, &v.to_string(), &format!("window.ovner && ovner.{kind}")),
+                UserEvent::ExtLoaded(dir, r) => app.on_ext_loaded(dir, r),
+                UserEvent::ExtInstalled(id, r) => app.on_ext_installed(id, r),
                 UserEvent::CiEval(r) => {
                     if let Some(c) = app.ci.as_mut() {
                         c.eval = Some(r);

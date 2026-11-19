@@ -368,6 +368,30 @@
   @keyframes wave { 50% { height: 14px; opacity: 1; } }
   #readopts { position: absolute; right: 12px; top: 4px; width: 340px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; }
   #readopts.show { display: block; }
+  /* Ekstensi Chrome */
+  #extadd { height: 26px; padding: 0 12px; border: 0; border-radius: 13px; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; margin: 0 4px; }
+  #extadd[hidden] { display: none; }
+  #extadd:disabled { opacity: .75; cursor: default; }
+  #extadd.err { background: #e5484d; }
+  #extbtn[hidden] { display: none; }
+  #extbtn.on { color: var(--accent); }
+  #extpanel { position: absolute; right: 150px; top: 4px; width: 360px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  #extpanel.show { display: block; }
+  #extpanel h3 { margin: 2px 2px 8px 8px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  #extpanel .er { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 12px; }
+  #extpanel .er:hover { background: var(--field); }
+  #extpanel .ei { width: 28px; height: 28px; flex: none; display: grid; place-items: center; font-size: 18px; }
+  #extpanel .ei img { width: 28px; height: 28px; object-fit: contain; }
+  #extpanel .et { flex: 1; min-width: 0; }
+  #extpanel .et b { display: block; overflow-wrap: anywhere; }
+  #extpanel .s { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+  #extpanel .err { color: #e5484d; }
+  #extpanel .st { margin: 4px 6px 8px; line-height: 1.45; }
+  #extpanel .note { color: var(--muted); font-size: 12px; margin: 10px 6px 2px; line-height: 1.45; }
+  #extpanel button:not(.px) { height: 28px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; flex: none; }
+  #extpanel button.pri { background: var(--accent); color: #fff; border-color: transparent; }
+  #extpanel .rs { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 12px; padding: 10px 12px; margin: 0 0 8px; line-height: 1.45; }
+  #extpanel .rs button { margin-top: 8px; }
   #readopts input[type=range] { width: 100%; accent-color: var(--accent); }
 </style>
 </head>
@@ -390,6 +414,8 @@
     <button class="b" id="unsplit"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M15 9l-3 3 3 3"/></svg></button>
   </span>
   <button id="upd"></button>
+  <button id="extadd" hidden></button>
+  <button class="b" id="extbtn" hidden><svg viewBox="0 0 24 24"><path d="M10 4h4v3a2 2 0 1 0 4 0V4h2v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4z"/></svg></button>
   <button class="b" id="vidbtn" hidden><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-2.5v9L17 14M10 9v6M7.5 12.5 10 15l2.5-2.5"/></svg></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
   <button class="b" id="sleepbtn"><svg viewBox="0 0 24 24"><path d="M4 7h7l-7 7h7"/><path d="M14 4h6l-6 6h6"/><path d="M13 16h4l-4 4h4"/></svg></button>
@@ -408,7 +434,7 @@
 <div id="readbar"></div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="sleeppanel"></div><div id="memnote"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div><div id="trpanel"></div><div id="qrpanel"></div><div id="readopts"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="sleeppanel"></div><div id="memnote"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div><div id="trpanel"></div><div id="qrpanel"></div><div id="readopts"></div><div id="extpanel"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -1323,7 +1349,7 @@
       $("viddlg").classList.contains("show") ? $("viddlg").offsetHeight + 12 : 0,
       $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
       $("bmctx").classList.contains("show") ? $("bmctx").offsetTop + $("bmctx").offsetHeight + 12 : 0,
-      ...["trpanel", "qrpanel", "readopts"].map((k) => $(k).classList.contains("show") ? $(k).offsetTop + $(k).offsetHeight + 12 : 0));
+      ...["trpanel", "qrpanel", "readopts", "extpanel"].map((k) => $(k).classList.contains("show") ? $(k).offsetTop + $(k).offsetHeight + 12 : 0));
     let bm = 0;
     for (const p of document.querySelectorAll("#bmmenus .bmm")) bm = Math.max(bm, p.offsetTop + p.offsetHeight + 12);
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
@@ -1776,7 +1802,7 @@
     // Fokus yang kembali ke halaman sesaat setelah panel dibuka (mis. dari menu klik kanan)
     // tidak dihitung sebagai klik di luar.
     if (!force && Date.now() - Math.max(lastTbClick, panelOpenedAt) < 700) return;
-    hideOmni(); closeDark(); closeCodec(); closeSleep(); closeVid(); closeBm(); closeTr(); closeQr(); closeReadOpts();
+    hideOmni(); closeDark(); closeCodec(); closeSleep(); closeVid(); closeBm(); closeTr(); closeQr(); closeReadOpts(); closeExt();
     $("bmctx").classList.remove("show");
     if (state && state.dlBubble && !state.pwOffer) send({ cmd: "bubble-close" });
     if (state && state.bmEdit) send({ cmd: "bm-close" });
@@ -2101,7 +2127,65 @@
     },
     ttsVoices(o) { RD.online[o.engine] = o.err ? { err: o.err } : o.voices; if (readOptsOpen) renderReadOpts(); },
   });
+  // ---- Ekstensi Chrome: pasang dari Web Store, popup/panel samping di kanan jendela ----
+  let extOpen = false;
+  function closeExt() { if (!extOpen) return; extOpen = false; $("extpanel").classList.remove("show"); sendHeight(); }
+  function renderExt() {
+    const ex = state.ext || { items: [] };
+    const items = ex.items || [];
+    const st = ex.store;
+    const add = $("extadd");
+    add.hidden = !st;
+    if (st) {
+      add.disabled = !!(st.busy || st.installed);
+      add.textContent = st.busy ? (LX() ? "Installing…" : "Memasang…") : st.installed ? (LX() ? "✓ Added to Ovner" : "✓ Terpasang di Ovner") : st.err ? (LX() ? "Failed — try again" : "Gagal — coba lagi") : (LX() ? "+ Add to Ovner" : "+ Tambahkan ke Ovner");
+      add.title = st.err || (LX() ? "Download this extension from the Chrome Web Store and install it in Ovner" : "Unduh ekstensi ini dari Chrome Web Store lalu pasang di Ovner");
+      add.classList.toggle("err", !!st.err && !st.busy);
+      add.onclick = () => { send({ cmd: "ext-install", id: st.id }); };
+    }
+    const b = $("extbtn");
+    b.hidden = !items.length && !ex.restart;
+    b.classList.toggle("on", items.some((i) => i.open));
+    b.title = LX() ? "Extensions" : "Ekstensi";
+    if (!extOpen) return;
+    const p = $("extpanel"); p.textContent = "";
+    const hd = mk("h3"); hd.append(mk("span", "", LX() ? "Extensions" : "Ekstensi"), xBtn(closeExt)); p.append(hd);
+    if (ex.restart) {
+      const r = mk("div", "rs", LX() ? "Restart Ovner to turn on the newly installed extension (the WebView2 engine starts with extension support)." : "Mulai ulang Ovner untuk menyalakan ekstensi yang baru dipasang (mesin WebView2 perlu dibuka ulang dengan dukungan ekstensi).");
+      const go = mk("button", "pri", LX() ? "Restart now" : "Mulai ulang sekarang"); go.onclick = () => send({ cmd: "ext-restart" });
+      r.append(mk("br"), go); p.append(r);
+    }
+    for (const it of items) {
+      const row = mk("div", "er");
+      const ic = mk("span", "ei");
+      if (it.icon) { const im = mk("img"); im.src = it.icon; im.alt = ""; ic.append(im); } else ic.textContent = "🧩";
+      const tx = mk("div", "et"); tx.append(mk("b", "", it.name));
+      const how = it.err ? (LX() ? "Failed: " : "Gagal: ") + it.err
+        : !it.loaded ? (ex.restart ? (LX() ? "active after restart" : "aktif setelah mulai ulang") : (LX() ? "loading…" : "memuat…"))
+        : it.panel ? (it.kind === "side" ? (LX() ? "side panel" : "panel samping") : "popup")
+        : (LX() ? "works inside pages (no panel)" : "bekerja di dalam halaman (tanpa panel)");
+      tx.append(mk("div", it.err ? "s err" : "s", (it.version ? "v" + it.version + " · " : "") + how));
+      row.append(ic, tx);
+      if (it.panel && it.loaded && it.id) {
+        const o = mk("button", it.open ? "pri" : "", it.open ? (LX() ? "Close" : "Tutup") : (LX() ? "Open" : "Buka"));
+        o.onclick = () => { send({ cmd: "ext-open", id: it.id }); closeExt(); };
+        row.append(o);
+      }
+      const rm = mk("button", "", LX() ? "Remove" : "Hapus");
+      rm.onclick = () => { if (confirm((LX() ? "Remove extension " : "Hapus ekstensi ") + it.name + "?")) send({ cmd: "ext-remove", dir: it.dir }); };
+      row.append(rm);
+      p.append(row);
+    }
+    if (!items.length && !ex.restart) p.append(mk("div", "st", LX() ? "No extensions yet. Open an extension page on the Chrome Web Store, then press “+ Add to Ovner”." : "Belum ada ekstensi. Buka halaman ekstensi di Chrome Web Store, lalu tekan “+ Tambahkan ke Ovner”."));
+    p.append(mk("div", "note", LX() ? "Extension popups and side panels open on the right side of the window. Icon badges and icon clicks without a popup aren't supported by WebView2." : "Popup dan panel samping ekstensi dibuka di sisi kanan jendela. Lencana ikon dan klik ikon tanpa popup belum didukung WebView2."));
+    sendHeight();
+  }
+  $("extbtn").onclick = () => {
+    if (extOpen) { closeExt(); return; }
+    closePanels(true); panelOpenedAt = Date.now(); extOpen = true; $("extpanel").classList.add("show"); renderExt();
+  };
   function renderExtras() {
+    renderExt();
     const sh = $("shield");
     sh.classList.toggle("rec", !!state.recording);
     if (state.recording) sh.title = LX() ? "Recording a problem… click to stop and save" : "Merekam masalah… klik untuk berhenti dan menyimpan";

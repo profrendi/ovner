@@ -825,6 +825,41 @@ mod imp {
         let _ = c.spawn();
     }
 
+    /// Memori komit (private bytes) dan thread proses Ovner sendiri.
+    pub fn self_memory() -> Option<(u64, u32)> {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        unsafe {
+            let mut pmc = PROCESS_MEMORY_COUNTERS_EX2 { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32, ..Default::default() };
+            GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS, pmc.cb).ok()?;
+            Some((pmc.PrivateUsage as u64, thread_count()))
+        }
+    }
+
+    fn thread_count() -> u32 {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+        use windows::Win32::System::Threading::GetCurrentProcessId;
+        unsafe {
+            let me = GetCurrentProcessId();
+            let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return 0 };
+            let mut e = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+            let mut n = 0;
+            if Thread32First(snap, &mut e).is_ok() {
+                loop {
+                    if e.th32OwnerProcessID == me {
+                        n += 1;
+                    }
+                    if Thread32Next(snap, &mut e).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+            n
+        }
+    }
+
     /// Bawa jendela anak WebView ini ke paling atas (overlay toolbar di atas halaman).
     pub fn raise(webview: &wry::WebView) {
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
@@ -2495,27 +2530,75 @@ mod imp {
         }
     }
 
-    /// Muat ekstensi dari folder (unpacked). Hasilnya dicatat lewat `log`.
-    pub fn load_extensions(webview: &wry::WebView, dirs: &[String], log: fn(&str)) {
+    fn ext_profile(webview: &wry::WebView) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile7> {
         use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
-        use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
         use wry::WebViewExtWindows;
-        let profile = unsafe { webview.webview().cast::<ICoreWebView2_13>().and_then(|w| w.Profile()).and_then(|p| p.cast::<ICoreWebView2Profile7>()) };
-        let Ok(profile) = profile else {
-            log("ekstensi: WebView2 terlalu lama (butuh Profile7)");
+        unsafe { webview.webview().cast::<ICoreWebView2_13>().and_then(|w| w.Profile()).and_then(|p| p.cast::<ICoreWebView2Profile7>()).ok() }
+    }
+
+    /// Muat ekstensi dari folder (unpacked). `cb(folder, Ok((id, nama)) / Err(alasan))`.
+    pub fn load_extensions(webview: &wry::WebView, dirs: &[String], cb: impl Fn(String, Result<(String, String), String>) + Clone + 'static) {
+        use webview2_com::ProfileAddBrowserExtensionCompletedHandler;
+        let Some(profile) = ext_profile(webview) else {
+            for d in dirs {
+                cb(d.clone(), Err("WebView2 terlalu lama untuk ekstensi (butuh versi 118+)".into()));
+            }
             return;
         };
         for dir in dirs {
             let d = dir.clone();
-            let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |res, _ext| {
-                log(&format!("ekstensi {d}: {}", if res.is_ok() { "dimuat".to_string() } else { format!("gagal {res:?}") }));
+            let cb2 = cb.clone();
+            let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |res, ext| {
+                let r = match (res, ext) {
+                    (Ok(()), Some(ext)) => unsafe {
+                        let mut id = windows::core::PWSTR::null();
+                        let mut name = windows::core::PWSTR::null();
+                        let _ = ext.Id(&mut id);
+                        let _ = ext.Name(&mut name);
+                        Ok((webview2_com::take_pwstr(id), webview2_com::take_pwstr(name)))
+                    },
+                    (Ok(()), None) => Err("WebView2 tidak mengembalikan ekstensi".to_string()),
+                    (Err(e), _) => Err(match e.code().0 as u32 {
+                        0x8007_0032 => "ekstensi dimatikan di mesin WebView2 (perlu mulai ulang Ovner)".to_string(),
+                        0x8007_0002 => "manifest.json tidak ada atau tidak sah".to_string(),
+                        _ => format!("{e}"),
+                    }),
+                };
+                cb2(d.clone(), r);
                 Ok(())
             }));
             unsafe {
                 if let Err(e) = profile.AddBrowserExtension(&HSTRING::from(dir.as_str()), &handler) {
-                    log(&format!("ekstensi {dir}: {e}"));
+                    cb(dir.clone(), Err(e.to_string()));
                 }
             }
+        }
+    }
+
+    /// Hapus ekstensi `id` dari profil WebView2.
+    pub fn remove_extension(webview: &wry::WebView, id: &str) {
+        use webview2_com::{BrowserExtensionRemoveCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler};
+        let Some(profile) = ext_profile(webview) else { return };
+        let want = id.to_string();
+        let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |_res, list| {
+            let Some(list) = list else { return Ok(()) };
+            unsafe {
+                let mut n = 0u32;
+                let _ = list.Count(&mut n);
+                for i in 0..n {
+                    let Ok(ext) = list.GetValueAtIndex(i) else { continue };
+                    let mut id = windows::core::PWSTR::null();
+                    let _ = ext.Id(&mut id);
+                    if webview2_com::take_pwstr(id) == want {
+                        let done = BrowserExtensionRemoveCompletedHandler::create(Box::new(|_| Ok(())));
+                        let _ = ext.Remove(&done);
+                    }
+                }
+            }
+            Ok(())
+        }));
+        unsafe {
+            let _ = profile.GetBrowserExtensions(&handler);
         }
     }
 
@@ -2686,7 +2769,11 @@ mod imp {
     pub fn on_source_changed(_webview: &wry::WebView, _cb: impl Fn(String, bool) + 'static) {}
     pub fn on_download_dialog(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn on_ctrl_j(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
-    pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
+    pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _cb: impl Fn(String, Result<(String, String), String>) + Clone + 'static) {}
+    pub fn remove_extension(_webview: &wry::WebView, _id: &str) {}
+    pub fn self_memory() -> Option<(u64, u32)> {
+        None
+    }
     pub fn on_media(_webview: &wry::WebView, _cb: impl Fn(super::MediaHit) + 'static) {}
     pub fn on_focus(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn context_menu(_webview: &wry::WebView, _items: impl Fn(&serde_json::Value) -> Vec<super::CtxItem> + 'static, _cb: impl Fn(&str, &serde_json::Value) + 'static) {}

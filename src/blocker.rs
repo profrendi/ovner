@@ -254,6 +254,20 @@ pub fn build_and_cache(data_dir: &Path) -> Option<Vec<u8>> {
     Some(body)
 }
 
+/// Ukur mesin pemblokir: muat salinan dari cache (persis cara Ovner saat mulai) dan hitung heap
+/// Rust yang dipakainya. (byte di memori, ms, byte cache di disk). Salinan dibuang lagi.
+pub fn measure_engine(data_dir: &Path) -> Option<(u64, u128, u64)> {
+    let before = crate::heap::now();
+    let t = std::time::Instant::now();
+    let engine = load_cached(data_dir)?;
+    let b = Blocker::new(engine, true, data_dir);
+    let used = crate::heap::now().saturating_sub(before);
+    let ms = t.elapsed().as_millis();
+    drop(b);
+    let cache = std::fs::metadata(filters_dir(data_dir).join(CACHE_FILE)).map(|m| m.len()).unwrap_or(0);
+    Some((used, ms, cache))
+}
+
 pub fn engine_from_bytes(body: &[u8]) -> Option<Engine> {
     let mut engine = Engine::default();
     engine.deserialize(body).ok()?;
