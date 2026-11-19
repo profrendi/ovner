@@ -1,7 +1,6 @@
 //! Penerjemah halaman (seperti Edge/Chrome). Teks halaman dikirim ke layanan yang dipilih HANYA
 //! saat pengguna menekan Terjemahkan:
-//! - "microsoft": jalur yang dipakai Microsoft Edge (token dari edge.microsoft.com/translate/auth,
-//!   lalu Microsoft Translator v3),
+//! - "microsoft": jalur yang dipakai Microsoft Edge (edge.microsoft.com/translate/translatetext),
 //! - "google": jalur elemen terjemahan Google (translateHtml), seperti Chrome.
 //! Keduanya bukan API resmi untuk pihak ketiga; bila berubah, Ovner diperbaiki lewat update.
 
@@ -50,46 +49,35 @@ pub fn translate_only(engine: &str, texts: &[String], from: &str, to: &str) -> R
 }
 
 // ---- Microsoft (seperti Edge) ----
-
-static TOKEN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-
-fn ms_token(fresh: bool) -> Result<String, String> {
-    let mut t = TOKEN.lock().unwrap();
-    if !fresh {
-        if let Some((tok, at)) = t.as_ref() {
-            if at.elapsed() < Duration::from_secs(8 * 60) {
-                return Ok(tok.clone());
-            }
-        }
-    }
-    let r = net::get("https://edge.microsoft.com/translate/auth", &[])?;
-    let tok = r.text().trim().to_string();
-    if r.status != 200 || tok.len() < 20 || tok.contains(char::is_whitespace) {
-        return Err(format!("token Microsoft ditolak (HTTP {})", r.status));
-    }
-    *t = Some((tok.clone(), Instant::now()));
-    Ok(tok)
-}
+//
+// Jalur lama (token dari edge.microsoft.com/translate/auth + api-edge.cognitivetranslator.com)
+// dimatikan Microsoft sejak akhir Juli 2026 (selalu 404). Edge kini memakai
+// edge.microsoft.com/translate/translatetext: tanpa token, isi = daftar teks biasa, jawaban
+// sama bentuknya dengan Microsoft Translator v3. "from" sengaja dikosongkan bila otomatis.
 
 fn microsoft(texts: &[String], from: &str, to: &str) -> Result<Out, String> {
-    let body = Value::Array(texts.iter().map(|t| json!({ "Text": t })).collect()).to_string();
-    let mut url = format!("https://api-edge.cognitivetranslator.com/translate?api-version=3.0&to={}", net::enc(to));
-    if !from.is_empty() && from != "auto" {
-        url.push_str(&format!("&from={}", net::enc(from)));
-    }
+    let body = Value::Array(texts.iter().map(|t| json!(t)).collect()).to_string();
+    let from = if from.is_empty() || from == "auto" { "" } else { from };
+    let url = format!(
+        "https://edge.microsoft.com/translate/translatetext?from={}&to={}&isEnterpriseClient=false",
+        net::enc(from),
+        net::enc(to)
+    );
+    let mut last = String::new();
     for attempt in 0..2 {
-        let tok = ms_token(attempt > 0)?;
-        let auth = format!("Bearer {tok}");
-        let r = net::post(&url, &[("Authorization", auth.as_str()), ("Content-Type", "application/json")], body.as_bytes())?;
-        if r.status == 401 && attempt == 0 {
-            continue;
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(600));
         }
-        if r.status != 200 {
-            return Err(format!("HTTP {}: {}", r.status, r.text().chars().take(160).collect::<String>()));
+        let r = net::post(&url, &[("Content-Type", "application/json")], body.as_bytes())?;
+        if r.status == 200 {
+            return parse_microsoft(&r.text(), texts.len());
         }
-        return parse_microsoft(&r.text(), texts.len());
+        last = format!("HTTP {}: {}", r.status, r.text().chars().take(160).collect::<String>());
+        if r.status != 429 && r.status < 500 {
+            break;
+        }
     }
-    Err("token Microsoft kedaluwarsa".into())
+    Err(last)
 }
 
 pub fn parse_microsoft(text: &str, n: usize) -> Result<Out, String> {

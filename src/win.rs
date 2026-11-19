@@ -2306,6 +2306,13 @@ mod imp {
                     return Ok(());
                 }
                 let url = webview2_com::take_pwstr(p);
+                // Saringan cepat: aset statis biasa tidak perlu dibaca header-nya (hemat CPU).
+                {
+                    let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+                    if [".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".json", ".html", ".htm", ".ts", ".m4s"].iter().any(|e| path.ends_with(e)) {
+                        return Ok(());
+                    }
+                }
                 let mut status = 0i32;
                 let _ = resp.StatusCode(&mut status);
                 let Ok(rh) = resp.Headers() else { return Ok(()) };
@@ -2447,7 +2454,9 @@ mod imp {
                             return env.CreateContextMenuItem(&HSTRING::from(""), None, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR).ok();
                         }
                         let kind = if it.children.is_empty() { COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND } else { COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU };
-                        let label = if it.shortcut.is_empty() { it.label.clone() } else { format!("{}\t{}", it.label, it.shortcut) };
+                        // WebView2 tidak menyediakan kolom pintasan untuk item buatan sendiri (tab di
+                        // label bisa tampil sebagai karakter aneh): pintasan ditulis dalam kurung.
+                        let label = if it.shortcut.is_empty() { it.label.clone() } else { format!("{} ({})", it.label, it.shortcut) };
                         let item = env.CreateContextMenuItem(&HSTRING::from(label.as_str()), None, kind).ok()?;
                         if it.children.is_empty() {
                             let (cmd, info, cb) = (it.cmd.clone(), info.clone(), cb.clone());
