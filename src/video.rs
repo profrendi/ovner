@@ -601,6 +601,32 @@ pub struct Spec {
     /// HTTP 429 seperti yt-dlp). Kosong = tidak dipakai. Gagal = ada berkas "<ini>.fail".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub page_srt: String,
+    /// Alamat stream yang tertangkap di halaman (HLS/DASH/MP4) bila yt-dlp tidak mengenali
+    /// halamannya. Kosong = unduh dari alamat halaman.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// Header untuk stream itu ("Referer: …", "Cookie: …"). Tidak pernah disimpan ke disk.
+    #[serde(skip)]
+    pub headers: Vec<String>,
+}
+
+/// Berkas konfigurasi sementara yt-dlp berisi --add-header (cookie tidak terlihat di daftar
+/// proses maupun di log). Dihapus setelah yt-dlp selesai.
+pub fn header_config(headers: &[String]) -> Option<PathBuf> {
+    if headers.is_empty() {
+        return None;
+    }
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let f = std::env::temp_dir().join(format!("ovner-yh-{}-{}.conf", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let mut text = String::new();
+    for h in headers {
+        if h.contains(['\r', '\n']) {
+            continue;
+        }
+        text.push_str(&format!("--add-header \"{}\"\n", h.replace('\\', "\\\\").replace('"', "\\\"")));
+    }
+    std::fs::write(&f, text).ok()?;
+    Some(f)
 }
 
 impl Spec {
@@ -1049,10 +1075,24 @@ pub fn unique_name(dir: &Path, name: &str, key: &str) -> String {
 
 /// Telusuri halaman dengan yt-dlp (`-J`): daftar format, judul, subtitle. Memblokir.
 pub fn probe(data: &Path, page_url: &str) -> Result<serde_json::Value, String> {
+    probe_with(data, page_url, &[])
+}
+
+/// Seperti `probe`, dengan header tambahan (stream yang tertangkap di halaman).
+pub fn probe_with(data: &Path, page_url: &str, headers: &[String]) -> Result<serde_json::Value, String> {
     let mut cmd = Command::new(ytdlp(data));
-    cmd.args(["-J", "--no-playlist", "--no-warnings", "--no-colors"]).args(tool_args(data)).arg(page_url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(["-J", "--no-playlist", "--no-warnings", "--no-colors"]).args(tool_args(data));
+    let conf = header_config(headers);
+    if let Some(c) = &conf {
+        cmd.arg("--config-locations").arg(c);
+    }
+    cmd.arg(page_url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut cmd);
-    let out = cmd.output().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"));
+    if let Some(c) = &conf {
+        let _ = std::fs::remove_file(c);
+    }
+    let out = out?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let line = err.lines().rev().find(|l| l.contains("ERROR")).unwrap_or("halaman ini tidak berisi video yang dikenali").trim();
@@ -1079,9 +1119,19 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
         .arg("-o")
         .arg(Path::new(&spec.dir).join(format!("{}.%(ext)s", strip_ext(&spec.name).replace('%', "%%"))));
     cmd.args(tool_args(data));
-    cmd.arg(&spec.page).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
+    let conf = header_config(&spec.headers);
+    if let Some(c) = &conf {
+        cmd.arg("--config-locations").arg(c);
+    }
+    let target = if spec.source.is_empty() { &spec.page } else { &spec.source };
+    cmd.arg(target).stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     hide_window(&mut cmd);
-    crate::log(&format!("yt-dlp {} → {}", args_for(spec).join(" "), spec.page));
+    if spec.source.is_empty() {
+        crate::log(&format!("yt-dlp {} → {}", args_for(spec).join(" "), spec.page));
+    } else {
+        let names: Vec<&str> = spec.headers.iter().filter_map(|h| h.split(':').next()).collect();
+        crate::log(&format!("yt-dlp {} → stream {} (halaman {}; header: {})", args_for(spec).join(" "), spec.source, spec.page, names.join(", ")));
+    }
     let mut child = cmd.spawn().map_err(|e| format!("yt-dlp tidak bisa dijalankan: {e}"))?;
     let (out, err) = (child.stdout.take(), child.stderr.take());
     let job = Job::new(Some(child));
@@ -1147,6 +1197,9 @@ pub fn start(data: &Path, spec: &Spec, cb: impl Fn(Event) + Send + Sync + 'stati
             }
         }
         let _ = std::fs::remove_file(&result_file);
+        if let Some(c) = &conf {
+            let _ = std::fs::remove_file(c);
+        }
         // Video tersimpan: subtitle diambil terpisah. Gagal subtitle tidak membuang videonya.
         let mut sub_err = String::new();
         let video_ok = ok && st.fatal.is_none() && st.file.as_deref().is_some_and(|p| Path::new(p).exists());

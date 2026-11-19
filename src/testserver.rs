@@ -70,12 +70,14 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
     r.read_line(&mut first)?;
     let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
     let mut range: Option<usize> = None;
+    let mut seen_headers = String::new();
     loop {
         let mut h = String::new();
         if r.read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
             break;
         }
         let low = h.to_ascii_lowercase();
+        seen_headers.push_str(&low);
         if let Some(v) = low.strip_prefix("range: bytes=") {
             range = v.trim().split('-').next().and_then(|a| a.parse().ok());
         }
@@ -99,6 +101,33 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
         "/pdf-big-nolen" => ("200 OK", "application/pdf", pdf(7 * 1_048_576), false, String::new()),
         "/pdf-big-len" => ("200 OK", "application/pdf", pdf(6 * 1_048_576), true, String::new()),
         "/yt-mock" => ("200 OK", "text/html; charset=utf-8", html("Uji YouTube", YT_MOCK), true, String::new()),
+        // Seperti YouTube: Trusted Types diwajibkan (innerHTML dengan teks biasa ditolak).
+        "/tt-video" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            html("Uji video Trusted Types", r#"<video id=v width=480 height=270 style="background:#000;display:block"></video>"#),
+            true,
+            "Content-Security-Policy: require-trusted-types-for 'script'\r\n".into(),
+        ),
+        "/iframe-video" => ("200 OK", "text/html; charset=utf-8", html("Uji video dalam iframe", r#"<iframe id=f src="/tt-video" style="width:640px;height:420px;border:0"></iframe>"#), true, String::new()),
+        // Pemutar HLS tiruan: halaman memuat daftar putar .m3u8 (seperti video.js di detik).
+        "/hls-page" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            html("Uji HLS", r#"<video id=v width=480 height=270 style="background:#000"></video><script>fetch("/media/master.m3u8").then(function(r){return r.text()}).then(function(t){document.title="HLS dimuat"});</script>"#),
+            true,
+            String::new(),
+        ),
+        "/media/master.m3u8" => ("200 OK", "application/vnd.apple.mpegurl", b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360/index.m3u8\n".to_vec(), true, String::new()),
+        "/echo" => ("200 OK", "text/plain; charset=utf-8", seen_headers.clone().into_bytes(), true, String::new()),
+        "/tr" => ("200 OK", "text/html; charset=utf-8", html("Translate test", r#"<p id=a>Hello world</p><p id=b>Good morning, how are you?</p><code id=c>let x = 1;</code>"#), true, String::new()),
+        "/read" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            html("Uji baca keras", "<article><p>Paragraf pertama untuk dibaca keras.</p><p>Paragraf kedua berisi beberapa kata lagi.</p><p>Paragraf ketiga adalah yang terakhir.</p></article>"),
+            true,
+            String::new(),
+        ),
         "/api/timedtext" => {
             let ok = path.contains("pot=");
             let body = if ok { r#"{"events":[{"tStartMs":0,"dDurationMs":1500,"segs":[{"utf8":"halo uji"}]}]}"# } else { "" };

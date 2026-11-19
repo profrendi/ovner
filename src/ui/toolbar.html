@@ -19,7 +19,7 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
-    font: 13px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+    font: 13px/1.2 var(--ovner-font, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif); user-select: none; }
   #tabs { height: 36px; display: flex; align-items: flex-end; padding: 0 6px; gap: 2px; overflow: hidden; }
   .tab { position: relative; flex: 0 1 220px; min-width: 48px; height: 30px; display: flex; align-items: center;
     gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; cursor: default; }
@@ -121,7 +121,8 @@
   .di { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-radius: 8px; }
   .di:hover { background: var(--field); }
   .di .dn { flex: 1; min-width: 0; }
-  .di .dn b { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .di .dn b { display: block; font-weight: 600; font-size: 13px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+  .di .db.pz.txt { width: auto; padding: 4px 10px; font: inherit; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); border-radius: 12px; white-space: nowrap; color: var(--accent); }
   .di .ds { font-size: 11.5px; color: var(--muted); }
   .di .pb { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
   .di .pb i { display: block; height: 100%; background: var(--accent); }
@@ -129,8 +130,8 @@
   .di .db:hover { background: var(--line); color: var(--text); }
   .dall { display: block; width: 100%; margin-top: 6px; padding: 8px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--accent); font: inherit; cursor: pointer; text-align: center; }
   /* Download box v2 (seperti Mister Download Manager), di dalam gelembung unduhan. */
-  #bubble.v2 { width: 470px; }
-  #bubble.v2 .dls { max-height: 430px; overflow-y: auto; overscroll-behavior: contain; }
+  #bubble.v2 { width: 560px; }
+  #bubble.v2 .dls { max-height: 620px; overflow-y: auto; overscroll-behavior: contain; }
   #bubble.v2 .di { align-items: flex-start; padding: 10px 6px; border-bottom: 1px solid var(--line); border-radius: 0; }
   #bubble.v2 .di:last-child { border-bottom: 0; }
   #bubble.v2 .pb { height: 8px; border-radius: 4px; margin: 6px 0 4px; display: flex; gap: 1px; background: none; }
@@ -147,7 +148,12 @@
   #bubble.v2 .sv b { display: inline; font-size: inherit; cursor: auto; color: var(--text); font-weight: 600; white-space: normal; }
   #bubble.v2 .ping.near { color: #2ea043; } #bubble.v2 .ping.mid { color: #d29922; } #bubble.v2 .ping.far { color: #e5534b; }
   #bubble.v2 .sv b.yes { color: #2ea043; } #bubble.v2 .sv b.no { color: #e5534b; }
-  #bubble.v2 .tg { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--field); color: var(--muted); margin-left: 6px; font-weight: 500; vertical-align: 1px; }
+  #bubble.v2 .tg { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 8px; background: var(--field); color: var(--muted); margin-left: 6px; font-weight: 600; vertical-align: 1px; white-space: nowrap; }
+  #bubble.v2 .tg.k-video { color: #c2410c; background: color-mix(in srgb, #f97316 16%, transparent); }
+  #bubble.v2 .tg.k-audio { color: #7c3aed; background: color-mix(in srgb, #8b5cf6 16%, transparent); }
+  #bubble.v2 .tg.k-subtitle { color: #0e7490; background: color-mix(in srgb, #06b6d4 16%, transparent); }
+  #bubble.v2 .tg.k-doc { color: #1d4ed8; background: color-mix(in srgb, #3b82f6 16%, transparent); }
+  #bubble.v2 .tg.k-image { color: #15803d; background: color-mix(in srgb, #22c55e 16%, transparent); }
   #bubble.v2 .pc { float: right; font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
   #dlbtn { display: none; position: relative; }
   #dlbtn.show { display: grid; }
@@ -290,6 +296,79 @@
   .bmm .empty { color: var(--muted); padding: 8px 12px; }
   #splitbox { display: none; gap: 2px; }
   #splitbox.show { display: flex; }
+  /* ===== 0.8.25 ===== */
+  /* Tampilan modern: sudut membulat, jarak lega, bayangan lembut (seperti LibreWolf/AMS). */
+  #tabs { padding: 0 8px; gap: 4px; }
+  .tab { border-radius: 10px 10px 0 0; padding: 0 6px 0 12px; transition: background .12s; }
+  .tab.active { box-shadow: 0 -1px 0 color-mix(in srgb, var(--line) 70%, transparent), 0 -2px 8px rgba(0,0,0,.06); }
+  #bar { gap: 6px; padding: 0 10px; }
+  .b { border-radius: 9px; transition: background .12s, color .12s; }
+  #addr { border-radius: 999px; padding-left: 38px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 55%, transparent); transition: background .12s, box-shadow .12s; }
+  #addr:hover { background: color-mix(in srgb, var(--field) 80%, var(--line)); }
+  #addr:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  #addr.trpad { padding-right: 64px; }
+  #star { border-radius: 50%; }
+  #trbtn { position: absolute; right: 32px; width: 26px; height: 26px; color: var(--muted); border-radius: 50%; }
+  #trbtn[hidden] { display: none; }
+  #trbtn.on { color: var(--accent); }
+  #bmbar { padding: 0 10px; gap: 4px; height: 30px; }
+  .bm { border-radius: 8px; padding: 0 10px 0 8px; transition: background .12s; }
+  .bm:hover { background: color-mix(in srgb, var(--field) 85%, var(--line)); }
+  #omni, #bubble, #codecpanel, #sleeppanel, #darkpanel, #vidpanel, #viddlg, #bmdlg, #memnote, #trpanel, #qrpanel, #readopts { border-radius: 16px; border-color: color-mix(in srgb, var(--line) 75%, transparent);
+    box-shadow: 0 12px 32px rgba(0,0,0,.22), 0 2px 6px rgba(0,0,0,.08); }
+  #omni { border-radius: 0 0 16px 16px; }
+  .bmm, #bmctx { border-radius: 14px; padding: 6px; border-color: color-mix(in srgb, var(--line) 75%, transparent); box-shadow: 0 12px 32px rgba(0,0,0,.24), 0 2px 6px rgba(0,0,0,.08); }
+  .bmm .r, #bmctx .ci { border-radius: 9px; height: 34px; }
+  .bmm .r:hover, .bmm .r.open, #bmctx .ci:hover { background: color-mix(in srgb, var(--accent) 12%, var(--field)); }
+  #sleeppanel .it { border-radius: 10px; }
+  #sleeppanel .it:hover { background: color-mix(in srgb, var(--accent) 10%, var(--field)); }
+  .bb button { border-radius: 999px; }
+  .px { all: unset; cursor: pointer; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+  .px:hover { background: var(--field); color: var(--text); }
+  #sleeppanel h3, #trpanel h3, #qrpanel h3, #readopts h3 { margin: 2px 2px 8px 8px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  /* Perekam masalah: tameng menjadi tombol rekam merah berkedip. */
+  #shield.rec { color: #e5484d; }
+  #shield.rec svg, #shield.rec #count { display: none; }
+  #shield.rec::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: #e5484d; box-shadow: 0 0 0 0 rgba(229,72,77,.6); animation: recpulse 1.1s ease-in-out infinite; }
+  #shield.rec::after { content: "REC"; font-size: 11px; font-weight: 700; letter-spacing: .05em; animation: recblink 1.1s steps(2, start) infinite; }
+  @keyframes recpulse { 0% { box-shadow: 0 0 0 0 rgba(229,72,77,.55); opacity: 1; } 70% { box-shadow: 0 0 0 7px rgba(229,72,77,0); opacity: .55; } 100% { box-shadow: 0 0 0 0 rgba(229,72,77,0); opacity: 1; } }
+  @keyframes recblink { to { visibility: hidden; } }
+  @media (prefers-reduced-motion: reduce) { #shield.rec::before, #shield.rec::after { animation: none; } }
+  /* Panel terjemahan (seperti Edge). */
+  #trpanel { position: absolute; right: 120px; top: 4px; width: 330px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; }
+  #trpanel.show { display: block; }
+  #trpanel .st { color: var(--text); margin: 0 2px 10px; line-height: 1.4; }
+  #trpanel .st.err, #readopts .err { color: #e5484d; }
+  #trpanel .k, #readopts .k { color: var(--muted); font-size: 12px; margin: 8px 2px 4px; }
+  #trpanel select, #readopts select { width: 100%; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); color: var(--text); font: inherit; padding: 0 10px; }
+  #trpanel .orig { color: var(--muted); font-size: 12px; max-height: 80px; overflow: auto; margin: 0 2px 8px; line-height: 1.4; }
+  #trpanel .out { background: var(--field); border-radius: 10px; padding: 10px 12px; max-height: 220px; overflow: auto; line-height: 1.5; user-select: text; white-space: pre-wrap; }
+  #trpanel .note, #readopts .note { color: var(--muted); font-size: 11.5px; margin-top: 10px; line-height: 1.4; }
+  #trpanel a, #readopts a { color: var(--accent); }
+  /* Panel kode QR. */
+  #qrpanel { position: absolute; right: 120px; top: 4px; width: 300px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; }
+  #qrpanel.show { display: block; }
+  #qrpanel img { display: block; width: 220px; height: 220px; margin: 4px auto 10px; border-radius: 12px; background: #fff; padding: 6px; image-rendering: pixelated; }
+  #qrpanel .u { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; text-align: center; }
+  /* Bilah Baca keras (seperti Read aloud Edge). */
+  #readbar { height: 40px; display: none; align-items: center; gap: 10px; padding: 0 12px; background: var(--bar); border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  #readbar.show { display: flex; }
+  #readbar .rl, #readbar .rr { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  #readbar .rr { justify-content: flex-end; }
+  #readbar .rm { display: flex; align-items: center; gap: 4px; }
+  #readbar .b.big { width: 36px; height: 32px; }
+  #readbar .b svg { fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+  #readbar .rs { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #readbar .rs.err { color: #e5484d; }
+  #readbar .ob { border: 1px solid var(--line); background: var(--field); color: var(--text); border-radius: 999px; height: 28px; padding: 0 12px; font: inherit; cursor: pointer; white-space: nowrap; }
+  #readbar .wave { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
+  #readbar .wave i { width: 3px; height: 5px; border-radius: 2px; background: var(--accent); opacity: .6; }
+  #readbar .wave.on i { animation: wave 0.9s ease-in-out infinite; }
+  #readbar .wave.on i:nth-child(2) { animation-delay: .15s; } #readbar .wave.on i:nth-child(3) { animation-delay: .3s; } #readbar .wave.on i:nth-child(4) { animation-delay: .45s; }
+  @keyframes wave { 50% { height: 14px; opacity: 1; } }
+  #readopts { position: absolute; right: 12px; top: 4px; width: 340px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; }
+  #readopts.show { display: block; }
+  #readopts input[type=range] { width: 100%; accent-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -303,6 +382,7 @@
   <div id="addrwrap">
     <span id="siteicon"></span>
     <input id="addr" spellcheck="false" autocomplete="off"><span id="ghost"></span><span id="measure"></span>
+    <button class="b" id="trbtn" hidden><svg viewBox="0 0 24 24"><path d="M4 5h9M8.5 3v2M6 5c.6 3 2.6 5.6 5.5 7M11 5c-.8 3.6-3.4 6.6-7 8.2M12.5 21l4-10 4 10M14 17.5h5"/></svg></button>
     <button class="b" id="star" title="Bookmark halaman ini (Ctrl+D)"><svg viewBox="0 0 24 24"><path d="M12 3l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.4l-5.7 3.1 1.2-6.4L2.8 9.7l6.4-.8z"/></svg></button>
   </div>
   <span id="splitbox">
@@ -325,9 +405,10 @@
   <button class="b" id="findnext" title="Berikutnya (Enter)"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
   <button class="b" id="findclose" title="Tutup (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
 </div>
+<div id="readbar"></div>
 <div class="line"></div>
 </div>
-<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="sleeppanel"></div><div id="memnote"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div></div>
+<div id="ov"><div id="omni"></div><div id="bubble"></div><div id="darkpanel"></div><div id="codecpanel"></div><div id="sleeppanel"></div><div id="memnote"></div><div id="vidpanel"></div><div id="viddlg"></div><div id="bmdlg"></div><div id="bmctx"></div><div id="bmmenus"></div><div id="trpanel"></div><div id="qrpanel"></div><div id="readopts"></div></div>
 <script>
 (function () {
   const send = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -867,6 +948,7 @@
       if ("usage" in m && window.ovner.usage) window.ovner.usage(m.usage);
       if (m.videoDlg && window.ovner.videoDlg) window.ovner.videoDlg(m.videoDlg);
       if ("codecNow" in m && window.ovner.codecNow) window.ovner.codecNow(m.codecNow);
+      for (const k of ["qr", "trSel", "reader", "ttsAudio", "ttsVoices", "mediaList"]) if (k in m && window.ovner[k]) window.ovner[k](m[k]);
     });
   }
   window.ovner = {
@@ -883,6 +965,7 @@
       if ("error" in o) { vd.error = o.error; vd.loading = false; }
       if (o.choices) {
         vd.choices = o.choices; vd.subs = o.subs || []; vd.loading = false; vd.error = ""; vd.tools = o.tools;
+        vd.source = o.source || ""; vd.viaStream = !!o.viaStream;
         if (o.title) vd.title = o.title;
         vd.name = o.name || vd.name; vd.suffix = "";
         vdSelect(o.choices.length ? o.choices[0].key : "");
@@ -952,6 +1035,7 @@
       renderDark();
       renderCodec();
       renderSleep();
+      renderExtras();
       renderMemNote();
       renderVid();
       renderBmDlg();
@@ -1133,7 +1217,8 @@
         const pct = d.total > 0 ? Math.min(100, (d.received / d.total) * 100) : 30;
         const live = d.state === "progress" || d.state === "paused";
         it.innerHTML = `<div class="dn"><b></b><div class="ds"></div>${live ? `<div class="pb"><i style="width:${pct}%"></i></div>` : ""}</div><button class="db pz"></button><button class="db"></button>`;
-        it.querySelector("b").textContent = d.name;
+        it.querySelector("b").textContent = d.shown || d.name;
+        it.querySelector("b").title = d.shown || d.name;
         if (state.dlV2) v2item(it, d, live, pct);
         else it.querySelector(".ds").textContent = live && d.note ? d.note : live ? `${sizeOf(d.received)}${d.total > 0 ? " / " + sizeOf(d.total) : ""}${d.state === "paused" ? " · " + W.dlPaused : d.speed ? " · " + sizeOf(d.speed) + "/s" : ""}${d.engine && d.conns && d.state === "progress" ? " · " + d.conns + "×" : ""}`
           : d.state === "failed" ? W.dlFailed + (d.error ? ": " + d.error : "") : d.exists ? sizeOf(d.received || d.total) + (d.error ? " · " + d.error : "") : W.dlDeleted;
@@ -1147,10 +1232,10 @@
           pz.onclick = () => send({ cmd: d.state === "paused" ? "dl-resume" : "dl-pause", id: d.id });
         } else if (d.subRetry) {
           // Video tersimpan tetapi subtitle gagal (mis. YouTube 429): ambil subtitle saja.
-          pz.textContent = "CC↻"; pz.title = W.dlSubRetry;
+          pz.textContent = state.lang === "en" ? "Retry CC" : "Ulangi CC"; pz.classList.add("txt"); pz.title = W.dlSubRetry;
           pz.onclick = () => send({ cmd: "video-sub-retry", id: d.id });
         } else if (d.subExtract) {
-          pz.textContent = "SRT"; pz.title = W.dlSubExtract;
+          pz.textContent = state.lang === "en" ? "Get .srt" : "Ambil .srt"; pz.classList.add("txt"); pz.title = W.dlSubExtract;
           pz.onclick = () => send({ cmd: "video-sub-extract", id: d.id });
         } else pz.remove();
         const act = it.querySelector(".db:not(.pz)");
@@ -1170,8 +1255,12 @@
   const flag = (c) => /^[A-Z]{2}$/.test(c || "") ? String.fromCodePoint(...[...c].map((ch) => 0x1f1a5 + ch.charCodeAt(0))) + " " : "";
   function v2item(it, d, live, pct) {
     const dn = it.querySelector(".dn");
-    if (d.folder && /^(Compressed|Documents|Music|Programs|Video|Torrents|Pictures)$/.test(d.folder)) {
-      const t = document.createElement("span"); t.className = "tg"; t.textContent = d.folder; dn.querySelector("b").append(t);
+    const KIND = state.lang === "en"
+      ? { video: "Video", audio: "Audio", subtitle: "Subtitle", doc: "Document", image: "Image", archive: "Archive", program: "Program", other: "File" }
+      : { video: "Video", audio: "Audio", subtitle: "Subtitle", doc: "Dokumen", image: "Gambar", archive: "Arsip", program: "Program", other: "Berkas" };
+    const kindTxt = KIND[d.kind] || (d.folder && /^(Compressed|Documents|Music|Programs|Video|Torrents|Pictures)$/.test(d.folder) ? d.folder : "");
+    if (kindTxt) {
+      const t = document.createElement("span"); t.className = "tg k-" + (d.kind || "other"); t.textContent = kindTxt; dn.querySelector("b").append(t);
     }
     const ds = dn.querySelector(".ds");
     const run = d.state === "progress" && !d.connecting;
@@ -1233,13 +1322,14 @@
       $("vidpanel").classList.contains("show") ? $("vidpanel").offsetHeight + 12 : 0,
       $("viddlg").classList.contains("show") ? $("viddlg").offsetHeight + 12 : 0,
       $("bmdlg").classList.contains("show") ? $("bmdlg").offsetHeight + 12 : 0,
-      $("bmctx").classList.contains("show") ? $("bmctx").offsetTop + $("bmctx").offsetHeight + 12 : 0);
+      $("bmctx").classList.contains("show") ? $("bmctx").offsetTop + $("bmctx").offsetHeight + 12 : 0,
+      ...["trpanel", "qrpanel", "readopts"].map((k) => $(k).classList.contains("show") ? $(k).offsetTop + $(k).offsetHeight + 12 : 0));
     let bm = 0;
     for (const p of document.querySelectorAll("#bmmenus .bmm")) bm = Math.max(bm, p.offsetTop + p.offsetHeight + 12);
     // Kotak-kotak overlay yang terlihat: Ovner hanya menutup halaman di kotak ini (bukan
     // selebar layar), jadi halaman tetap terlihat di sekeliling menu seperti di Brave.
     const rects = [];
-    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("codecpanel"), $("sleeppanel"), $("memnote"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), ...document.querySelectorAll("#bmmenus .bmm")]) {
+    for (const el of [$("omni"), $("bubble"), $("darkpanel"), $("codecpanel"), $("sleeppanel"), $("memnote"), $("vidpanel"), $("viddlg"), $("bmdlg"), $("bmctx"), $("trpanel"), $("qrpanel"), $("readopts"), ...document.querySelectorAll("#bmmenus .bmm")]) {
       if (!el || !el.offsetParent || !el.offsetWidth) continue;
       const r = el.getBoundingClientRect();
       rects.push([r.left, r.top, r.width, r.height + 10]);
@@ -1464,6 +1554,7 @@
     $("sleepbtn").title = w.btn;
     if (!sleepOpen) return;
     const p = $("sleeppanel"); p.textContent = "";
+    { const hd = document.createElement("h3"); const t = document.createElement("span"); t.textContent = w.btn; hd.append(t, xBtn(closeSleep)); p.append(hd); }
     const item = (title, desc, fn) => {
       const b = document.createElement("button"); b.className = "it";
       const box = document.createElement("div");
@@ -1560,7 +1651,7 @@
     if (!c || !vd.dir) return;
     const sb = (vd.subs || []).find((x) => x.lang === vd.sub);
     send({ cmd: "video-start", url: vd.url, key: c.key, fmt: c.fmt || "", dir: vd.dir, name: vd.name, sub: c.kind === "audio" ? "" : vd.sub || "",
-      subAuto: !!(sb && sb.auto), embed: !!vd.embed, srt: !!vd.srt, later: !!later });
+      subAuto: !!(sb && sb.auto), embed: !!vd.embed, srt: !!vd.srt, later: !!later, source: vd.source || "" });
     closeVidDlg();
   }
   function renderVidDlg() {
@@ -1578,6 +1669,7 @@
     const look = el("button", { className: "btn", textContent: w.look, onclick: () => { vd.loading = true; vd.error = ""; vd.choices = []; renderVidDlg(); send({ cmd: "video-lookup", url: vd.url }); } });
     p.append(el("div", { className: "row" }, url, look));
     p.append(el("div", { className: "ttl", textContent: vd.title || "", title: vd.title || "" }));
+    if (vd.viaStream) p.append(el("div", { className: "note", textContent: state.lang === "en" ? "yt-dlp doesn't recognise this page, so the video stream Ovner detected on the page is used (like IDM)." : "yt-dlp tidak mengenali halaman ini, jadi stream video yang tertangkap Ovner di halaman dipakai (seperti IDM)." }));
     const list = el("div", { className: "list", tabIndex: 0 }); list.dataset.k = "list";
     if (vd.loading) list.append(el("div", { className: "msg", textContent: vd.note || w.loading }));
     else if (vd.error) list.append(el("div", { className: "msg err", textContent: vd.error }));
@@ -1667,6 +1759,7 @@
       else if (k === "h") c = "history";
       else if (k === "j") c = "downloads";
       else if (k === "p") c = "print";
+      else if (k === "u") c = e.shiftKey ? "read" : "source";
       else if (k === "tab" || k === "pagedown") c = e.shiftKey || k === "pageup" ? "prevtab" : "nexttab";
       else if (k === "pageup") c = "prevtab";
       else if (/^[1-9]$/.test(k)) c = "tab" + k;
@@ -1675,6 +1768,343 @@
     else if (k === "escape" && $("find").classList.contains("show")) c = "find-close";
     if (c) { e.preventDefault(); send({ cmd: "key", k: c }); }
   });
+  // ===== 0.8.25: panel tertutup saat klik di luar/Esc, perekam berkedip, terjemahan, kode QR, baca keras =====
+  let lastTbClick = 0;
+  document.addEventListener("pointerdown", () => { lastTbClick = Date.now(); }, true);
+  // Halaman diklik (Ovner memberi tahu lewat fokus tab) atau Esc: semua panel ikon kanan atas ditutup.
+  function closePanels(force) {
+    if (!force && Date.now() - lastTbClick < 350) return;
+    hideOmni(); closeDark(); closeCodec(); closeSleep(); closeVid(); closeBm(); closeTr(); closeQr(); closeReadOpts();
+    $("bmctx").classList.remove("show");
+    if (state && state.dlBubble && !state.pwOffer) send({ cmd: "bubble-close" });
+    if (state && state.bmEdit) send({ cmd: "bm-close" });
+    sendHeight();
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    const a = document.activeElement;
+    if (a === addr || a === findq || (a && $("viddlg").contains(a))) return;
+    closePanels(true);
+  });
+  const xBtn = (fn) => { const b = document.createElement("button"); b.className = "px"; b.textContent = "✕"; b.title = state && state.lang === "en" ? "Close (Esc)" : "Tutup (Esc)"; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
+  const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const LX = () => state && state.lang === "en";
+  const langName = (code) => {
+    const c = (code || "").toLowerCase();
+    const row = (state.langs || []).find((l) => l[0].toLowerCase() === c) || (state.langs || []).find((l) => l[0].toLowerCase().split("-")[0] === c.split("-")[0]);
+    return row ? (LX() ? row[2] : row[1]) : (code || "");
+  };
+
+  // ---- Perekam masalah: tameng menjadi tombol rekam merah berkedip ----
+  const shOrig = $("shield").onclick;
+  $("shield").onclick = (e) => { if (state.recording) { send({ cmd: "shield-rec-stop" }); return; } shOrig(e); };
+  $("shield").addEventListener("contextmenu", (e) => { if (state.recording) { e.preventDefault(); shOrig({ currentTarget: $("shield") }); } });
+
+  // ---- Terjemahan (seperti Edge) ----
+  let trOpen = false, trSelData = null, trPick = "";
+  function closeTr() { if (!trOpen) return; trOpen = false; trSelData = null; $("trpanel").classList.remove("show"); sendHeight(); }
+  function renderTr() {
+    const tr = state.tr;
+    const b = $("trbtn");
+    const show = !!tr && (tr.on || (tr.lang && !/^(id|in)\b/i.test(tr.lang)));
+    b.hidden = !show;
+    b.classList.toggle("on", !!(tr && tr.on));
+    b.title = LX() ? "Translate this page" : "Terjemahkan halaman ini";
+    $("addr").classList.toggle("trpad", show);
+    if (!trOpen) return;
+    const p = $("trpanel"); p.textContent = "";
+    const hd = mk("h3"); hd.append(mk("span", "", LX() ? "Translate" : "Terjemahan"), xBtn(closeTr)); p.append(hd);
+    if (trSelData) {
+      const o = trSelData;
+      p.append(mk("div", "orig", o.text.length > 300 ? o.text.slice(0, 300) + "…" : o.text));
+      if (o.busy) p.append(mk("div", "st", LX() ? "Translating…" : "Menerjemahkan…"));
+      else if (o.err) p.append(mk("div", "st err", o.err));
+      else {
+        p.append(mk("div", "out", o.out));
+        const row = mk("div", "bb");
+        const cp = mk("button", "pri", LX() ? "Copy" : "Salin"); cp.onclick = () => { send({ cmd: "copy-text", text: o.out }); cp.textContent = LX() ? "Copied" : "Tersalin"; };
+        row.append(cp); p.append(row);
+        if (o.from) p.append(mk("div", "note", (LX() ? "From " : "Dari bahasa ") + langName(o.from)));
+      }
+      sendHeight();
+      return;
+    }
+    if (!tr) { p.append(mk("div", "st", LX() ? "This page can't be translated." : "Halaman ini tidak bisa diterjemahkan.")); sendHeight(); return; }
+    const pct = tr.total > 0 ? Math.min(100, Math.round(tr.done * 100 / tr.total)) : 0;
+    p.append(mk("div", "st", tr.on ? (tr.busy ? (LX() ? `Translating… ${pct}%` : `Menerjemahkan… ${pct}%`) : (LX() ? "Page translated" : "Halaman sudah diterjemahkan"))
+      : tr.lang ? (LX() ? `This page is in ${langName(tr.lang)}` : `Halaman ini berbahasa ${langName(tr.lang)}`) : (LX() ? "Translate this page?" : "Terjemahkan halaman ini?")));
+    p.append(mk("div", "k", LX() ? "Translate to" : "Terjemahkan ke"));
+    const sel = mk("select");
+    const cur = trPick || (tr.on ? tr.to : tr.auto);
+    for (const l of state.langs || []) { const o = mk("option", "", LX() ? l[2] : l[1]); o.value = l[0]; o.selected = l[0] === cur; sel.append(o); }
+    sel.onchange = () => { trPick = sel.value; if (tr.on) send({ cmd: "tr-start", to: sel.value }); };
+    p.append(sel);
+    if (tr.err) p.append(mk("div", "st err", tr.err));
+    const row = mk("div", "bb");
+    if (tr.on) {
+      const orig = mk("button", "", LX() ? "Show original" : "Tampilkan asli"); orig.onclick = () => { send({ cmd: "tr-restore" }); trPick = ""; };
+      const done = mk("button", "pri", LX() ? "Done" : "Selesai"); done.onclick = closeTr;
+      row.append(orig, done);
+    } else {
+      const go = mk("button", "pri", LX() ? "Translate" : "Terjemahkan"); go.onclick = () => send({ cmd: "tr-start", to: sel.value });
+      row.append(go);
+    }
+    p.append(row);
+    const note = mk("div", "note");
+    note.append((LX() ? "Via " : "Lewat ") + (tr.device ? (LX() ? "Chromium's offline translator" : "penerjemah offline Chromium") : tr.engine === "google" ? "Google" : "Microsoft") + " · ");
+    const a = mk("a", "", LX() ? "Settings" : "Pengaturan"); a.href = "#"; a.onclick = (e) => { e.preventDefault(); closeTr(); send({ cmd: "tr-settings" }); };
+    note.append(a); p.append(note);
+    sendHeight();
+  }
+  $("trbtn").onclick = () => {
+    if (trOpen) { closeTr(); return; }
+    closePanels(true); trOpen = true; trSelData = null; trPick = ""; $("trpanel").classList.add("show"); renderTr();
+  };
+
+  // ---- Kode QR ----
+  let qrData = null;
+  function closeQr() { if (!qrData) return; qrData = null; $("qrpanel").classList.remove("show"); sendHeight(); }
+  function renderQr() {
+    const p = $("qrpanel"); p.textContent = "";
+    if (!qrData) return;
+    const hd = mk("h3"); hd.append(mk("span", "", LX() ? "QR code" : "Kode QR"), xBtn(closeQr)); p.append(hd);
+    const img = mk("img"); img.src = "data:image/svg+xml;utf8," + encodeURIComponent(qrData.svg); img.alt = "QR"; p.append(img);
+    p.append(mk("div", "u", qrData.url));
+    const row = mk("div", "bb");
+    const cp = mk("button", "", LX() ? "Copy address" : "Salin alamat"); cp.onclick = () => { send({ cmd: "copy-text", text: qrData.url }); cp.textContent = LX() ? "Copied" : "Tersalin"; };
+    const dl = mk("button", "pri", LX() ? "Download PNG" : "Unduh PNG");
+    dl.onclick = () => {
+      const c = document.createElement("canvas"); c.width = c.height = 600;
+      const g = c.getContext("2d"); g.imageSmoothingEnabled = false; g.fillStyle = "#fff"; g.fillRect(0, 0, 600, 600); g.drawImage(img, 0, 0, 600, 600);
+      send({ cmd: "qr-save", png: c.toDataURL("image/png"), url: qrData.url }); closeQr();
+    };
+    row.append(cp, dl); p.append(row);
+    sendHeight();
+  }
+
+  // ---- Baca keras (seperti Read aloud Edge): suara Windows atau suara online ----
+  const RD = { open: false, n: 0, paras: [], i: 0, playing: false, paused: false, engine: "local", voice: "", rate: 100, lang: "", title: "",
+    online: { edge: null, azure: null }, err: "", audio: null, chunks: [], ck: 0, req: 0, cache: new Map(), waiting: null, azure: false };
+  const synth = window.speechSynthesis;
+  function localVoices() { try { return synth ? synth.getVoices() : []; } catch (e) { return []; } }
+  if (synth) synth.onvoiceschanged = () => { if (readOptsOpen) renderReadOpts(); };
+  const baseLang = (l) => (l || "").toLowerCase().split(/[-_]/)[0];
+  function pickLocal() {
+    const vs = localVoices();
+    return vs.find((v) => v.name === RD.voice) || vs.find((v) => baseLang(v.lang) === baseLang(RD.lang || "id")) || vs.find((v) => v.default) || vs[0] || null;
+  }
+  function pickOnline() {
+    const list = RD.online[RD.engine] || [];
+    if (RD.voice && list.some((v) => v.name === RD.voice)) return RD.voice;
+    if (RD.voice && !list.length && RD.voice.includes("Neural")) return RD.voice;
+    const want = baseLang(RD.lang || "id");
+    const pref = { id: "id-ID-GadisNeural", en: "en-US-AriaNeural", ms: "ms-MY-YasminNeural", jv: "jv-ID-SitiNeural", su: "su-ID-TutiNeural", ja: "ja-JP-NanamiNeural", ar: "ar-SA-ZariyahNeural", zh: "zh-CN-XiaoxiaoNeural", ko: "ko-KR-SunHiNeural" };
+    const v = list.find((x) => x.name === pref[want]) || list.find((x) => baseLang(x.locale) === want);
+    return v ? v.name : pref[want] || "id-ID-GadisNeural";
+  }
+  function splitChunks(text) {
+    const out = []; let rest = text;
+    while (rest.length > 1400) {
+      let cut = rest.lastIndexOf(". ", 1400); if (cut < 400) cut = rest.lastIndexOf(" ", 1400); if (cut < 1) cut = 1400;
+      out.push(rest.slice(0, cut + 1)); rest = rest.slice(cut + 1);
+    }
+    if (rest.trim()) out.push(rest);
+    return out;
+  }
+  function mark(i, a, len) { send({ cmd: "read-mark", n: RD.n, i, a, len }); }
+  function stopSound() {
+    try { if (synth) synth.cancel(); } catch (e) {}
+    if (RD.audio) { try { RD.audio.pause(); } catch (e) {} RD.audio = null; }
+    RD.waiting = null;
+  }
+  function playPara(i) {
+    stopSound();
+    if (i < 0) i = 0;
+    if (i >= RD.paras.length) { RD.playing = false; RD.paused = false; renderReadbar(); send({ cmd: "read-mark", n: RD.n, i: -1, a: 0, len: 0 }); return; }
+    RD.i = i; RD.playing = true; RD.paused = false; RD.err = "";
+    const text = RD.paras[i];
+    mark(i, 0, 0);
+    if (RD.engine === "local") {
+      if (!synth) { RD.err = LX() ? "Windows voices are unavailable" : "Suara Windows tidak tersedia"; renderReadbar(); return; }
+      const u = new SpeechSynthesisUtterance(text);
+      const v = pickLocal(); if (v) { u.voice = v; u.lang = v.lang; }
+      u.rate = Math.max(0.5, Math.min(3, RD.rate / 100));
+      u.onboundary = (e) => { if (e.name === "word" && RD.i === i) { const m = /^[\p{L}\p{N}'’-]+/u.exec(text.slice(e.charIndex)); mark(i, e.charIndex, e.charLength || (m ? m[0].length : 1)); } };
+      u.onend = () => { if (RD.playing && !RD.paused && RD.i === i) playPara(i + 1); };
+      u.onerror = (e) => { if (e.error !== "interrupted" && e.error !== "canceled") { RD.err = String(e.error || "error"); renderReadbar(); } };
+      synth.speak(u);
+    } else {
+      RD.chunks = splitChunks(text); RD.ck = 0;
+      playChunk(i, 0);
+      // Paragraf berikutnya disiapkan lebih dulu supaya tidak ada jeda.
+      if (i + 1 < RD.paras.length) fetchChunk(i + 1, 0, splitChunks(RD.paras[i + 1])[0] || "");
+    }
+    renderReadbar();
+  }
+  function chunkKey(i, k) { return `${RD.engine}|${pickOnline()}|${RD.rate}|${i}|${k}`; }
+  function fetchChunk(i, k, text) {
+    const key = chunkKey(i, k);
+    if (RD.cache.has(key) || !text.trim()) return;
+    RD.cache.set(key, null);
+    send({ cmd: "tts", req: key, engine: RD.engine, voice: pickOnline(), rate: RD.rate, text });
+  }
+  function playChunk(i, k) {
+    const text = RD.chunks[k] || "";
+    const key = chunkKey(i, k);
+    const got = RD.cache.get(key);
+    if (!got) { RD.waiting = { i, k, key }; fetchChunk(i, k, text); renderReadbar(); return; }
+    RD.waiting = null;
+    if (got.err) { fallbackLocal(got.err); return; }
+    const offset = RD.chunks.slice(0, k).join("").length;
+    const au = new Audio("data:audio/mpeg;base64," + got.mp3);
+    RD.audio = au;
+    let cursor = 0, mi = 0;
+    au.ontimeupdate = () => {
+      const t = au.currentTime * 1000;
+      while (mi < got.marks.length && got.marks[mi][0] <= t + 60) {
+        const w = got.marks[mi][2]; const at = text.indexOf(w, cursor);
+        if (at >= 0) { cursor = at + w.length; mark(i, offset + at, w.length); }
+        mi++;
+      }
+    };
+    au.onended = () => {
+      if (!RD.playing || RD.paused || RD.audio !== au) return;
+      if (k + 1 < RD.chunks.length) playChunk(i, k + 1); else playPara(i + 1);
+    };
+    au.play().catch((e) => fallbackLocal(String(e)));
+    if (k + 1 < RD.chunks.length) fetchChunk(i, k + 1, RD.chunks[k + 1]);
+    renderReadbar();
+  }
+  function fallbackLocal(err) {
+    RD.err = (LX() ? "Online voice failed, using Windows voice: " : "Suara online gagal, memakai suara Windows: ") + err;
+    RD.engine = "local";
+    playPara(RD.i);
+  }
+  function closeReader(silent) {
+    stopSound();
+    RD.open = false; RD.playing = false; RD.cache.clear();
+    closeReadOpts();
+    $("readbar").classList.remove("show");
+    if (!silent) send({ cmd: "read-stop" });
+    sendHeight();
+  }
+  function togglePause() {
+    if (!RD.playing) { playPara(RD.i); return; }
+    if (RD.paused) {
+      RD.paused = false;
+      if (RD.engine === "local") { try { synth.resume(); } catch (e) {} if (synth && !synth.speaking) playPara(RD.i); }
+      else if (RD.audio) RD.audio.play(); else playPara(RD.i);
+    } else {
+      RD.paused = true;
+      if (RD.engine === "local") { try { synth.pause(); } catch (e) {} } else if (RD.audio) RD.audio.pause();
+    }
+    renderReadbar();
+  }
+  const ICON = {
+    prev: '<svg viewBox="0 0 24 24"><path d="M6 5v14M18 6l-9 6 9 6z"/></svg>',
+    next: '<svg viewBox="0 0 24 24"><path d="M18 5v14M6 6l9 6-9 6z"/></svg>',
+    play: '<svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>',
+  };
+  function renderReadbar() {
+    const bar = $("readbar");
+    bar.classList.toggle("show", RD.open);
+    if (!RD.open) { sendHeight(); return; }
+    bar.textContent = "";
+    const left = mk("div", "rl");
+    const wave = mk("span", "wave" + (RD.playing && !RD.paused ? " on" : "")); for (let k = 0; k < 4; k++) wave.append(mk("i"));
+    left.append(wave, mk("b", "", LX() ? "Read aloud" : "Baca keras"));
+    const mid = mk("div", "rm");
+    const btn = (html, title, fn, cls) => { const b = mk("button", "b" + (cls ? " " + cls : "")); b.innerHTML = html; b.title = title; b.onclick = fn; return b; };
+    mid.append(btn(ICON.prev, LX() ? "Previous paragraph" : "Paragraf sebelumnya", () => playPara(RD.i - 1)),
+      btn(RD.playing && !RD.paused ? ICON.pause : ICON.play, RD.playing && !RD.paused ? (LX() ? "Pause (Ctrl+Shift+U)" : "Jeda (Ctrl+Shift+U)") : (LX() ? "Play" : "Putar"), togglePause, "big"),
+      btn(ICON.next, LX() ? "Next paragraph" : "Paragraf berikutnya", () => playPara(RD.i + 1)));
+    const right = mk("div", "rr");
+    const st = mk("span", "rs", RD.err ? RD.err : RD.waiting ? (LX() ? "Preparing voice…" : "Menyiapkan suara…") : `${Math.min(RD.i + 1, RD.paras.length)}/${RD.paras.length}`);
+    if (RD.err) st.classList.add("err");
+    const opts = mk("button", "ob", (LX() ? "Voice options" : "Opsi suara") + " ▾"); opts.onclick = () => { readOptsOpen ? closeReadOpts() : openReadOpts(); };
+    right.append(st, opts, xBtn(() => closeReader(false)));
+    bar.append(left, mid, right);
+    sendHeight();
+  }
+  let readOptsOpen = false;
+  function closeReadOpts() { if (!readOptsOpen) return; readOptsOpen = false; $("readopts").classList.remove("show"); sendHeight(); }
+  function openReadOpts() {
+    readOptsOpen = true; $("readopts").classList.add("show");
+    if (RD.engine !== "local" && !RD.online[RD.engine]) send({ cmd: "tts-voices", engine: RD.engine });
+    renderReadOpts();
+  }
+  function renderReadOpts() {
+    const p = $("readopts"); p.textContent = "";
+    if (!readOptsOpen) return;
+    const hd = mk("h3"); hd.append(mk("span", "", LX() ? "Voice options" : "Opsi suara"), xBtn(closeReadOpts)); p.append(hd);
+    p.append(mk("div", "k", (LX() ? "Speed: " : "Kecepatan: ") + (RD.rate / 100).toFixed(1) + "×"));
+    const rg = mk("input"); rg.type = "range"; rg.min = 50; rg.max = 300; rg.step = 10; rg.value = RD.rate;
+    rg.oninput = () => { RD.rate = +rg.value; p.querySelector(".k").textContent = (LX() ? "Speed: " : "Kecepatan: ") + (RD.rate / 100).toFixed(1) + "×"; };
+    rg.onchange = () => { send({ cmd: "tts-set", rate: RD.rate }); RD.cache.clear(); if (RD.playing && !RD.paused) playPara(RD.i); };
+    p.append(rg);
+    p.append(mk("div", "k", LX() ? "Voice source" : "Sumber suara"));
+    const eng = mk("select");
+    for (const [v, id, en] of [["local", "Suara Windows (offline)", "Windows voices (offline)"], ["edge", "Natural online (seperti Edge)", "Natural online (like Edge)"], ["azure", "Azure Speech (kunci sendiri)", "Azure Speech (your key)"]]) {
+      const o = mk("option", "", LX() ? en : id); o.value = v; o.selected = v === RD.engine; eng.append(o);
+    }
+    eng.onchange = () => { RD.engine = eng.value; RD.voice = ""; RD.err = ""; RD.cache.clear(); send({ cmd: "tts-set", engine: RD.engine, voice: "" }); if (RD.engine !== "local" && !RD.online[RD.engine]) send({ cmd: "tts-voices", engine: RD.engine }); renderReadOpts(); if (RD.playing) playPara(RD.i); };
+    p.append(eng);
+    p.append(mk("div", "k", LX() ? "Choose a voice" : "Pilih suara"));
+    const vs = mk("select");
+    if (RD.engine === "local") {
+      const cur = pickLocal();
+      const list = localVoices();
+      if (!list.length) vs.append(mk("option", "", LX() ? "No Windows voices found" : "Tidak ada suara Windows"));
+      for (const v of list) { const o = mk("option", "", `${v.name} (${v.lang})`); o.value = v.name; o.selected = cur && v.name === cur.name; vs.append(o); }
+      if (!list.some((v) => baseLang(v.lang) === "id")) p.append(mk("div", "note", LX() ? "No Indonesian Windows voice. Install it in Settings → Time & Language → Speech, or use Natural online." : "Belum ada suara Windows bahasa Indonesia. Pasang di Settings → Time & Language → Speech, atau pakai Natural online."));
+    } else {
+      const list = RD.online[RD.engine];
+      if (list && list.err) { vs.append(mk("option", "", list.err)); }
+      else if (!list) vs.append(mk("option", "", LX() ? "Loading voices…" : "Memuat daftar suara…"));
+      else {
+        const cur = pickOnline();
+        const want = baseLang(RD.lang || "id");
+        const sorted = [...list].sort((a, b) => (baseLang(b.locale) === want) - (baseLang(a.locale) === want) || a.label.localeCompare(b.label));
+        for (const v of sorted) { const o = mk("option", "", v.label); o.value = v.name; o.selected = v.name === cur; vs.append(o); }
+      }
+    }
+    vs.onchange = () => { RD.voice = vs.value; RD.cache.clear(); send({ cmd: "tts-set", voice: RD.voice }); if (RD.playing && !RD.paused) playPara(RD.i); };
+    p.append(vs);
+    if (RD.engine === "azure" && !RD.azure) p.append(mk("div", "note err", LX() ? "Fill in the Azure Speech key in Settings → Translation and read aloud." : "Isi kunci Azure Speech di Pengaturan → Terjemahan dan baca keras."));
+    const note = mk("div", "note");
+    const a = mk("a", "", LX() ? "Read-aloud settings" : "Pengaturan baca keras"); a.href = "#"; a.onclick = (e) => { e.preventDefault(); closeReadOpts(); send({ cmd: "read-settings" }); };
+    note.append(a); p.append(note);
+    sendHeight();
+  }
+  Object.assign(window.ovner, {
+    closePanels() { closePanels(false); },
+    trOpen() { closePanels(true); trOpen = true; trSelData = null; trPick = ""; $("trpanel").classList.add("show"); renderTr(); },
+    trSel(o) { closePanels(true); trOpen = true; trSelData = o; $("trpanel").classList.add("show"); renderTr(); },
+    qr(o) { closePanels(true); qrData = o; $("qrpanel").classList.add("show"); renderQr(); },
+    reader(o) {
+      stopSound();
+      Object.assign(RD, { open: true, n: o.n, paras: o.paras || [], i: o.start || 0, playing: false, paused: false, engine: o.engine || "local", voice: o.voice || "", rate: o.rate || 100, lang: o.lang || "", title: o.title || "", err: "", azure: !!o.azure });
+      RD.cache.clear();
+      if (!RD.paras.length) { RD.err = LX() ? "No readable text on this page" : "Tidak ada teks yang bisa dibaca di halaman ini"; renderReadbar(); return; }
+      if (RD.engine !== "local" && !RD.online[RD.engine]) send({ cmd: "tts-voices", engine: RD.engine });
+      playPara(RD.i);
+    },
+    readerToggle() { if (RD.open) togglePause(); },
+    readerStop() { if (RD.open) closeReader(true); },
+    ttsAudio(o) {
+      if (!RD.cache.has(o.req)) return;
+      RD.cache.set(o.req, o.err ? { err: o.err } : { mp3: o.mp3, marks: o.marks || [] });
+      if (RD.waiting && RD.waiting.key === o.req && RD.playing && !RD.paused) playChunk(RD.waiting.i, RD.waiting.k);
+    },
+    ttsVoices(o) { RD.online[o.engine] = o.err ? { err: o.err } : o.voices; if (readOptsOpen) renderReadOpts(); },
+  });
+  function renderExtras() {
+    const sh = $("shield");
+    sh.classList.toggle("rec", !!state.recording);
+    if (state.recording) sh.title = LX() ? "Recording a problem… click to stop and save" : "Merekam masalah… klik untuk berhenti dan menyimpan";
+    renderTr();
+  }
   document.addEventListener("contextmenu", (e) => { if (e.target !== addr && e.target !== findq) e.preventDefault(); });
   applyLang("id");
   document.documentElement.lang = "";

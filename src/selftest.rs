@@ -31,6 +31,8 @@ pub const HIDDEN: &[(&str, &str)] = &[
     ("force_dark", "lama: hanya dibaca untuk migrasi"),
     ("no_gpu", "lama: hanya dibaca untuk migrasi"),
     ("youtube_h264", "lama: hanya dibaca untuk migrasi"),
+    ("tts_voice", "dipilih di bilah Baca keras (Opsi suara)"),
+    ("tts_rate", "dipilih di bilah Baca keras (Kecepatan)"),
 ];
 
 /// Satu baris di Pengaturan: (bagian, kunci, jenis, label).
@@ -258,7 +260,7 @@ pub fn setting_rows(s: &Settings, running_args: &str, special: &Special) -> Vec<
             "section": r.section,
             "key": r.key,
             "label": r.label,
-            "value": crate::settings::short_value(&v),
+            "value": if r.key == "tts_azure_key" { if v.as_str().is_some_and(|x| !x.is_empty()) { "\"(ada, terenkripsi)\"".to_string() } else { "\"\"".to_string() } } else { crate::settings::short_value(&v) },
             "default": def.get(&r.key) == Some(&v),
             "how": how.join(" · "),
             "status": status,
@@ -269,6 +271,58 @@ pub fn setting_rows(s: &Settings, running_args: &str, special: &Special) -> Vec<
         let v = cur.get(*k).cloned().unwrap_or(Value::Null);
         out.push(json!({"section": "Tidak tampil di Pengaturan", "key": k, "label": why, "value": crate::settings::short_value(&v), "default": def.get(*k) == Some(&v), "how": why, "status": special.get(*k).map(|x| x.0.as_str()).unwrap_or("info"), "msg": special.get(*k).map(|x| x.1.clone()).unwrap_or_default()}));
     }
+    out
+}
+
+/// Bukti setelan dari log (sesi ini) dan penghitung harian: (kunci, keterangan).
+pub fn proofs(lines: &[String], counts: &std::collections::BTreeMap<String, u64>) -> Vec<(String, String)> {
+    // Baris sejak Ovner terakhir dibuka.
+    let start = lines.iter().rposition(|l| l.contains("==== Ovner ") && l.contains(" mulai")).unwrap_or(0);
+    let session = &lines[start..];
+    let find = |pats: &[&str]| -> Option<(usize, String)> {
+        let hits: Vec<&String> = session.iter().filter(|l| pats.iter().all(|p| l.contains(p))).collect();
+        let last = hits.last()?;
+        let time = last.get(11..19).unwrap_or("").to_string();
+        Some((hits.len(), time))
+    };
+    let mut out = Vec::new();
+    let mut by_log = |keys: &[&str], pats: &[&str], what: &str| {
+        if let Some((n, t)) = find(pats) {
+            for k in keys {
+                out.push((k.to_string(), format!("terbukti di log: {what} {n}× sesi ini, terakhir {t}")));
+            }
+        }
+    };
+    by_log(&["sleep_tabs_minutes"], &["[tidur] tab ditidurkan", "tidak dibuka >"], "tab ditidurkan karena tidak dibuka");
+    by_log(&["keep_live_tabs"], &["[tidur] tab ditidurkan", "tab terakhir"], "tab di luar N tab terakhir ditidurkan");
+    by_log(&["sleep_minimized", "sleep_minimized_secs"], &["[tidur] tab ditidurkan", "diminimalkan/di tray"], "tab ditidurkan saat diminimalkan");
+    by_log(&["trim_every_minutes"], &["RAM dirapikan"], "RAM dirapikan");
+    by_log(&["low_memory_when_hidden", "trim_when_hidden"], &["mode hemat:"], "mode hemat saat diminimalkan/di tray");
+    by_log(&["efficiency_mode"], &["efisiensi per proses"], "mode efisiensi Windows");
+    by_log(&["suspend_hidden_tabs"], &["ditangguhkan"], "tab di belakang ditangguhkan");
+    by_log(&["bloat_guard", "bloat_mb"], &["membengkak"], "penjaga tab membengkak");
+    by_log(&["background_media", "background_media_minutes"], &["dijeda"], "video/musik di latar dijeda");
+    by_log(&["pdf_download", "pdf_download_mb", "pdf_unknown", "pdf_show_sites", "pdf_download_sites"], &["[pdf]"], "aturan PDF dipakai");
+    by_log(&["dl_engine", "dl_connections", "dl_min_mb"], &["mesin unduh Ovner"], "mesin unduh multi-koneksi");
+    by_log(&["video_subs_page"], &["subtitle lewat halaman YouTube berhasil"], "subtitle lewat halaman YouTube");
+    by_log(&["video_button"], &["telusuri video"], "unduh video");
+    by_log(&["video_sniff"], &["media terdeteksi"], "video tertangkap di halaman");
+    by_log(&["yt_codec", "yt_block_av1", "yt_block_vp9", "yt_block_vp8", "yt_block_h264", "yt_block_60fps", "yt_block_opus", "yt_block_aac"], &["[codec] YouTube"], "codec YouTube tercatat");
+    by_log(&["popups_to_tabs"], &["pop-up dibuka sebagai tab"], "pop-up jadi tab");
+    by_log(&["translate_engine", "translate_to"], &["[terjemah] halaman diterjemahkan"], "halaman diterjemahkan");
+    by_log(&["tts_engine"], &["[baca] baca keras dimulai"], "baca keras");
+    by_log(&["auto_update_filters", "filter_update_hours"], &["[shields] daftar filter"], "daftar filter diperbarui");
+    by_log(&["diagnostics"], &["catatan RAM"], "catatan RAM");
+    by_log(&["check_updates", "update_channel"], &["[update]"], "pemeriksaan update");
+    by_log(&["restore_tabs"], &["[sesi]"], "sesi tab");
+    if let Some(n) = counts.get("diblokir").filter(|n| **n > 0) {
+        for k in ["block_ads", "blocking_mode", "cosmetic_filtering", "block_cookie_notices", "block_annoyances", "block_telemetry", "custom_rules", "custom_lists"] {
+            out.push((k.to_string(), format!("terbukti: {n} permintaan diblokir hari ini")));
+        }
+    }
+    // Satu kunci cukup satu bukti (yang pertama).
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(k, _)| seen.insert(k.clone()));
     out
 }
 
@@ -435,7 +489,7 @@ mod tests {
     fn catalog_covers_every_setting() {
         let rows = catalog();
         let sections: std::collections::HashSet<&str> = rows.iter().map(|r| r.section.as_str()).collect();
-        assert_eq!(sections.len(), 10, "{sections:?}");
+        assert_eq!(sections.len(), 11, "{sections:?}");
         let keys: std::collections::HashSet<&str> = rows.iter().map(|r| r.key.as_str()).collect();
         let fields = serde_json::to_value(Settings::default()).unwrap();
         let mut missing = Vec::new();
@@ -528,6 +582,27 @@ pub fn redact(text: &str) -> String {
 
 #[cfg(test)]
 mod redact_tests {
+    #[test]
+    fn proofs_from_log() {
+        let lines: Vec<String> = [
+            "2026-11-19 14:40:01.693 INFO       [sistem] ==== Ovner 0.8.23 mulai (portabel: false)",
+            "2026-11-19 14:44:25.027 INFO       [tidur] tab ditidurkan: https://a/ (±2 MB; alasan: tidak dibuka > 2 menit)",
+            "2026-11-19 16:17:39.925 INFO       [sistem] ==== Ovner 0.8.24 mulai (portabel: false)",
+            "2026-11-19 16:19:51.781 INFO       [tidur] tab ditidurkan: https://b/ (±6 MB; alasan: tidak dibuka > 2 menit)",
+            "2026-11-19 16:22:42.608 INFO       [ram] RAM dirapikan (1 proses): 73 MB dilepas",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let mut c = std::collections::BTreeMap::new();
+        c.insert("diblokir".to_string(), 43u64);
+        let p: std::collections::HashMap<String, String> = super::proofs(&lines, &c).into_iter().collect();
+        assert!(p["sleep_tabs_minutes"].contains("1× sesi ini, terakhir 16:19:51"), "{:?}", p["sleep_tabs_minutes"]);
+        assert!(p["trim_every_minutes"].contains("16:22:42"));
+        assert!(p["block_ads"].contains("43"));
+        assert!(!p.contains_key("keep_live_tabs"));
+    }
+
     #[test]
     fn hides_paths_and_users() {
         let t = "PDF tampil: https://eln.inforcloudsuite.com/webui/gwtui/download?id=9 dan http://contoh.id ok; file:///C:/x.pdf C:\\Users\\Rendi\\Downloads\\a.mp4";

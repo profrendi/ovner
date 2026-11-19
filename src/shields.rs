@@ -254,6 +254,8 @@ pub fn page_scripts(s: &Settings, session: u64, private: bool) -> String {
         "noBeforeUnload": s.disable_beforeunload,
         "deAmp": s.de_amp,
         "userCss": s.user_css,
+        // Font yang dipaksakan ke halaman web ("" = font asli situs).
+        "pageFont": if s.page_font == "off" { String::new() } else { crate::fonts::page_css(&s.page_font) },
         "farbling": s.farbling,
         "farbleOff": farble_off,
         "uniform": s.uniform_fingerprint,

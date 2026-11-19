@@ -45,7 +45,33 @@ const STEPS: &[(&str, u64)] = &[
     ("pindah_ke_daftar_dan_buka_lagi", 30),
     ("rapikan_ram_cerdas", 20),
     ("browser_default_daftar_dan_lepas", 20),
+    // 0.8.25 (masa percobaan: dilaporkan, belum menghentikan rilis)
+    ("tombol_video_di_halaman_trusted_types", 30),
+    ("tombol_video_di_dalam_iframe", 30),
+    ("video_hls_tertangkap", 30),
+    ("terjemahan_halaman_dan_kembalikan", 40),
+    ("baca_keras_ambil_paragraf", 30),
+    ("lihat_sumber_halaman", 30),
+    ("tangkapan_layar_disimpan", 30),
+    ("gpc_dnt_terkirim", 25),
+    ("parameter_pelacak_dibuang", 25),
+    ("font_tampilan_ovner", 20),
     ("patokan_ram_10_tab", 90),
+];
+
+/// Langkah baru dalam masa percobaan: hasilnya dilaporkan, tetapi belum ikut menentukan lulus
+/// (kode keluar) sampai lulus di 3 rilis berturut-turut.
+const PROBATION: &[&str] = &[
+    "tombol_video_di_halaman_trusted_types",
+    "tombol_video_di_dalam_iframe",
+    "video_hls_tertangkap",
+    "terjemahan_halaman_dan_kembalikan",
+    "baca_keras_ambil_paragraf",
+    "lihat_sumber_halaman",
+    "tangkapan_layar_disimpan",
+    "gpc_dnt_terkirim",
+    "parameter_pelacak_dibuang",
+    "font_tampilan_ovner",
 ];
 
 enum Out {
@@ -429,6 +455,203 @@ impl App {
                     (r, a, b) => Out::Fail(format!("daftar {r:?}, terdaftar {a}, lepas {b}")),
                 }
             }
+            "tombol_video_di_halaman_trusted_types" | "tombol_video_di_dalam_iframe" => {
+                let iframe = name.contains("iframe");
+                let path = if iframe { "/iframe-video" } else { "/tt-video" };
+                if sub == 1 {
+                    self.ci_open(path);
+                    return Out::Wait;
+                }
+                if let Some(r) = self.ci.as_mut().unwrap().eval.take() {
+                    let v: Value = serde_json::from_str(&r).ok().and_then(|o: Value| o.as_str().and_then(|s| serde_json::from_str(s).ok())).unwrap_or(Value::Null);
+                    if v["btn"] == true && v["tt"] == true {
+                        return Out::Pass(if iframe { "tombol unduh muncul di video dalam iframe (halaman Trusted Types)".into() } else { "Trusted Types aktif (seperti YouTube) dan tombol unduh tetap muncul".into() });
+                    }
+                    self.ci.as_mut().unwrap().note = format!("hasil: {v}");
+                }
+                if sub >= 8 && sub % 3 == 0 {
+                    if let Some(wv) = self.ci_tab(path).and_then(|j| self.tabs[j].webview.as_ref()) {
+                        let js = r#"(function(){
+                          var w = %W%; var d = w.document; var v = d.getElementById('v'); if (!v) return JSON.stringify({btn:false,tt:false});
+                          var r = v.getBoundingClientRect();
+                          d.dispatchEvent(new w.MouseEvent('mousemove', {clientX: r.left + 60, clientY: r.top + 60, bubbles: true}));
+                          var x = d.createElement('div'), tt = false; try { x.innerHTML = '<b>x</b>'; } catch (e) { tt = true; }
+                          return JSON.stringify({btn: !!d.querySelector('ovner-video-button'), tt: tt});
+                        })()"#
+                            .replace("%W%", if iframe { "document.getElementById('f').contentWindow" } else { "window" });
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback(&js, move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
+            }
+            "video_hls_tertangkap" => {
+                if sub == 1 {
+                    self.ci_open("/hls-page");
+                    return Out::Wait;
+                }
+                let Some(j) = self.ci_tab("/hls-page") else { return Out::Wait };
+                let c = self.media_candidates(j, "");
+                match c.first() {
+                    Some(m) if m.kind == "hls" && m.url.contains("master.m3u8") => {
+                        let referer = m.headers.iter().any(|(k, _)| k == "Referer");
+                        Out::Pass(format!("daftar putar HLS tertangkap{}: {}", if referer { " beserta Referer" } else { "" }, display_url(&m.url)))
+                    }
+                    _ => Out::Wait,
+                }
+            }
+            "terjemahan_halaman_dan_kembalikan" => {
+                crate::translate::MOCK.store(true, std::sync::atomic::Ordering::Relaxed);
+                if sub == 1 {
+                    self.ci_open("/tr");
+                    return Out::Wait;
+                }
+                let Some(j) = self.ci_tab("/tr") else { return Out::Wait };
+                let phase = self.ci.as_ref().unwrap().note.clone();
+                if sub == 8 {
+                    self.start_translate(j, Some("id".into()));
+                    self.ci.as_mut().unwrap().note = "terjemah".into();
+                    return Out::Wait;
+                }
+                if let Some(r) = self.ci.as_mut().unwrap().eval.take() {
+                    let txt: String = serde_json::from_str(&r).unwrap_or_default();
+                    if phase == "terjemah" && txt.starts_with("[id] HELLO WORLD|") && txt.ends_with("|let x = 1;") {
+                        self.restore_translate(j);
+                        self.ci.as_mut().unwrap().note = "kembali".into();
+                    } else if phase == "kembali" && txt == "Hello world|let x = 1;" {
+                        crate::translate::MOCK.store(false, std::sync::atomic::Ordering::Relaxed);
+                        return Out::Pass("teks diganti terjemahan (kode tidak ikut), lalu Tampilkan asli mengembalikan teks persis".into());
+                    }
+                }
+                if sub > 8 && sub % 2 == 0 {
+                    if let Some(wv) = &self.tabs[j].webview {
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback("document.getElementById('a').textContent + '|' + document.getElementById('c').textContent", move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
+            }
+            "baca_keras_ambil_paragraf" => {
+                if sub == 1 {
+                    self.ci_open("/read");
+                    return Out::Wait;
+                }
+                if sub == 8 {
+                    if let Some(j) = self.ci_tab("/read") {
+                        self.start_read(j, false);
+                    }
+                    return Out::Wait;
+                }
+                let line = self.ci.as_ref().unwrap().logs().into_iter().find(|l| l.contains("baca keras dimulai"));
+                match line {
+                    Some(l) if l.contains(": 3 paragraf") => {
+                        self.on_reader_cmd("read-stop", &Value::Null);
+                        Out::Pass("3 paragraf diambil dari halaman dan dikirim ke pemutar toolbar".into())
+                    }
+                    Some(l) => Out::Fail(l),
+                    None => Out::Wait,
+                }
+            }
+            "lihat_sumber_halaman" => {
+                if sub == 1 {
+                    self.ci_open("/page/31");
+                    return Out::Wait;
+                }
+                if sub == 8 {
+                    if let Some(j) = self.ci_tab("/page/31") {
+                        self.view_source(j);
+                    }
+                    return Out::Wait;
+                }
+                let opened = self.tabs.iter().any(|t| internal_page(&t.url) == Some("source"));
+                let text = self.sources.last().map(|(_, v)| v["text"].as_str().unwrap_or("").to_string()).unwrap_or_default();
+                if opened && text.contains("halaman biasa") {
+                    let dom = self.sources.last().map(|(_, v)| v["dom"] == true).unwrap_or(false);
+                    Out::Pass(format!("tab sumber halaman terbuka ({}, {} byte)", if dom { "DOM" } else { "sumber asli dari cache" }, text.len()))
+                } else {
+                    Out::Wait
+                }
+            }
+            "tangkapan_layar_disimpan" => {
+                if sub == 1 {
+                    self.ci_open("/page/32");
+                    return Out::Wait;
+                }
+                if sub == 8 {
+                    if let Some(j) = self.ci_tab("/page/32") {
+                        self.screenshot(j, true);
+                    }
+                    return Out::Wait;
+                }
+                let Some(d) = self.ci_new_download() else { return Out::Wait };
+                let ok = std::fs::read(&d.path).map(|b| b.starts_with(b"\x89PNG") && b.len() > 2000).unwrap_or(false);
+                if ok {
+                    Out::Pass(format!("PNG halaman penuh tersimpan: {}", d.name))
+                } else {
+                    Out::Fail(format!("berkas tidak valid: {}", d.path))
+                }
+            }
+            "gpc_dnt_terkirim" => {
+                if sub == 1 {
+                    self.ci_open("/echo");
+                    return Out::Wait;
+                }
+                if let Some(r) = self.ci.as_mut().unwrap().eval.take() {
+                    let txt: String = serde_json::from_str(&r).unwrap_or_default();
+                    if txt.contains("sec-gpc: 1") && txt.contains("dnt: 1") {
+                        return Out::Pass("header Sec-GPC: 1 dan DNT: 1 diterima server".into());
+                    }
+                    self.ci.as_mut().unwrap().note = txt.replace('\n', " ").chars().take(200).collect();
+                }
+                if sub >= 6 && sub % 3 == 0 {
+                    if let Some(wv) = self.ci_tab("/echo").and_then(|j| self.tabs[j].webview.as_ref()) {
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback("document.body ? document.body.innerText : ''", move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
+            }
+            "parameter_pelacak_dibuang" => {
+                if sub == 1 {
+                    self.ci_open("/page/33?utm_source=koran&fbclid=abc123&id=5");
+                    return Out::Wait;
+                }
+                let Some(j) = self.ci_tab("/page/33") else { return Out::Wait };
+                let u = self.tabs[j].url.clone();
+                if sub < 8 {
+                    return Out::Wait;
+                }
+                if !u.contains("utm_source") && !u.contains("fbclid") && u.contains("id=5") {
+                    Out::Pass(format!("alamat jadi {}", display_url(&u)))
+                } else {
+                    self.ci.as_mut().unwrap().note = u;
+                    Out::Wait
+                }
+            }
+            "font_tampilan_ovner" => {
+                if sub == 1 {
+                    let _ = self.settings.borrow_mut().set("ui_font", &json!("albert-sans"));
+                    self.apply_setting_side_effects("ui_font");
+                    return Out::Wait;
+                }
+                if let Some(r) = self.ci.as_mut().unwrap().eval.take() {
+                    let txt: String = serde_json::from_str(&r).unwrap_or_default();
+                    if txt.contains("Albert Sans Variable") && txt.ends_with("|true") {
+                        let _ = self.settings.borrow_mut().set("ui_font", &json!("segoe"));
+                        self.apply_setting_side_effects("ui_font");
+                        return Out::Pass("toolbar memakai Albert Sans (dimuat dari dalam Ovner), lalu kembali ke Segoe UI".into());
+                    }
+                    self.ci.as_mut().unwrap().note = txt;
+                }
+                if sub >= 4 && sub % 2 == 0 {
+                    let p = self.proxy.clone();
+                    let _ = self.toolbar.evaluate_script_with_callback(
+                        "getComputedStyle(document.body).fontFamily + '|' + document.fonts.check('13px \"Albert Sans Variable\"')",
+                        move |r| crate::send(&p, UserEvent::CiEval(r)),
+                    );
+                }
+                Out::Wait
+            }
             "patokan_ram_10_tab" => {
                 if sub == 1 {
                     for k in 10..20 {
@@ -459,19 +682,21 @@ impl App {
 
     fn ci_finish(&mut self) {
         let Some(ci) = self.ci.as_ref() else { return };
+        let core_ok = ci.results.iter().filter(|r| !PROBATION.contains(&r["langkah"].as_str().unwrap_or(""))).all(|r| r["status"] == "lulus");
         let ok = ci.results.iter().all(|r| r["status"] == "lulus");
         let pass = ci.results.iter().filter(|r| r["status"] == "lulus").count();
         let bench: serde_json::Map<String, Value> = ci.bench.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-        let report = json!({"versi": crate::update::display_version(), "webview2": wry::webview_version().unwrap_or_default(), "lulus": pass, "jumlah": ci.results.len(), "semua_lulus": ok, "patokan": bench, "langkah": ci.results});
+        let report = json!({"versi": crate::update::display_version(), "webview2": wry::webview_version().unwrap_or_default(), "lulus": pass, "jumlah": ci.results.len(), "semua_lulus": ok, "inti_lulus": core_ok, "masa_percobaan": PROBATION, "patokan": bench, "langkah": ci.results});
         let _ = std::fs::write(ci.out.join("hasil.json"), serde_json::to_string_pretty(&report).unwrap_or_default());
         let mut txt = format!("Ovner {} self-test: {pass}/{} lulus\n\n", crate::update::display_version(), ci.results.len());
         for r in &ci.results {
-            txt.push_str(&format!("{:<6} {:<42} {:>7} ms  {}\n", r["status"].as_str().unwrap_or(""), r["langkah"].as_str().unwrap_or(""), r["ms"], r["pesan"].as_str().unwrap_or("")));
+            let trial = if PROBATION.contains(&r["langkah"].as_str().unwrap_or("")) { "*" } else { " " };
+            txt.push_str(&format!("{:<6}{trial}{:<42} {:>7} ms  {}\n", r["status"].as_str().unwrap_or(""), r["langkah"].as_str().unwrap_or(""), r["ms"], r["pesan"].as_str().unwrap_or("")));
             for l in r["log"].as_array().into_iter().flatten() {
                 txt.push_str(&format!("         | {}\n", l.as_str().unwrap_or("")));
             }
         }
-        txt.push_str("\nPatokan:\n");
+        txt.push_str("\n* = masa percobaan (dilaporkan, belum menentukan lulus)\n\nPatokan:\n");
         for (k, v) in &ci.bench {
             txt.push_str(&format!("  {k}: {v}\n"));
         }
@@ -484,6 +709,6 @@ impl App {
                 let _ = std::fs::copy(&f, ci.out.join(n));
             }
         }
-        std::process::exit(if ok { 0 } else { 1 });
+        std::process::exit(if core_ok { 0 } else { 1 });
     }
 }

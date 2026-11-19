@@ -9,7 +9,7 @@
     :root { --bg: #1c1f23; --card: #262a30; --text: #e8eaed; --muted: #a2a9b1; --line: #3c424a; --accent: #7cacf8; }
   }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+    font: 15px/1.5 var(--ovner-font, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif); }
   main { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 0 16px 12vh; }
   .logo { display: flex; align-items: center; gap: 12px; font-size: 34px; font-weight: 650; letter-spacing: -.5px; }
   .logo svg { width: 46px; height: 46px; }

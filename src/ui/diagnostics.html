@@ -81,6 +81,17 @@
       [T("Anti-blokir", "Anti-block"), r.antiblock ? (r.antiblockPort ? `${mark(true)} 127.0.0.1:${r.antiblockPort} · ${r.antiblockConns} ${T("koneksi", "connections")}` : `${mark(false)} ${T("menyala tapi gagal jalan", "on but failed to start")}`) : `<span class="muted">${T("mati", "off")}</span>`],
       ["DoH", `${r.dohOk} ${T("berhasil", "ok")}, ${r.dohFail} ${T("gagal (memakai DNS Windows)", "failed (Windows DNS used)")}`],
     ]);
+    {
+      // Suara baca keras Windows di PC ini (dibaca langsung oleh halaman ini).
+      let vs = [];
+      try { vs = speechSynthesis.getVoices(); } catch (e) {}
+      const idv = vs.filter((v) => /^(id|in)\b/i.test(v.lang));
+      h += card(T("Terjemahan dan baca keras", "Translation and read aloud"), [
+        [T("Suara Windows", "Windows voices"), vs.length ? esc(vs.map((v) => `${v.name} (${v.lang})`).join(", ")) : T("tidak ada / belum dimuat", "none / not loaded yet")],
+        [T("Suara Windows bahasa Indonesia", "Indonesian Windows voice"), idv.length ? `${mark(true)} ${esc(idv.map((v) => v.name).join(", "))}` : `${mark(false, true)} ${T("belum terpasang (Settings → Time & Language → Speech), atau pakai Natural online", "not installed (Settings → Time & Language → Speech), or use Natural online")}`],
+        [T("Penerjemah offline Chromium", "Chromium offline translator"), "Translator" in self ? `${mark(true)} ${T("tersedia", "available")}` : `<span class="muted">${T("tidak tersedia di WebView2 ini (dipakai layanan online)", "not available in this WebView2 (online service used)")}</span>`],
+      ]);
+    }
     h += card(T("Data dan sandi", "Data and passwords"), [
       [T("Brankas sandi (DPAPI)", "Password vault (DPAPI)"), `${mark(r.vault)} ${r.vault ? T("enkripsi dan buka berhasil", "encrypt and decrypt ok") : T("gagal", "failed")}`],
       [T("Bookmark / ikon situs", "Bookmarks / site icons"), `${r.bookmarks} / ${r.icons}`],
@@ -139,6 +150,7 @@
     }
     return h + `</table></div>`;
   }
+  try { speechSynthesis.onvoiceschanged = () => { if (last) render(last); }; } catch (e) {}
   window.ovnerPage = (s) => {
     L = s.lang;
     document.documentElement.lang = L;

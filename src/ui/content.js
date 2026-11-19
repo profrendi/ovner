@@ -1,3 +1,12 @@
+// Pembuat SVG tanpa innerHTML (aman untuk situs dengan Trusted Types).
+function __ovnerSvg(viewBox, kids, attrs) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", viewBox);
+  for (const k in attrs || {}) svg.setAttribute(k, String(attrs[k]));
+  for (const [tag, a] of kids) { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, String(a[k])); svg.append(e); }
+  return svg;
+}
 // Skrip yang disuntikkan Ovner ke setiap halaman (hanya bingkai utama):
 // 1. pintasan keyboard browser (Ctrl+T, Ctrl+W, Ctrl+L, Ctrl+Tab, ...), karena saat halaman
 //    punya fokus, tombolnya tidak sampai ke jendela Ovner;
@@ -16,6 +25,9 @@
   const ipc = window.ipc;
   const post = (o) => { try { const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s); } catch (e) {} };
   const cfg = window.__ovnerCfg || {};
+  // Saluran untuk skrip yang disuntikkan Ovner belakangan (terjemahan, baca keras): chrome.webview
+  // sudah disembunyikan privacy.js saat itu. Hanya pesan terjemahan/baca keras yang diteruskan.
+  try { Object.defineProperty(window, "__ovnerBridge", { value: (o) => { if (o && /^(tr-(req|progress|lang|device)|read-text)$/.test(o.t)) post(o); } }); } catch (e) {}
 
   // Dekoder video GPU komputer ini (untuk mode codec YouTube "Otomatis"): diperiksa sekali per
   // sesi di halaman https pertama. Fungsi aslinya diambil sekarang, sebelum privacy.js
@@ -69,6 +81,12 @@
       if (c && c.href && c.href !== location.href && /^https?:/.test(c.href)) { location.replace(c.href); return; }
     }
     if (!cfg.spellcheck) html.setAttribute("spellcheck", "false");
+    if (cfg.pageFont) {
+      const st = document.createElement("style");
+      st.id = "__ovner_font";
+      st.textContent = cfg.pageFont;
+      (document.head || html).appendChild(st);
+    }
     if (cfg.userCss) {
       const st = document.createElement("style");
       st.id = "__ovner_css_sendiri";
@@ -166,6 +184,38 @@
       post({ t: "key", k: c });
     }
   }, true);
+
+  // Ctrl+U = lihat sumber halaman, Ctrl+Shift+U = baca keras (seperti Edge). Tahap bubble dan
+  // hanya bila halaman tidak memakainya sendiri (mis. garis bawah di Google Docs).
+  addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || !e.ctrlKey || e.altKey || e.metaKey || (e.key || "").toLowerCase() !== "u") return;
+    e.preventDefault();
+    post({ t: "key", k: e.shiftKey ? "read" : "source" });
+  });
+
+  // Bahasa halaman untuk ikon terjemah: atribut lang, dikoreksi dengan tebakan isi (banyak blog
+  // Indonesia bawaan Blogger memasang lang="en").
+  if (window.top === window && /^https?:$/.test(location.protocol)) {
+    const guess = () => {
+      try {
+        const attr = (document.documentElement.lang || "").trim();
+        const text = ((document.body && document.body.innerText) || "").slice(0, 4000).toLowerCase();
+        const words = text.match(/\p{L}+/gu) || [];
+        let idn = 0, eng = 0;
+        const ID = new Set(["yang", "dan", "di", "dengan", "untuk", "ini", "dari", "dalam", "tidak", "akan", "pada", "adalah", "itu", "juga", "atau", "bisa", "kami", "anda", "ke", "oleh"]);
+        const EN = new Set(["the", "and", "of", "to", "is", "in", "that", "for", "with", "this", "are", "on", "you", "it", "as", "be", "was", "by", "or", "from"]);
+        for (const w of words) { if (ID.has(w)) idn++; else if (EN.has(w)) eng++; }
+        let l = attr;
+        if (words.length > 40) {
+          if (idn >= 6 && idn > eng * 1.6) l = /^id|^in/i.test(attr) ? attr : "id";
+          else if (eng >= 6 && eng > idn * 1.6 && (!attr || /^id|^in/i.test(attr))) l = "en";
+        }
+        post({ t: "page-lang", l: l.slice(0, 12) });
+      } catch (e) {}
+    };
+    const later = () => (window.requestIdleCallback ? requestIdleCallback(guess, { timeout: 3000 }) : setTimeout(guess, 1500));
+    if (document.readyState === "complete") later(); else addEventListener("load", later, { once: true });
+  }
 
   // ---- Formulir sedang diisi: tab ini jangan ditidurkan (teks yang diketik tidak hilang). ----
   let dirty = false;
@@ -449,8 +499,13 @@
       const q = anchor.type !== "password" ? anchor.value.trim() : "";
       for (const o of list) {
         const it = document.createElement("div"); it.className = "i";
-        it.innerHTML = '<svg class="k" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><div><div class="u"></div><div class="s">••••••••</div></div>';
-        const u = it.querySelector(".u"), name = o.user || "(tanpa nama)";
+        // Tanpa innerHTML: situs dengan Trusted Types (mis. YouTube, Google) menolaknya.
+        const svgK = __ovnerSvg("0 0 24 24", [["circle", { cx: 8, cy: 15, r: 4 }], ["path", { d: "M11 12l9-9M17 6l3 3" }]], { class: "k", width: 16, height: 16, fill: "none", stroke: "currentColor", "stroke-width": 2 });
+        const u = document.createElement("div"); u.className = "u";
+        const sdots = document.createElement("div"); sdots.className = "s"; sdots.textContent = "••••••••";
+        const wrap = document.createElement("div"); wrap.append(u, sdots);
+        it.append(svgK, wrap);
+        const name = o.user || "(tanpa nama)";
         const at = q ? name.toLowerCase().indexOf(q.toLowerCase()) : -1;
         if (at >= 0) {
           u.append(name.slice(0, at));
@@ -604,49 +659,74 @@
 // Tombol "Unduh video" di atas video (seperti panel unduh Mister Download Manager): muncul di
 // pojok kanan atas video saat kursor di atasnya; menu ▾: sembunyikan di video ini, jangan di
 // situs ini, pengaturan tombol. Ringan: hanya bereaksi pada gerak mouse (maks. ~8x/detik).
+// Dibuat tanpa innerHTML (YouTube & situs Google memakai Trusted Types yang menolaknya: dulu
+// tombolnya diam-diam tidak pernah jadi di YouTube) dan juga berjalan di dalam iframe (pemutar
+// video situs berita sering berupa iframe); klik dari iframe diteruskan lewat bingkai utama.
 (function () {
   const cfg = window.__ovnerCfg || {};
-  if (window.top !== window || !cfg.videoBtn || !/^https?:$/.test(location.protocol) || window.__ovnerVid) return;
+  if (!cfg.videoBtn || !/^https?:$/.test(location.protocol) || window.__ovnerVid) return;
   try { Object.defineProperty(window, "__ovnerVid", { value: true }); } catch (e) { return; }
-  const host = location.hostname.replace(/^www\./, "").toLowerCase();
+  const top = window.top === window;
+  const host = (top ? location.hostname : (function () { try { return window.top.location.hostname; } catch (e) { return location.hostname; } })()).replace(/^www\./, "").toLowerCase();
   if ((cfg.videoNever || []).some((h) => host === h || host.endsWith("." + h))) return;
   const cw = window.chrome && window.chrome.webview;
-  const send = cw && cw.postMessage ? cw.postMessage.bind(cw) : null;
+  const send = top && cw && cw.postMessage ? cw.postMessage.bind(cw) : null;
   const ipc = window.ipc;
-  const post = (o) => { try { const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s); } catch (e) {} };
+  const post = (o) => {
+    try {
+      if (!top) { window.top.postMessage({ __ovnerVidMsg: o }, "*"); return; }
+      const s = JSON.stringify(o); if (send) send(s); else ipc.postMessage(s);
+    } catch (e) {}
+  };
+  if (top) {
+    // Pesan dari tombol di dalam iframe: diteruskan ke Ovner dengan alamat halaman utama.
+    addEventListener("message", (e) => {
+      const o = e.data && e.data.__ovnerVidMsg;
+      if (!o || typeof o !== "object" || typeof o.t !== "string" || !/^video-(dl|never|settings)$/.test(o.t)) return;
+      post({ t: o.t, page: location.href, frame: String(o.page || "").slice(0, 2000), src: String(o.src || "").slice(0, 4000) });
+    });
+  }
   const id = cfg.lang !== "en";
   const W = id
-    ? { dl: "Unduh video", hide: "Sembunyikan di video ini", never: "Jangan di " + location.hostname, set: "Pengaturan tombol…" }
-    : { dl: "Download video", hide: "Hide on this video", never: "Never on " + location.hostname, set: "Button settings…" };
+    ? { dl: "Unduh video", hide: "Sembunyikan di video ini", never: "Jangan di " + host, set: "Pengaturan tombol…" }
+    : { dl: "Download video", hide: "Hide on this video", never: "Never on " + host, set: "Button settings…" };
   const vids = document.getElementsByTagName("video");
   const hidden = new WeakSet();
   let hostEl = null, box = null, menu = null, cur = null, hideT = 0, off = false, menuOpen = false, last = 0, raf = 0;
+  const mk = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
 
   function build() {
     hostEl = document.createElement("ovner-video-button");
     hostEl.style.cssText = "all:initial;position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none";
     const root = hostEl.attachShadow({ mode: "closed" });
-    root.innerHTML = `<style>
+    const st = document.createElement("style");
+    st.textContent = `
       .b{position:fixed;display:none;align-items:stretch;pointer-events:auto;font:500 13px/1 "Segoe UI",system-ui,sans-serif;color:#1f2328;
-         background:#f6f7f9;border:1px solid rgba(0,0,0,.18);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.35);overflow:hidden;user-select:none}
-      .b button{all:unset;cursor:pointer;display:flex;align-items:center;gap:7px;padding:7px 11px}
+         background:#f6f7f9;border:1px solid rgba(0,0,0,.18);border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.35);overflow:hidden;user-select:none}
+      .b button{all:unset;cursor:pointer;display:flex;align-items:center;gap:7px;padding:8px 12px}
       .b button:hover{background:#e6eaf0}
-      .b .m{padding:7px 7px;border-left:1px solid rgba(0,0,0,.14)}
+      .b .m{padding:8px 8px;border-left:1px solid rgba(0,0,0,.14)}
       svg{width:16px;height:16px;flex:none}
-      .menu{position:fixed;display:none;pointer-events:auto;min-width:210px;padding:4px;font:400 13px/1.2 "Segoe UI",system-ui,sans-serif;color:#1f2328;
-         background:#fbfbfc;border:1px solid rgba(0,0,0,.18);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
-      .menu button{all:unset;display:block;box-sizing:border-box;width:100%;padding:8px 12px;border-radius:5px;cursor:pointer}
+      .menu{position:fixed;display:none;pointer-events:auto;min-width:220px;padding:6px;font:400 13px/1.2 "Segoe UI",system-ui,sans-serif;color:#1f2328;
+         background:#fbfbfc;border:1px solid rgba(0,0,0,.18);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+      .menu button{all:unset;display:block;box-sizing:border-box;width:100%;padding:8px 12px;border-radius:8px;cursor:pointer}
       .menu button:hover{background:#e6eaf0}
-      .menu hr{border:0;border-top:1px solid rgba(0,0,0,.12);margin:4px 2px}
-    </style>
-    <div class="b"><button class="d"><svg viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span></span></button><button class="m" aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10l5 5 5-5"/></svg></button></div>
-    <div class="menu"><button data-a="dl"></button><hr><button data-a="hide"></button><button data-a="never"></button><hr><button data-a="set"></button></div>`;
-    box = root.querySelector(".b");
-    menu = root.querySelector(".menu");
-    box.querySelector(".d span").textContent = W.dl;
-    for (const b of menu.querySelectorAll("button")) b.textContent = W[b.dataset.a];
-    box.querySelector(".d").onclick = (e) => { e.stopPropagation(); download(); };
-    box.querySelector(".m").onclick = (e) => {
+      .menu hr{border:0;border-top:1px solid rgba(0,0,0,.12);margin:4px 2px}`;
+    box = mk("div", "b");
+    const d = mk("button", "d");
+    d.append(__ovnerSvg("0 0 24 24", [["path", { d: "M12 4v11M7 10l5 5 5-5M5 20h14" }]], { fill: "none", stroke: "#1a73e8", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" }), mk("span", "", W.dl));
+    const m = mk("button", "m");
+    m.setAttribute("aria-label", "menu");
+    m.append(__ovnerSvg("0 0 24 24", [["path", { d: "M7 10l5 5 5-5" }]], { fill: "none", stroke: "currentColor", "stroke-width": 2 }));
+    box.append(d, m);
+    menu = mk("div", "menu");
+    for (const a of ["dl", "-", "hide", "never", "-", "set"]) {
+      if (a === "-") { menu.append(document.createElement("hr")); continue; }
+      const b = mk("button", "", W[a]); b.dataset.a = a; menu.append(b);
+    }
+    root.append(st, box, menu);
+    d.onclick = (e) => { e.stopPropagation(); download(); };
+    m.onclick = (e) => {
       e.stopPropagation();
       menuOpen = !menuOpen;
       menu.style.display = menuOpen ? "block" : "none";
@@ -662,8 +742,8 @@
       e.stopPropagation();
       if (a === "dl") download();
       else if (a === "hide") { if (cur) hidden.add(cur); hide(); }
-      else if (a === "never") { off = true; hide(); post({ t: "video-never" }); }
-      else if (a === "set") { hide(); post({ t: "video-settings" }); }
+      else if (a === "never") { off = true; hide(); post({ t: "video-never", page: location.href }); }
+      else if (a === "set") { hide(); post({ t: "video-settings", page: location.href }); }
     };
     for (const el of [box, menu]) {
       // Klik di tombol tidak sampai ke pemutar video halaman (jeda/putar).
@@ -673,8 +753,10 @@
     (document.body || document.documentElement).appendChild(hostEl);
   }
   function download() {
+    const v = cur;
     hide();
-    post({ t: "video-dl", page: location.href, src: cur && /^https?:/.test(cur.currentSrc || "") ? cur.currentSrc : "" });
+    const src = v && /^https?:/.test(v.currentSrc || "") ? v.currentSrc : "";
+    post({ t: "video-dl", page: location.href, src });
   }
   function place() {
     if (!cur || !box) return;
@@ -699,14 +781,14 @@
     menuOpen = false;
     cur = null;
   }
-  // YouTube: hanya di halaman video (bukan pratinjau video di beranda/hasil pencarian).
-  const ytList = () => /(^|\.)youtube\.com$/.test(host) && !/^\/(watch|shorts|live|embed)/.test(location.pathname);
+  // YouTube: hanya di halaman video/Shorts (bukan pratinjau video di beranda/hasil pencarian).
+  const ytList = () => /(^|\.)youtube\.com$/.test(location.hostname) && !/^\/(watch|shorts|live|embed)/.test(location.pathname);
   function check(x, y) {
     if (off || document.fullscreenElement || ytList()) { if (cur) hide(); return; }
     for (const v of vids) {
       if (hidden.has(v)) continue;
       const r = v.getBoundingClientRect();
-      if (r.width < 220 || r.height < 120) continue;
+      if (r.width < 200 || r.height < 110) continue;
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) { show(v); return; }
     }
     if (cur && !menuOpen) { clearTimeout(hideT); hideT = setTimeout(hide, 1200); }

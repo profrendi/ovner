@@ -19,6 +19,8 @@ tray-icon = "0.26"
 sha2 = "0.11"
 # Verifikasi tanda tangan update (Ed25519).
 ed25519-dalek = { version = "3", default-features = false }
+# Kode QR (klik kanan → Buat kode QR), murni Rust tanpa dependensi.
+qrcodegen = "1.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

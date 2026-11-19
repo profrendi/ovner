@@ -2,7 +2,7 @@
 :root[data-theme="dark"] { --bg: #1c1f23; --card: #262a30; --text: #e8eaed; --muted: #a2a9b1; --line: #3c424a; --accent: #7cacf8; --danger: #ff7b7b; --ok: #5fd08f; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1c1f23; --card: #262a30; --text: #e8eaed; --muted: #a2a9b1; --line: #3c424a; --accent: #7cacf8; --danger: #ff7b7b; --ok: #5fd08f; } }
 * { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--ovner-font, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif); }
 .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 60px; }
 h1 { font-size: 24px; font-weight: 650; margin: 0 0 18px; display: flex; align-items: center; gap: 12px; }
 h2 { font-size: 15px; font-weight: 650; margin: 26px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }

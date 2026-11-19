@@ -53,6 +53,94 @@ pub enum ProcFail {
     Other,
 }
 
+/// Item menu klik kanan Ovner ("-" = pemisah; `children` = submenu).
+#[derive(Clone, Debug, Default)]
+pub struct CtxItem {
+    pub label: String,
+    pub cmd: String,
+    pub shortcut: String,
+    /// Jangan tampilkan bila menu bawaan sudah punya item bernama ini (mis. "createQrCode").
+    pub unless: &'static str,
+    pub children: Vec<CtxItem>,
+}
+
+impl CtxItem {
+    pub fn cmd(label: &str, cmd: &str) -> CtxItem {
+        CtxItem { label: label.into(), cmd: cmd.into(), ..Default::default() }
+    }
+    pub fn key(mut self, k: &str) -> CtxItem {
+        self.shortcut = k.into();
+        self
+    }
+    pub fn sep() -> CtxItem {
+        CtxItem { label: "-".into(), ..Default::default() }
+    }
+    pub fn sub(label: &str, children: Vec<CtxItem>) -> CtxItem {
+        CtxItem { label: label.into(), children, ..Default::default() }
+    }
+}
+
+/// Video/audio yang dimuat halaman (penangkap media, seperti IDM).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct MediaHit {
+    pub url: String,
+    /// "hls", "dash", atau "file".
+    pub kind: &'static str,
+    pub mime: String,
+    /// Ukuran dari server (0 = tidak disebut).
+    pub len: u64,
+    /// Header permintaan yang dibutuhkan untuk mengunduhnya lagi (Referer, Origin, Cookie, User-Agent).
+    #[serde(skip)]
+    pub headers: Vec<(String, String)>,
+}
+
+/// Jenis media dari alamat + Content-Type, atau None bila bukan media yang layak diunduh
+/// (potongan HLS/DASH, gambar, situs yang sudah ditangani yt-dlp seperti YouTube).
+pub fn classify_media(url: &str, mime: &str, status: i32) -> Option<&'static str> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) || !(status == 200 || status == 206) {
+        return None;
+    }
+    let host = url.split("://").nth(1).unwrap_or("").split(['/', '?', ':']).next().unwrap_or("").to_ascii_lowercase();
+    // YouTube/Google Video: potongan DASH; diunduh lewat yt-dlp dengan alamat halaman.
+    if host.ends_with("googlevideo.com") || host.ends_with("youtube.com") || host.ends_with("ytimg.com") {
+        return None;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+    let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    if path.ends_with(".m3u8") || mime == "application/vnd.apple.mpegurl" || mime == "application/x-mpegurl" || mime == "audio/mpegurl" {
+        return Some("hls");
+    }
+    if path.ends_with(".mpd") || mime == "application/dash+xml" {
+        return Some("dash");
+    }
+    // Potongan stream (bukan video utuh).
+    if [".ts", ".m4s", ".m4f", ".cmfv", ".cmfa", ".aac", ".vtt", ".webvtt", ".key"].iter().any(|e| path.ends_with(e)) || mime == "video/mp2t" || mime == "video/iso.segment" {
+        return None;
+    }
+    let file_ext = [".mp4", ".m4v", ".webm", ".mov", ".mkv", ".flv", ".m4a", ".mp3", ".ogg", ".opus", ".wav"].iter().any(|e| path.ends_with(e));
+    if file_ext || mime.starts_with("video/") || (mime.starts_with("audio/") && mime != "audio/mpegurl") {
+        return Some("file");
+    }
+    None
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::classify_media as c;
+    #[test]
+    fn classifies_media() {
+        assert_eq!(c("https://cdn.detik.net.id/video/abc/index.m3u8?t=1", "", 200), Some("hls"));
+        assert_eq!(c("https://x.com/play", "application/vnd.apple.mpegURL", 200), Some("hls"));
+        assert_eq!(c("https://x.com/a.mpd", "", 200), Some("dash"));
+        assert_eq!(c("https://x.com/seg-12.ts", "video/mp2t", 200), None);
+        assert_eq!(c("https://x.com/v.mp4", "video/mp4", 206), Some("file"));
+        assert_eq!(c("https://rr1---sn.googlevideo.com/videoplayback?x", "video/mp4", 200), None);
+        assert_eq!(c("https://x.com/a.png", "image/png", 200), None);
+        assert_eq!(c("https://x.com/v.mp4", "video/mp4", 404), None);
+        assert_eq!(c("blob:https://x.com/1", "video/mp4", 200), None);
+    }
+}
+
 /// Buka folder di Explorer.
 pub fn open_folder(path: &Path) {
     let _ = std::process::Command::new(if cfg!(windows) { "explorer" } else { "xdg-open" }).arg(path).spawn();
@@ -1903,6 +1991,12 @@ mod imp {
         }
     }
 
+    /// Seperti `cdp_call`, tetapi `cb(None)` juga dipanggil saat perintah gagal.
+    pub fn cdp_result(webview: &wry::WebView, method: &str, params: &str, cb: impl FnOnce(Option<String>) + 'static) {
+        use wry::WebViewExtWindows;
+        cdp_then(&webview.webview(), method, params, move |v| cb(v.map(|v| v.to_string())));
+    }
+
     /// Tema aplikasi Windows sedang gelap? (Pengaturan → Personalisasi → Warna)
     pub fn system_dark() -> bool {
         winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
@@ -2196,6 +2290,202 @@ mod imp {
         }
     }
 
+    /// Penangkap media: setiap respons video/audio/daftar putar (lihat `classify_media`)
+    /// dilaporkan beserta header permintaannya. Hanya header yang dibaca, bukan isinya.
+    pub fn on_media(webview: &wry::WebView, cb: impl Fn(super::MediaHit) + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+        use webview2_com::WebResourceResponseReceivedEventHandler;
+        use wry::WebViewExtWindows;
+        let Ok(w2) = webview.webview().cast::<ICoreWebView2_2>() else { return };
+        let handler = WebResourceResponseReceivedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let (Ok(req), Ok(resp)) = (args.Request(), args.Response()) else { return Ok(()) };
+                let mut p = windows::core::PWSTR::null();
+                if req.Uri(&mut p).is_err() {
+                    return Ok(());
+                }
+                let url = webview2_com::take_pwstr(p);
+                let mut status = 0i32;
+                let _ = resp.StatusCode(&mut status);
+                let Ok(rh) = resp.Headers() else { return Ok(()) };
+                let get_resp = |name: &str| {
+                    let mut v = windows::core::PWSTR::null();
+                    if rh.GetHeader(&HSTRING::from(name), &mut v).is_ok() {
+                        webview2_com::take_pwstr(v)
+                    } else {
+                        String::new()
+                    }
+                };
+                let mime = get_resp("Content-Type");
+                let Some(kind) = super::classify_media(&url, &mime, status) else { return Ok(()) };
+                let mut len: u64 = get_resp("Content-Length").trim().parse().unwrap_or(0);
+                // 206: ukuran utuh ada di Content-Range ("bytes 0-1/12345").
+                if status == 206 {
+                    len = get_resp("Content-Range").rsplit('/').next().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+                }
+                // Video sangat kecil (ikon animasi, iklan pendek) tidak dicatat.
+                if kind == "file" && len > 0 && len < 300 * 1024 {
+                    return Ok(());
+                }
+                let mut headers = Vec::new();
+                if let Ok(qh) = req.Headers() {
+                    for name in ["Referer", "Origin", "Cookie", "User-Agent", "Authorization"] {
+                        let mut v = windows::core::PWSTR::null();
+                        if qh.GetHeader(&HSTRING::from(name), &mut v).is_ok() {
+                            let val = webview2_com::take_pwstr(v);
+                            if !val.is_empty() {
+                                headers.push((name.to_string(), val));
+                            }
+                        }
+                    }
+                }
+                cb(super::MediaHit { url, kind, mime: mime.split(';').next().unwrap_or("").trim().to_string(), len, headers });
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = w2.add_WebResourceResponseReceived(&handler, &mut token);
+        }
+    }
+
+    /// Halaman (tab) mendapat fokus: dipakai untuk menutup panel toolbar saat halaman diklik.
+    pub fn on_focus(webview: &wry::WebView, cb: impl Fn() + 'static) {
+        use webview2_com::FocusChangedEventHandler;
+        use wry::WebViewExtWindows;
+        let handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
+            cb();
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = webview.controller().add_GotFocus(&handler, &mut token);
+        }
+    }
+
+    /// Menu klik kanan Ovner: item tambahan disisipkan ke menu bawaan WebView2 (gaya menu Edge).
+    /// `items(info)` mengembalikan daftar item untuk sasaran klik ini; `cb(perintah, info)`
+    /// dipanggil saat item dipilih. `info` berisi page, link, src, sel, kind ("page", "image",
+    /// "video", "audio", "text"), editable.
+    pub fn context_menu(webview: &wry::WebView, items: impl Fn(&serde_json::Value) -> Vec<super::CtxItem> + 'static, cb: impl Fn(&str, &serde_json::Value) + 'static) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use webview2_com::{ContextMenuRequestedEventHandler, CustomItemSelectedEventHandler};
+        use wry::WebViewExtWindows;
+        let Ok(w11) = webview.webview().cast::<ICoreWebView2_11>() else { return };
+        let Ok(env) = webview.environment().cast::<ICoreWebView2Environment9>() else { return };
+        let cb = std::rc::Rc::new(cb);
+        let handler = ContextMenuRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let Ok(target) = args.ContextMenuTarget() else { return Ok(()) };
+                let take = |f: &dyn Fn(*mut windows::core::PWSTR) -> windows::core::Result<()>| {
+                    let mut p = windows::core::PWSTR::null();
+                    if f(&mut p).is_ok() {
+                        webview2_com::take_pwstr(p)
+                    } else {
+                        String::new()
+                    }
+                };
+                let flag = |f: &dyn Fn(*mut windows::core::BOOL) -> windows::core::Result<()>| {
+                    let mut b = windows::core::BOOL(0);
+                    f(&mut b).is_ok() && b.as_bool()
+                };
+                let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+                let _ = target.Kind(&mut kind);
+                let kind_s = match kind {
+                    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE => "image",
+                    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_VIDEO => "video",
+                    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_AUDIO => "audio",
+                    COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_SELECTED_TEXT => "text",
+                    _ => "page",
+                };
+                let info = serde_json::json!({
+                    "kind": kind_s,
+                    "page": take(&|p| target.PageUri(p)),
+                    "frame": take(&|p| target.FrameUri(p)),
+                    "link": if flag(&|b| target.HasLinkUri(b)) { take(&|p| target.LinkUri(p)) } else { String::new() },
+                    "src": if flag(&|b| target.HasSourceUri(b)) { take(&|p| target.SourceUri(p)) } else { String::new() },
+                    "sel": if flag(&|b| target.HasSelection(b)) { take(&|p| target.SelectionText(p)) } else { String::new() },
+                    "editable": flag(&|b| target.IsEditable(b)),
+                });
+                let list = items(&info);
+                if list.is_empty() {
+                    return Ok(());
+                }
+                let Ok(menu) = args.MenuItems() else { return Ok(()) };
+                let mut count = 0u32;
+                let _ = menu.Count(&mut count);
+                // Sisipkan sebelum "Inspect" (paling bawah) supaya Inspect tetap terakhir, seperti Edge.
+                let mut at = count;
+                let mut names = std::collections::HashSet::new();
+                for i in 0..count {
+                    if let Ok(it) = menu.GetValueAtIndex(i) {
+                        let mut p = windows::core::PWSTR::null();
+                        if it.Name(&mut p).is_ok() {
+                            let n = webview2_com::take_pwstr(p);
+                            if n == "inspectElement" {
+                                at = i;
+                            }
+                            names.insert(n);
+                        }
+                    }
+                }
+                let info = std::rc::Rc::new(info);
+                fn make(
+                    env: &ICoreWebView2Environment9,
+                    it: &super::CtxItem,
+                    names: &std::collections::HashSet<String>,
+                    info: &std::rc::Rc<serde_json::Value>,
+                    cb: &std::rc::Rc<dyn Fn(&str, &serde_json::Value)>,
+                ) -> Option<ICoreWebView2ContextMenuItem> {
+                    if !it.unless.is_empty() && names.contains(it.unless) {
+                        return None;
+                    }
+                    unsafe {
+                        if it.label == "-" {
+                            return env.CreateContextMenuItem(&HSTRING::from(""), None, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR).ok();
+                        }
+                        let kind = if it.children.is_empty() { COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND } else { COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU };
+                        let label = if it.shortcut.is_empty() { it.label.clone() } else { format!("{}\t{}", it.label, it.shortcut) };
+                        let item = env.CreateContextMenuItem(&HSTRING::from(label.as_str()), None, kind).ok()?;
+                        if it.children.is_empty() {
+                            let (cmd, info, cb) = (it.cmd.clone(), info.clone(), cb.clone());
+                            let h = CustomItemSelectedEventHandler::create(Box::new(move |_, _| {
+                                cb(&cmd, &info);
+                                Ok(())
+                            }));
+                            let mut tok = 0i64;
+                            let _ = item.add_CustomItemSelected(&h, &mut tok);
+                        } else if let Ok(kids) = item.Children() {
+                            let mut n = 0u32;
+                            for c in &it.children {
+                                if let Some(ci) = make(env, c, names, info, cb) {
+                                    let _ = kids.InsertValueAtIndex(n, &ci);
+                                    n += 1;
+                                }
+                            }
+                        }
+                        Some(item)
+                    }
+                }
+                let cbd: std::rc::Rc<dyn Fn(&str, &serde_json::Value)> = cb.clone();
+                let mut pos = at;
+                for it in &list {
+                    if let Some(item) = make(&env, it, &names, &info, &cbd) {
+                        let _ = menu.InsertValueAtIndex(pos, &item);
+                        pos += 1;
+                    }
+                }
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = w11.add_ContextMenuRequested(&handler, &mut token);
+        }
+    }
+
     /// Muat ekstensi dari folder (unpacked). Hasilnya dicatat lewat `log`.
     pub fn load_extensions(webview: &wry::WebView, dirs: &[String], log: fn(&str)) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile7, ICoreWebView2_13};
@@ -2321,6 +2611,9 @@ mod imp {
     pub fn tune_webview(_webview: &wry::WebView, _s: &crate::settings::Settings) {}
     pub fn cdp(_webview: &wry::WebView, _method: &str, _params: &str) {}
     pub fn cdp_call(_webview: &wry::WebView, _method: &str, _params: &str, _cb: impl FnOnce(String) + 'static) {}
+    pub fn cdp_result(_webview: &wry::WebView, _method: &str, _params: &str, cb: impl FnOnce(Option<String>) + 'static) {
+        cb(None)
+    }
     pub fn install_crash_logger(_log_file: &Path) {}
     pub fn disk_free(_path: &Path) -> Option<u64> {
         None
@@ -2385,6 +2678,9 @@ mod imp {
     pub fn on_download_dialog(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn on_ctrl_j(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn load_extensions(_webview: &wry::WebView, _dirs: &[String], _log: fn(&str)) {}
+    pub fn on_media(_webview: &wry::WebView, _cb: impl Fn(super::MediaHit) + 'static) {}
+    pub fn on_focus(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
+    pub fn context_menu(_webview: &wry::WebView, _items: impl Fn(&serde_json::Value) -> Vec<super::CtxItem> + 'static, _cb: impl Fn(&str, &serde_json::Value) + 'static) {}
     pub fn cname_of(_host: &str) -> Option<String> {
         None
     }

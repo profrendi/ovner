@@ -38,6 +38,26 @@ pub struct Settings {
     /// Halaman tab baru: "blank" (kosong, seperti Brave Origin) atau "ovner" (kotak cari).
     pub newtab: String,
     pub default_zoom: u32,
+    /// Font tampilan Ovner (lihat fonts::FONTS).
+    pub ui_font: String,
+    /// Font yang dipaksakan ke halaman web: "off" (font asli situs) atau kunci fonts::FONTS.
+    pub page_font: String,
+
+    // ---------- terjemahan & baca keras ----------
+    /// Penerjemah halaman: "microsoft" (seperti Edge) atau "google" (seperti Chrome).
+    pub translate_engine: String,
+    /// Bahasa tujuan: "auto" (bahasa lain → Indonesia, Indonesia → Inggris) atau kode bahasa.
+    pub translate_to: String,
+    /// Suara baca keras: "local" (suara Windows), "edge" (suara Natural online seperti Edge),
+    /// atau "azure" (Azure Speech berbayar, kunci sendiri).
+    pub tts_engine: String,
+    /// Nama suara ("" = otomatis sesuai bahasa halaman).
+    pub tts_voice: String,
+    /// Kecepatan baca (%), 50–300.
+    pub tts_rate: u32,
+    /// Kunci Azure Speech, dienkripsi DPAPI (base64).
+    pub tts_azure_key: String,
+    pub tts_azure_region: String,
     /// Lama: digantikan `dark_mode` + `dark_engine` "chromium" (tetap dibaca untuk migrasi).
     pub force_dark: bool,
     /// Mode gelap halaman web (seperti Dark Reader): "off", "on" (semua situs), "system"
@@ -194,6 +214,9 @@ pub struct Settings {
     /// Subtitle YouTube diambil lewat halaman YouTube di Ovner (sesi browser sendiri), bukan
     /// hanya lewat yt-dlp yang sering ditolak "HTTP 429 Too Many Requests".
     pub video_subs_page: bool,
+    /// Catat alamat video/audio yang dimuat halaman (HLS .m3u8, DASH .mpd, MP4/WebM), seperti
+    /// IDM/Mister Download Manager, untuk diunduh bila yt-dlp tidak mengenali halamannya.
+    pub video_sniff: bool,
     /// Cari lokasi server unduhan (negara/kota/penyedia) lewat ipwho.is.
     pub dl_server_info: bool,
     /// PDF besar langsung diunduh, tidak dibuka di penampil PDF bawaan.
@@ -372,6 +395,16 @@ impl Default for Settings {
             video_button: true,
             video_button_never: Vec::new(),
             video_subs_page: true,
+            video_sniff: true,
+            ui_font: "segoe".into(),
+            page_font: "off".into(),
+            translate_engine: "microsoft".into(),
+            translate_to: "auto".into(),
+            tts_engine: "local".into(),
+            tts_voice: String::new(),
+            tts_rate: 100,
+            tts_azure_key: String::new(),
+            tts_azure_region: "southeastasia".into(),
             dl_server_info: true,
             pdf_download: true,
             pdf_download_mb: 5,
@@ -616,6 +649,10 @@ impl Settings {
             for (k, v) in new {
                 let before = old.get(k).cloned().unwrap_or(serde_json::Value::Null);
                 if &before != v {
+                    if k == "tts_azure_key" {
+                        crate::log(&format!("[setelan] diubah: {k}: {}", if v.as_str().is_some_and(|x| !x.is_empty()) { "(kunci disimpan, terenkripsi)" } else { "(dihapus)" }));
+                        continue;
+                    }
                     crate::log(&format!("[setelan] diubah: {k}: {} → {}", short_value(&before), short_value(v)));
                 }
             }
@@ -627,7 +664,10 @@ impl Settings {
     pub fn non_default(&self) -> Vec<String> {
         let (Ok(cur), Ok(def)) = (serde_json::to_value(self), serde_json::to_value(Settings::default())) else { return Vec::new() };
         let (Some(cur), Some(def)) = (cur.as_object(), def.as_object()) else { return Vec::new() };
-        cur.iter().filter(|(k, v)| def.get(*k) != Some(*v) && *k != "schema").map(|(k, v)| format!("{k}={}", short_value(v))).collect()
+        cur.iter()
+            .filter(|(k, v)| def.get(*k) != Some(*v) && *k != "schema")
+            .map(|(k, v)| if k == "tts_azure_key" { format!("{k}=(ada, terenkripsi)") } else { format!("{k}={}", short_value(v)) })
+            .collect()
     }
 
     /// Ubah bawaan lama yang ternyata keliru untuk pengguna versi sebelumnya.
@@ -784,6 +824,19 @@ impl Settings {
         }
         pick(&mut self.yt_codec, &["auto", "manual", "off"], "auto");
         pick(&mut self.pdf_unknown, &["measure", "show", "download"], "measure");
+        if !crate::fonts::is_known(&self.ui_font) {
+            self.ui_font = "segoe".into();
+        }
+        if self.page_font != "off" && (!crate::fonts::is_known(&self.page_font) || self.page_font == "segoe") {
+            self.page_font = "off".into();
+        }
+        pick(&mut self.translate_engine, &["microsoft", "google"], "microsoft");
+        if self.translate_to != "auto" && !(2..=8).contains(&self.translate_to.len()) {
+            self.translate_to = "auto".into();
+        }
+        pick(&mut self.tts_engine, &["local", "edge", "azure"], "local");
+        self.tts_rate = self.tts_rate.clamp(50, 300);
+        self.tts_azure_region.retain(|c| c.is_ascii_alphanumeric());
         self.pdf_download_mb = self.pdf_download_mb.clamp(1, 2000);
         if self.codec_hw.len() > 64 {
             self.codec_hw.clear();

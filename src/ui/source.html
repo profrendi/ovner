@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Sumber halaman</title>
+<link rel="stylesheet" href="ovner://page/page.css">
+<style>
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; }
+  .top { flex: none; display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .top .u { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .top label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .top .note { color: var(--muted); font-size: 12px; }
+  #code { flex: 1; overflow: auto; margin: 0; padding: 6px 0; font: 12.5px/1.55 Consolas, "Cascadia Mono", monospace; counter-reset: ln; tab-size: 4; }
+  #code .l { display: block; padding: 0 16px 0 0; white-space: pre; }
+  #code.wrap .l { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #code .l::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 56px; padding-right: 14px; margin-right: 10px; text-align: right;
+    color: var(--muted); border-right: 1px solid var(--line); user-select: none; position: sticky; left: 0; background: var(--bg); }
+  #code.wrap .l { padding-left: 82px; text-indent: -82px; }
+  .tg { color: #1a7f37; } .at { color: #8250df; } .av { color: #0a3069; } .cm { color: #6e7781; font-style: italic; }
+  :root[data-theme="dark"] .tg { color: #7ee787; } :root[data-theme="dark"] .at { color: #d2a8ff; } :root[data-theme="dark"] .av { color: #a5d6ff; } :root[data-theme="dark"] .cm { color: #8b949e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tg { color: #7ee787; } :root:not([data-theme="light"]) .at { color: #d2a8ff; } :root:not([data-theme="light"]) .av { color: #a5d6ff; } :root:not([data-theme="light"]) .cm { color: #8b949e; } }
+  #code a { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+  .msg { padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="top"><span class="u" id="u"></span><span class="note" id="note"></span><label><input type="checkbox" id="wrap"> <span id="wl">Line wrap</span></label></div>
+<pre id="code"><div class="msg" id="msg">…</div></pre>
+<script>
+(function () {
+  const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+  const code = document.getElementById("code");
+  const W = {
+    id: { title: "Sumber: ", wrap: "Bungkus baris", dom: "DOM saat ini (sumber asli tidak tersedia di cache)", none: "Sumber halaman tidak tersedia.", big: "Halaman sangat besar: hanya 2 MB pertama yang ditampilkan." },
+    en: { title: "Source: ", wrap: "Line wrap", dom: "Current DOM (original source not in cache)", none: "Page source not available.", big: "Very large page: only the first 2 MB is shown." },
+  };
+  let shown = false;
+  try { document.getElementById("wrap").checked = localStorage.getItem("ovner-src-wrap") === "1"; } catch (e) {}
+  const applyWrap = () => { code.classList.toggle("wrap", document.getElementById("wrap").checked); try { localStorage.setItem("ovner-src-wrap", document.getElementById("wrap").checked ? "1" : "0"); } catch (e) {} };
+  document.getElementById("wrap").onchange = applyWrap;
+  applyWrap();
+  // Pewarnaan sederhana HTML: tag, atribut, nilai, komentar; alamat http(s) bisa diklik.
+  function line(text, base, inComment) {
+    const el = document.createElement("span"); el.className = "l";
+    let i = 0, state = inComment;
+    const push = (cls, s) => {
+      if (!s) return;
+      if (cls === "av" && /^["']?(https?:\/\/|\/)/.test(s)) {
+        const raw = s.replace(/^["']|["']$/g, "");
+        let href = ""; try { href = new URL(raw, base).href; } catch (e) {}
+        if (/^https?:/.test(href)) { const a = document.createElement("a"); a.className = cls; a.textContent = s; a.href = href; a.target = "_blank"; el.append(a); return; }
+      }
+      const sp = document.createElement("span"); if (cls) sp.className = cls; sp.textContent = s; el.append(sp);
+    };
+    while (i < text.length) {
+      if (state) {
+        const e = text.indexOf("-->", i);
+        if (e < 0) { push("cm", text.slice(i)); i = text.length; break; }
+        push("cm", text.slice(i, e + 3)); i = e + 3; state = false; continue;
+      }
+      const lt = text.indexOf("<", i);
+      if (lt < 0) { push("", text.slice(i)); break; }
+      push("", text.slice(i, lt));
+      if (text.startsWith("<!--", lt)) { state = true; i = lt; continue; }
+      const gt = text.indexOf(">", lt);
+      const tag = gt < 0 ? text.slice(lt) : text.slice(lt, gt + 1);
+      const m = /^<\/?[\w:!-]+/.exec(tag);
+      if (!m) { push("", "<"); i = lt + 1; continue; }
+      push("tg", m[0]);
+      let rest = tag.slice(m[0].length);
+      const re = /(\s+)([^\s=>\/"']+)(\s*=\s*)?("[^"]*"|'[^']*'|[^\s>]+)?|(\s*\/?>)|([\s\S])/g;
+      let a;
+      while ((a = re.exec(rest))) {
+        if (a[2]) { push("", a[1]); push("at", a[2]); if (a[3]) push("", a[3]); if (a[4]) push("av", a[4]); }
+        else if (a[5]) push("tg", a[5]);
+        else push("", a[6] || a[0]);
+      }
+      i = gt < 0 ? text.length : gt + 1;
+    }
+    el.append("\n");
+    return [el, state];
+  }
+  window.ovnerPage = (s) => {
+    const L = s.lang === "en" ? "en" : "id"; document.documentElement.lang = L;
+    document.documentElement.dataset.theme = s.theme === "system" ? "" : s.theme;
+    document.getElementById("wl").textContent = W[L].wrap;
+    if (shown) return;
+    const src = s.src;
+    if (!src) { document.getElementById("msg").textContent = W[L].none; return; }
+    shown = true;
+    document.title = W[L].title + src.url;
+    document.getElementById("u").textContent = src.url;
+    const notes = [];
+    if (src.dom) notes.push(W[L].dom);
+    let text = src.text || "";
+    if (text.length > 2_000_000) { text = text.slice(0, 2_000_000); notes.push(W[L].big); }
+    document.getElementById("note").textContent = notes.join(" · ");
+    code.textContent = "";
+    const frag = document.createDocumentFragment();
+    let inC = false;
+    for (const ln of text.split(/\r?\n/)) { const [el, st] = line(ln, src.url, inC); inC = st; frag.append(el); }
+    code.append(frag);
+  };
+  post({ t: "page-ready" });
+})();
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
-    font: 13px/1.2 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+    font: 13px/1.2 var(--ovner-font, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif); user-select: none; }
   body { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
   #new { margin: 8px; height: 32px; border: 1px dashed var(--line); border-radius: 8px; background: none; color: var(--text); font: inherit; cursor: pointer; text-align: left; padding: 0 12px; }
   #new:hover { background: var(--hover); }

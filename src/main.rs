@@ -21,6 +21,12 @@ mod dlengine;
 mod video;
 mod usage;
 mod settings;
+mod fonts;
+mod net;
+mod translate;
+mod tts;
+mod extras;
+use extras::TrState;
 mod setup_ui;
 mod vault;
 mod shields;
@@ -471,6 +477,22 @@ fn download_dir_of(s: &Settings) -> PathBuf {
     }
 }
 
+/// Jenis berkas untuk label di daftar unduhan.
+fn file_kind(path: &str) -> &'static str {
+    let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "ts" | "3gp" => "video",
+        "mp3" | "m4a" | "aac" | "opus" | "ogg" | "flac" | "wav" | "wma" => "audio",
+        "srt" | "vtt" | "ass" | "ssa" | "sub" => "subtitle",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "xlsm" | "csv" | "ppt" | "pptx" | "txt" | "rtf" | "odt" | "ods" | "md" => "doc",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "svg" | "ico" | "heic" | "avif" | "tif" | "tiff" => "image",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" | "cab" => "archive",
+        "exe" | "msi" | "msix" | "appx" | "bat" | "cmd" | "apk" => "program",
+        "" => "",
+        _ => "other",
+    }
+}
+
 /// Berkas video (untuk tombol "Ambil subtitle (.srt)").
 fn is_video_file(path: &str) -> bool {
     let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -557,6 +579,22 @@ enum UserEvent {
     CiTick,
     /// Hasil ExecuteScript untuk --self-test.
     CiEval(String),
+    /// Penangkap media: video/audio yang dimuat tab.
+    Media(u64, win::MediaHit),
+    /// Halaman tab mendapat fokus (panel toolbar ditutup).
+    TabFocus(u64),
+    /// Item menu klik kanan Ovner dipilih: (tab, perintah, sasaran).
+    Ctx(u64, String, Value),
+    /// Langkah lihat sumber halaman: (tab, alamat, langkah, data).
+    Source(u64, String, u8, String),
+    /// Langkah tangkapan layar: (tab, langkah, jawaban DevTools).
+    Shot(u64, u8, String),
+    /// Hasil terjemahan satu kelompok: (tab, nomor terjemahan, kelompok, hasil).
+    Translated(u64, u64, u64, Result<(Vec<String>, Option<String>), String>),
+    /// Hasil terjemahan teks yang dipilih.
+    TrSel(Value),
+    /// Hasil suara/daftar suara baca keras untuk toolbar (nama fungsi, data).
+    TtsResult(&'static str, Value),
     /// Hasil uji fitur (Diagnostik); true = kelompok terakhir.
     DiagItems(Vec<Value>, bool),
     /// Tabel setelan dari "Uji semua fitur".
@@ -669,6 +707,12 @@ struct Tab {
     /// Unduhan WebView2 yang sedang berjalan dari tab ini: tab tidak boleh ditidurkan atau
     /// ditangguhkan (WebView2 membatalkan unduhannya, lalu mulai ulang).
     downloads_live: u32,
+    /// Video/audio yang dimuat halaman ini (penangkap media).
+    media: Vec<win::MediaHit>,
+    /// Bahasa halaman (atribut lang / tebakan isi / hasil deteksi penerjemah).
+    page_lang: String,
+    /// Terjemahan halaman.
+    tr: TrState,
 }
 
 /// Statistik penghemat tab (seperti Lifetime Stats TabWars), disimpan di tab-stats.json.
@@ -809,6 +853,15 @@ struct App {
     last_bm_folder: String,
     record_at: Instant,
     video_jobs: HashMap<u64, video::Job>,
+    /// Stream yang tertangkap untuk dialog unduh video: alamat → header (Referer, Cookie, …).
+    video_alt: HashMap<String, Vec<String>>,
+    /// Sumber halaman yang ditampilkan di ovner://source (nomor, isi).
+    sources: Vec<(u64, Value)>,
+    source_seq: u64,
+    tr_seq: u64,
+    read_seq: u64,
+    /// Tab yang sedang dibaca keras.
+    reading: Option<u64>,
     /// Tinggi tambahan toolbar saat dropdown/gelembung terbuka (menutupi halaman).
     toolbar_over: f64,
     /// Tawaran simpan/perbarui sandi yang sedang ditampilkan: (alamat, pengguna, sandi, perbarui?).
@@ -1185,6 +1238,19 @@ fn build_tab_view(
     }
     let p_close = tenv.proxy.clone();
     win::on_window_close(&wv, move || send(&p_close, UserEvent::ScriptClose(id)));
+    // Penangkap media (unduh video seperti IDM), fokus halaman (tutup panel toolbar), dan item
+    // menu klik kanan Ovner.
+    if s.video_sniff {
+        let p_media = tenv.proxy.clone();
+        win::on_media(&wv, move |hit| send(&p_media, UserEvent::Media(id, hit)));
+    }
+    {
+        let p_focus = tenv.proxy.clone();
+        win::on_focus(&wv, move || send(&p_focus, UserEvent::TabFocus(id)));
+        let en = i18n::resolve(&s.language).code() == "en";
+        let p_ctx = tenv.proxy.clone();
+        win::context_menu(&wv, move |info| extras::ctx_items(en, info), move |cmd, info| send(&p_ctx, UserEvent::Ctx(id, cmd.to_string(), info.clone())));
+    }
     // Panel unduhan bawaan WebView2 tidak pernah ditampilkan: selalu Download box v2 Ovner.
     {
         let p_dlg = tenv.proxy.clone();
@@ -1315,12 +1381,34 @@ fn send(proxy: &EventLoopProxy<UserEvent>, e: UserEvent) {
     let _ = proxy.send_event(e);
 }
 
+/// CSS font tampilan Ovner yang sedang dipilih (@font-face + --ovner-font).
+static UI_FONT_CSS: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+fn set_ui_font(key: &str) {
+    *UI_FONT_CSS.write().unwrap() = fonts::ui_css(key);
+}
+
+/// Halaman Ovner dengan font tampilan yang dipilih.
+fn with_font(html: &str) -> String {
+    let css = UI_FONT_CSS.read().unwrap().clone();
+    if css.is_empty() {
+        return html.to_string();
+    }
+    html.replacen("</head>", &format!("<style id=\"ovner-font\">{css}</style></head>", ), 1)
+}
+
+/// Skrip untuk mengganti font tampilan di halaman Ovner yang sudah terbuka.
+fn font_js() -> String {
+    let css = serde_json::to_string(&*UI_FONT_CSS.read().unwrap()).unwrap_or_default();
+    format!("(function(c){{let s=document.getElementById('ovner-font');if(!s){{s=document.createElement('style');s.id='ovner-font';document.head.append(s)}}s.textContent=c}})({css})")
+}
+
 fn html_response(html: &'static str) -> wry::http::Response<Cow<'static, [u8]>> {
-    wry::http::Response::builder().header("Content-Type", "text/html; charset=utf-8").body(Cow::Borrowed(html.as_bytes())).unwrap()
+    wry::http::Response::builder().header("Content-Type", "text/html; charset=utf-8").body(Cow::Owned(with_font(html).into_bytes())).unwrap()
 }
 
 fn page_response(html: &str) -> wry::http::Response<Cow<'static, [u8]>> {
-    let full = html.replace("<link rel=\"stylesheet\" href=\"ovner://page/page.css\">", &format!("<style>{PAGE_CSS}</style>"));
+    let full = with_font(&html.replace("<link rel=\"stylesheet\" href=\"ovner://page/page.css\">", &format!("<style>{PAGE_CSS}</style>")));
     wry::http::Response::builder().header("Content-Type", "text/html; charset=utf-8").body(Cow::Owned(full.into_bytes())).unwrap()
 }
 
@@ -1340,6 +1428,7 @@ fn serve_internal(req: wry::http::Request<Vec<u8>>) -> wry::http::Response<Cow<'
         "diagnostics" => page_response(DIAGNOSTICS_HTML),
         "sessions" => page_response(SESSIONS_HTML),
         "downloads" => page_response(DOWNLOADS_HTML),
+        "source" => page_response(extras::SOURCE_HTML),
         _ => wry::http::Response::builder().status(404).body(Cow::Borrowed(&b"Tidak ada"[..])).unwrap(),
     }
 }
@@ -1404,7 +1493,7 @@ fn build_toolbar(
     let p = proxy.clone();
     let size: LogicalSize<f64> = window.inner_size().to_logical(window.scale_factor());
     let b = WebViewBuilder::new_with_web_context(web_context)
-        .with_html(TOOLBAR_HTML)
+        .with_html(with_font(TOOLBAR_HTML))
         .with_bounds(Rect { position: WLogicalPosition::new(0.0, 0.0).into(), size: WLogicalSize::new(size.width.max(1.0), 77.0).into() })
         .with_hotkeys_zoom(false)
         .with_devtools(cfg!(debug_assertions))
@@ -1570,7 +1659,7 @@ impl App {
         let theme = self.settings.borrow().theme.clone();
         let rect = self.sidebar_rect();
         let b = WebViewBuilder::new_with_web_context(&mut self.web_context)
-            .with_html(SIDEBAR_HTML)
+            .with_html(with_font(SIDEBAR_HTML))
             .with_bounds(rect)
             .with_hotkeys_zoom(false)
             .with_devtools(cfg!(debug_assertions))
@@ -1660,6 +1749,9 @@ impl App {
             recording: false,
             rec_hooked: false,
             downloads_live: 0,
+            media: Vec::new(),
+            page_lang: String::new(),
+            tr: TrState::default(),
         }
     }
 
@@ -2692,7 +2784,15 @@ impl App {
                 "lists": self.sessions.iter().filter(|x| x.list).map(|x| x.tabs.len()).sum::<usize>(),
             },
             "memNote": self.mem_note.and_then(|(id, mb)| self.tab_index(id).filter(|&j| j == self.active).map(|_| json!({"mb": mb, "limit": s.bloat_mb}))),
-            "video": tab.is_some_and(|t| video::is_video_page(&t.url)),
+            "video": tab.is_some_and(|t| video::is_video_page(&t.url) || (s.video_sniff && !t.media.is_empty())),
+            "mediaCount": tab.map(|t| t.media.len()).unwrap_or(0),
+            "recording": tab.is_some_and(|t| t.recording),
+            "tr": tab.filter(|t| t.url.starts_with("http") && internal_page(&t.url).is_none()).map(|t| json!({
+                "lang": t.page_lang, "on": t.tr.on, "to": t.tr.to, "busy": t.tr.busy, "done": t.tr.done, "total": t.tr.total,
+                "err": t.tr.err, "device": t.tr.device, "engine": s.translate_engine,
+                "auto": if s.translate_to == "auto" { translate::auto_target(&t.page_lang).to_string() } else { s.translate_to.clone() },
+            })),
+            "langs": translate::LANGS.iter().map(|l| json!([l.0, l.1, l.2])).collect::<Vec<_>>(),
             "pageTitle": tab.map(|t| t.title.clone()).unwrap_or_default(),
             "videoTools": [video::ytdlp(data_dir()).exists(), video::ffmpeg(data_dir()).exists()],
         });
@@ -2780,6 +2880,8 @@ impl App {
             "eta": eta, "elapsed": meta.and_then(|m| m.started).map(|t| t.elapsed().as_secs()).unwrap_or(0),
             "server": meta.map(|m| m.server.clone()).unwrap_or(Value::Null), "segs": segs,
             "folder": Path::new(&d.path).parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            "kind": file_kind(if Path::new(&d.path).extension().is_some() { &d.path } else { &d.name }),
+            "shown": Path::new(&d.path).file_name().filter(|_| Path::new(&d.path).extension().is_some()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone()),
             "exists": d.state == "done" && Path::new(&d.path).exists()})
     }
 
@@ -3605,10 +3707,50 @@ impl App {
         let (p, data, req, url) = (self.proxy.clone(), data_dir().to_path_buf(), self.video_req, url.to_string());
         let lang = self.lang;
         log(&format!("telusuri video: {url}"));
+        // Video yang tertangkap di halaman ini (HLS/DASH/MP4): dicoba bila yt-dlp tidak mengenali
+        // halamannya (mis. detik Shorts: "Unsupported url scheme").
+        let tab = self.tabs.iter().position(|t| t.url == url).unwrap_or(self.active);
+        let title = self.tabs.get(tab).map(|t| t.title.clone()).unwrap_or_default();
+        let cands: Vec<(String, Vec<String>)> = self
+            .media_candidates(tab, "")
+            .into_iter()
+            .map(|m| (m.url, m.headers.iter().map(|(k, v)| format!("{k}: {v}")).collect()))
+            .collect();
+        self.video_alt = cands.iter().cloned().collect();
         std::thread::spawn(move || {
             let note = |what: &str| send(&p, UserEvent::VideoInfo(req, Ok(json!({"note": tf(lang, "d.video_tools", &[("t", what)])}))));
-            let needs = video::Needs { ffmpeg: false, deno: video::is_youtube(&url) };
+            let needs = video::Needs { ffmpeg: !cands.is_empty(), deno: video::is_youtube(&url) };
             let r = video::ensure_tools(&data, needs, &note).and_then(|_| video::probe(&data, &url));
+            let usable = |v: &Value| v["choices"].as_array().is_some_and(|c| !c.is_empty());
+            let r = match r {
+                Ok(v) if usable(&v) || cands.is_empty() => Ok(v),
+                first => {
+                    let why = match &first {
+                        Ok(_) => "tidak ada format".to_string(),
+                        Err(e) => e.clone(),
+                    };
+                    log(&format!("[video] yt-dlp tidak mengenali halaman ({why}); mencoba {} video yang tertangkap di halaman", cands.len()));
+                    let mut found = None;
+                    for (src, headers) in &cands {
+                        match video::probe_with(&data, src, headers) {
+                            Ok(mut v) if usable(&v) => {
+                                log(&format!("[video] stream halaman dipakai: {}", src.chars().take(200).collect::<String>()));
+                                v["source"] = json!(src);
+                                v["viaStream"] = json!(true);
+                                if !title.trim().is_empty() {
+                                    v["title"] = json!(title);
+                                    v["name"] = json!(video::safe_name(&title));
+                                }
+                                found = Some(Ok(v));
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(e) => log(&format!("[video] stream gagal ditelusuri: {e}")),
+                        }
+                    }
+                    found.unwrap_or(first)
+                }
+            };
             send(&p, UserEvent::VideoInfo(req, r));
         });
     }
@@ -4540,6 +4682,7 @@ impl App {
                 let v = self.diagnostics_report();
                 json!({ "theme": theme, "lang": lang, "report": v })
             }
+            "source" => json!({ "theme": theme, "lang": lang, "src": self.source_state(&t.url) }),
             _ => return,
         };
         if let Some(wv) = &self.tabs[i].webview {
@@ -5099,6 +5242,14 @@ impl App {
         let args = self.browser_args.clone();
         let data = data_dir().to_path_buf();
         std::thread::spawn(move || {
+            // Bukti dari log sesi ini dan penghitung hari ini: setelan yang efeknya sudah terlihat
+            // (tab ditidurkan, RAM dirapikan, iklan diblokir, …) menjadi "ok" beserta buktinya.
+            let mut special = special;
+            let log_text = std::fs::read_to_string(data.join("ovner.log")).unwrap_or_default();
+            let lines: Vec<String> = log_text.lines().map(str::to_string).collect();
+            for (k, m) in selftest::proofs(&lines, &metrics::counts()) {
+                special.entry(k).or_insert(("ok".into(), m));
+            }
             send(&p, UserEvent::DiagRows(selftest::setting_rows(&s, &args, &special)));
             send(&p, UserEvent::DiagItems(selftest::offline_tests(&data, &s), false));
             send(&p, UserEvent::DiagItems(selftest::network_tests(&data, lang_id), true));
@@ -5157,10 +5308,24 @@ impl App {
         ));
         out.push(item("Sistem", "Pemetaan proses per tab", if self.frames_ok { "ok" } else { "peringatan" }, format!("{} proses renderer terpetakan", self.renderer_frames.len())));
         out.push(item("Sistem", "Brankas sandi (DPAPI)", if vault::self_test() { "ok" } else { "gagal" }, "enkripsi lalu buka kembali"));
+        // Hanya sesi ini (sejak baris "==== Ovner … mulai" terakhir): galat dari versi/sesi lama
+        // (mis. baris RAM yang dulu salah dicap [crash]) tidak dihitung lagi. Laporan uji
+        // diagnostik sendiri ([diag]) juga tidak dihitung.
         let recent = std::fs::read_to_string(data_dir().join("ovner.log")).unwrap_or_default();
-        let panics = recent.lines().filter(|l| l.contains("PANIC")).count();
-        let errors = recent.lines().filter(|l| logging::line_level(l) == "GALAT").count();
-        out.push(item("Sistem", "Crash/galat di log terbaru", if panics > 0 { "gagal" } else if errors > 0 { "peringatan" } else { "ok" }, format!("{panics} panic, {errors} baris GALAT")));
+        let session: Vec<&str> = {
+            let all: Vec<&str> = recent.lines().collect();
+            let start = all.iter().rposition(|l| l.contains("==== Ovner ") && l.contains(" mulai")).unwrap_or(0);
+            all[start..].to_vec()
+        };
+        let panics = session.iter().filter(|l| l.contains("PANIC")).count();
+        let galat: Vec<&&str> = session.iter().filter(|l| logging::line_level(l) == "GALAT" && !l.contains("[diag]")).collect();
+        let last: Vec<String> = galat.iter().rev().take(3).map(|l| l.chars().skip(24).take(160).collect::<String>()).collect();
+        out.push(item(
+            "Sistem",
+            "Crash/galat sejak Ovner dibuka",
+            if panics > 0 { "gagal" } else if !galat.is_empty() { "peringatan" } else { "ok" },
+            if galat.is_empty() { format!("{panics} panic, 0 baris GALAT") } else { format!("{panics} panic, {} baris GALAT; terakhir: {}", galat.len(), last.join(" | ")) },
+        ));
         // Shields
         let blocked = self.blocker.borrow().check("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", "https://contoh.id/", "script").block;
         out.push(item("Shields", "Uji blokir iklan (adsbygoogle.js)", if blocked || !s.block_ads { "ok" } else { "gagal" }, if s.block_ads { if blocked { "diblokir" } else { "TIDAK diblokir" } } else { "pemblokir dimatikan" }));
@@ -5370,6 +5535,21 @@ impl App {
             }
             "dark_mode" | "dark_engine" | "dark_brightness" | "dark_contrast" | "dark_sepia" | "dark_grayscale" | "dark_on_sites" | "dark_off_sites" => {
                 self.apply_dark_live();
+            }
+            "ui_font" => {
+                set_ui_font(&s.ui_font);
+                let js = font_js();
+                self.each_window(|a| {
+                    let _ = a.toolbar.evaluate_script(&js);
+                    if let Some(sb) = &a.sidebar {
+                        let _ = sb.evaluate_script(&js);
+                    }
+                });
+                for t in self.all_tabs() {
+                    if let (Some(wv), true) = (&t.webview, internal_page(&t.url).is_some()) {
+                        let _ = wv.evaluate_script(&js);
+                    }
+                }
             }
             "block_ads" | "exceptions" | "cosmetic_filtering" => {
                 if let Some(wv) = self.active_webview() {
@@ -5816,7 +5996,7 @@ impl App {
             log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings" | "codec-hw") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings" | "codec-hw" | "page-lang" | "tr-req" | "tr-progress" | "tr-lang" | "tr-device" | "read-text") {
             return false;
         }
         match kind {
@@ -5853,9 +6033,59 @@ impl App {
                 }
             }
             // Tombol "Unduh video" di atas video halaman.
+            "page-lang" => {
+                let l: String = msg["l"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(12).collect();
+                if !self.tabs[i].tr.on && self.tabs[i].page_lang != l {
+                    self.tabs[i].page_lang = l;
+                    if i == self.active {
+                        self.render();
+                    }
+                }
+            }
+            "tr-req" => self.on_tr_req(i, &msg),
+            "tr-progress" => {
+                let t = &mut self.tabs[i];
+                if msg["n"].as_u64() == Some(t.tr.n) && t.tr.n > 0 {
+                    if msg["restored"].as_bool() == Some(true) {
+                        t.tr = TrState::default();
+                    } else {
+                        t.tr.done = msg["done"].as_u64().unwrap_or(0);
+                        t.tr.total = msg["total"].as_u64().unwrap_or(0);
+                        t.tr.busy = msg["busy"].as_bool().unwrap_or(false);
+                        if let Some(e) = msg["error"].as_str().filter(|e| !e.is_empty()) {
+                            t.tr.err = e.chars().take(200).collect();
+                        }
+                    }
+                    if i == self.active {
+                        self.render();
+                    }
+                }
+            }
+            "tr-lang" => {
+                let l: String = msg["lang"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(12).collect();
+                if msg["n"].as_u64() == Some(self.tabs[i].tr.n) && !l.is_empty() {
+                    self.tabs[i].page_lang = l;
+                    self.render();
+                }
+            }
+            "tr-device" => {
+                if msg["n"].as_u64() == Some(self.tabs[i].tr.n) {
+                    self.tabs[i].tr.device = true;
+                    log("[terjemah] memakai penerjemah offline bawaan Chromium (Translator API)");
+                    self.render();
+                }
+            }
+            "read-text" => self.on_read_text(i, &msg),
             "video-dl" => {
                 if i != self.active {
                     self.activate(i);
+                }
+                // Alamat video yang sedang diputar (bukan blob:) ikut jadi calon unduhan.
+                if let Some(src) = msg["src"].as_str().filter(|u| u.starts_with("http")) {
+                    let referer = msg["frame"].as_str().filter(|u| u.starts_with("http")).or(msg["page"].as_str()).unwrap_or("").to_string();
+                    let hit = win::MediaHit { url: src.chars().take(4000).collect(), kind: if src.contains(".m3u8") { "hls" } else { "file" }, mime: String::new(), len: 0, headers: vec![("Referer".into(), referer)] };
+                    let id = self.tabs[i].id;
+                    self.on_media_hit(id, hit);
                 }
                 // Alamat halaman saat ini (YouTube berpindah video tanpa memuat ulang).
                 let page = msg["page"].as_str().filter(|u| u.starts_with("http")).map(str::to_string).unwrap_or(current_url.clone());
@@ -6095,7 +6325,21 @@ impl App {
             "page-ready" => self.push_page_state(i),
             "set" => {
                 let key = msg["key"].as_str().unwrap_or("");
-                if self.settings.borrow_mut().set(key, &msg["value"]) {
+                // Kunci Azure Speech disimpan terenkripsi (DPAPI), tidak pernah apa adanya.
+                let value = if key == "tts_azure_key" {
+                    let plain = msg["value"].as_str().unwrap_or("").trim().to_string();
+                    if plain.is_empty() {
+                        json!("")
+                    } else {
+                        match win::protect(plain.as_bytes(), true) {
+                            Some(enc) => json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, enc)),
+                            None => return false,
+                        }
+                    }
+                } else {
+                    msg["value"].clone()
+                };
+                if self.settings.borrow_mut().set(key, &value) {
                     self.settings.borrow().save(data_dir());
                     self.apply_setting_side_effects(key);
                 } else {
@@ -6322,6 +6566,14 @@ impl App {
             "home" => {
                 self.on_menu("home");
             }
+            "source" => self.view_source(self.active),
+            "read" => {
+                if self.reading.is_some() {
+                    let _ = self.toolbar.evaluate_script("window.ovner && ovner.readerToggle && ovner.readerToggle()");
+                } else {
+                    self.start_read(self.active, false);
+                }
+            }
             "nexttab" if n > 0 => self.activate((self.active + 1) % n),
             "prevtab" if n > 0 => self.activate((self.active + n - 1) % n),
             "reload" => {
@@ -6528,7 +6780,18 @@ impl App {
                     keep_srt: msg["srt"].as_bool().unwrap_or(false),
                     fmt: msg["fmt"].as_str().unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_')).collect(),
                     page_srt: String::new(),
+                    source: String::new(),
+                    headers: Vec::new(),
                 };
+                // Stream yang tertangkap di halaman (dipilih saat penelusuran): header disimpan
+                // Ovner sendiri, tidak lewat toolbar.
+                let mut spec = spec;
+                if let Some(src) = msg["source"].as_str().filter(|x| !x.is_empty()) {
+                    if let Some(h) = self.video_alt.get(src) {
+                        spec.source = src.to_string();
+                        spec.headers = h.clone();
+                    }
+                }
                 if spec.page.starts_with("http") && !spec.dir.is_empty() {
                     self.start_video_spec(spec, msg["later"].as_bool().unwrap_or(false));
                 }
@@ -6625,6 +6888,34 @@ impl App {
                 }
                 self.last_render_key.clear();
                 self.render();
+            }
+            // ---- terjemahan, baca keras, kode QR, perekam masalah ----
+            "tr-start" => {
+                let to = msg["to"].as_str().map(|x| x.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(8).collect::<String>());
+                self.start_translate(self.active, to);
+            }
+            "tr-restore" => self.restore_translate(self.active),
+            "tr-settings" | "read-settings" => {
+                let url = format!("{}#s-read", internal_url("settings"));
+                self.open_tab(&url, true, false);
+            }
+            "read-start" => self.start_read(self.active, false),
+            "read-mark" | "read-stop" | "tts" | "tts-voices" | "tts-set" => self.on_reader_cmd(&cmd, &msg),
+            "qr-save" => {
+                let b64 = msg["png"].as_str().unwrap_or("").trim_start_matches("data:image/png;base64,");
+                if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64) {
+                    let url = msg["url"].as_str().unwrap_or("").to_string();
+                    let host = host_of(&url).unwrap_or_else(|| "halaman".into());
+                    self.save_file_download(&format!("{} {host}.png", if self.lang.code() == "en" { "QR code" } else { "Kode QR" }), &bytes, &url);
+                }
+            }
+            "shield-rec-stop" => {
+                self.on_menu("shield-record");
+            }
+            "media-list" => {
+                // Daftar media terdeteksi untuk panel video toolbar.
+                let list: Vec<Value> = self.media_candidates(self.active, "").iter().map(|m| json!({"url": m.url, "kind": m.kind, "len": m.len})).collect();
+                post_page(&self.toolbar, "mediaList", &Value::Array(list).to_string(), "window.ovner && ovner.mediaList");
             }
             "bubble-close" => {
                 self.pw_offer = None;
@@ -7623,7 +7914,7 @@ impl App {
             TrayClick | Remote(_) => return Some(self.focused_win),
             Content(id, _) | UrlChanged(id, ..) | Title(id, _) | PageLoad(id, ..) | NewTab(id, _) | Navigate(id, _) | ScriptNav(id, ..) | ProcFailed(id, ..)
             | TabMetrics(id, _) | Anubis(id, _) | Problem(id, ..) | ScriptClose(id) | NavDone(id, ..) | Upgraded(id, _) | Favicon(id, _)
-            | Download(id, _) => *id,
+            | Download(id, _) | Media(id, _) | TabFocus(id) | Ctx(id, ..) | Source(id, ..) | Shot(id, ..) | Translated(id, ..) => *id,
             DlProbe(_, tab, ..) => *tab,
             _ => return None,
         };
@@ -8265,6 +8556,7 @@ fn main() {
 
     #[allow(unused_mut)]
     let mut settings = Settings::load(data_dir());
+    set_ui_font(&settings.ui_font);
     if args.self_test.is_some() {
         // Uji sungguhan: tanpa layar sambutan, update, autostart, atau pemulihan tab; unduhan
         // ke folder data uji.
@@ -8424,6 +8716,12 @@ fn main() {
         sidebar: None,
         toolbar_ready: false,
         toolbar_h: 77.0,
+        sources: Vec::new(),
+        video_alt: HashMap::new(),
+        source_seq: 0,
+        tr_seq: 0,
+        read_seq: 0,
+        reading: None,
         tabs: Vec::new(),
         active: 0,
         next_id: Rc::new(Cell::new(0)),
@@ -8795,6 +9093,17 @@ fn main() {
                 }
                 UserEvent::UrlChanged(id, url, new_doc) => {
                     if let Some(i) = app.tab_index(id) {
+                        if new_doc {
+                            // Halaman baru: media, bahasa, terjemahan, dan baca keras halaman lama selesai.
+                            let t = &mut app.tabs[i];
+                            t.media.clear();
+                            t.page_lang.clear();
+                            t.tr = TrState::default();
+                            if app.reading == Some(id) {
+                                app.reading = None;
+                                let _ = app.toolbar.evaluate_script("window.ovner && ovner.readerStop && ovner.readerStop()");
+                            }
+                        }
                         if app.tabs[i].url != url && !url.starts_with("data:") {
                             app.tabs[i].url = url.clone();
                             // Halaman baru dicatat ke riwayat saat dimuat (PageLoad); di sini hanya
@@ -8843,6 +9152,16 @@ fn main() {
                 }
                 UserEvent::DiagItems(items, done) => app.on_diag_items(items, done),
                 UserEvent::CiTick => app.ci_tick(),
+                UserEvent::Media(id, hit) => app.on_media_hit(id, hit),
+                UserEvent::TabFocus(_) => {
+                    let _ = app.toolbar.evaluate_script("window.ovner && ovner.closePanels && ovner.closePanels()");
+                }
+                UserEvent::Ctx(id, cmd, info) => app.on_ctx(id, &cmd, &info),
+                UserEvent::Source(id, url, step, data) => app.on_source_step(id, url, step, data),
+                UserEvent::Shot(id, step, data) => app.on_shot(id, step, data),
+                UserEvent::Translated(id, n, b, r) => app.on_translated(id, n, b, r),
+                UserEvent::TrSel(v) => post_page(&app.toolbar, "trSel", &v.to_string(), "window.ovner && ovner.trSel"),
+                UserEvent::TtsResult(kind, v) => post_page(&app.toolbar, kind, &v.to_string(), &format!("window.ovner && ovner.{kind}")),
                 UserEvent::CiEval(r) => {
                     if let Some(c) = app.ci.as_mut() {
                         c.eval = Some(r);
