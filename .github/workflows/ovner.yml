@@ -10,6 +10,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      lewati_uji:
+        description: "Darurat saja: rilis tanpa menunggu uji WebView2 (--self-test)"
+        type: boolean
+        default: false
   # Scriptlet dan resource pengganti uBlock Origin/Brave disusun ulang setiap hari.
   schedule:
     - cron: "17 21 * * *"
@@ -96,27 +101,37 @@ jobs:
           python check_imports.py
 
       # Uji Ovner sungguhan dengan WebView2 di Windows ini: server uji lokal + skenario PDF,
-      # unduhan, iklan, subtitle, tidur tab, daftar tab, rapikan RAM, browser default, dan
-      # patokan RAM (lihat src/citest.rs). Tahap awal: hasilnya dilaporkan tetapi belum
-      # membatalkan rilis, sampai terbukti stabil (tidak gagal sendiri).
+      # unduhan, iklan, subtitle, tidur tab, daftar tab, rapikan RAM, browser default, ekstensi,
+      # dan patokan RAM (lihat src/citest.rs).
+      # Sejak 0.8.28 uji ini MENJAGA RILIS: bila ada langkah inti yang gagal, rilis tidak
+      # diterbitkan dan pengguna tetap di versi lama. Langkah dalam masa percobaan (bertanda *)
+      # hanya dilaporkan. Gagal sekali diulang sekali dengan data baru (mesin GitHub kadang
+      # lambat sesaat). Darurat: Run workflow dengan "lewati_uji".
       - name: Uji WebView2 sungguhan (--self-test)
         id: selftest
-        continue-on-error: true
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.lewati_uji) }}
         shell: pwsh
         run: |
-          $out = Join-Path $env:RUNNER_TEMP "ovner-hasil"
-          $env:OVNER_DATA = Join-Path $env:RUNNER_TEMP "ovner-data-uji"
-          $p = Start-Process -FilePath "target/release/ovner.exe" -ArgumentList @("--portable", "--self-test", "`"$out`"") -PassThru
-          if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; throw "self-test tidak selesai dalam 10 menit" }
-          if (Test-Path "$out/hasil.txt") { Get-Content "$out/hasil.txt" } else { "hasil.txt tidak ada"; Get-ChildItem $out -ErrorAction SilentlyContinue; Get-Content (Join-Path $env:OVNER_DATA "ovner.log") -Tail 80 -ErrorAction SilentlyContinue }
-          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force
-          if ($p.ExitCode -ne 0) { throw "self-test: ada langkah yang gagal (kode $($p.ExitCode))" }
+          $ok = $false
+          foreach ($try in 1..2) {
+            $out = Join-Path $env:RUNNER_TEMP "ovner-hasil-$try"
+            $env:OVNER_DATA = Join-Path $env:RUNNER_TEMP "ovner-data-uji-$try"
+            "== Percobaan $try =="
+            $p = Start-Process -FilePath "target/release/ovner.exe" -ArgumentList @("--portable", "--self-test", "`"$out`"") -PassThru
+            if (-not $p.WaitForExit(600000)) { Stop-Process -Id $p.Id -Force; "self-test tidak selesai dalam 10 menit" }
+            if (Test-Path "$out/hasil.txt") { Get-Content "$out/hasil.txt" } else { "hasil.txt tidak ada"; Get-ChildItem $out -ErrorAction SilentlyContinue; Get-Content (Join-Path $env:OVNER_DATA "ovner.log") -Tail 80 -ErrorAction SilentlyContinue }
+            Get-Process ovner, msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 3
+            if ($p.HasExited -and $p.ExitCode -eq 0) { $ok = $true; break }
+            "Percobaan ${try}: ada langkah inti yang gagal (kode $($p.ExitCode))."
+          }
+          if (-not $ok) { throw "self-test gagal dua kali: rilis tidak diterbitkan" }
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ovner-self-test
-          path: ${{ runner.temp }}/ovner-hasil
+          path: ${{ runner.temp }}/ovner-hasil-*
           if-no-files-found: warn
 
       - name: Kemas (stabil)

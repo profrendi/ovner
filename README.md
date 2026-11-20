@@ -97,6 +97,9 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
 - Mode efisiensi per proses tidak lagi bolak-balik tiap 10 detik; log tidak lagi penuh baris "efisiensi" dan "media terdeteksi".
 - Cek cache mesin filter tidak lagi memuat seluruh mesin (±15 MB sementara).
 
+**Uji GitHub sekarang menjaga rilis**
+- Setelah lulus penuh di 0.8.24–0.8.28, uji WebView2 sungguhan kini menentukan rilis: bila ada langkah inti yang gagal (diulang sekali dulu), rilis tidak diterbitkan dan Ovner di PC tetap di versi lama. Langkah yang bergantung pada layanan luar (Microsoft/Google, Chrome Web Store) dan langkah baru tetap hanya dilaporkan. Darurat: Run workflow dengan "lewati_uji".
+
 **Jaringan kantor**
 - Daftar filter diperiksa lagi tiap 15 menit selama Ovner terbuka (dulu hanya saat mulai); yang gagal dicatat beserta alasannya. Cek update yang gagal (mis. jaringan masih meminta login) dicoba lagi 15 menit kemudian, lalu tiap 6 jam.
 - Penerjemah Microsoft yang sesekali menjawab bukan JSON dicoba ulang; bila Google berhasil mengambil alih, log mencatat PERINGATAN (bukan GALAT).

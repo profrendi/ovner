@@ -69,27 +69,18 @@ const STEPS: &[(&str, u64)] = &[
     ("ekstensi_copyclip_dari_web_store", 90),
 ];
 
-/// Langkah baru dalam masa percobaan: hasilnya dilaporkan, tetapi belum ikut menentukan lulus
-/// (kode keluar) sampai lulus di 3 rilis berturut-turut.
+/// Langkah dalam masa percobaan: hasilnya dilaporkan, tetapi belum ikut menentukan lulus
+/// (kode keluar) sampai lulus di 3 rilis berturut-turut. Langkah yang bergantung pada layanan
+/// luar (Microsoft/Google, Chrome Web Store) tetap di sini supaya gangguan mereka tidak
+/// menahan rilis Ovner.
+/// Lulus masa percobaan di 0.8.28: langkah 0.8.25 (video, terjemahan, baca keras, sumber,
+/// tangkapan layar, privasi, font) dan 0.8.26 (isi RAM ovner.exe, skrip konten & panel ekstensi).
 const PROBATION: &[&str] = &[
-    "tombol_video_di_halaman_trusted_types",
-    "tombol_video_di_dalam_iframe",
-    "video_hls_tertangkap",
-    "terjemahan_halaman_dan_kembalikan",
-    "baca_keras_ambil_paragraf",
-    "lihat_sumber_halaman",
-    "tangkapan_layar_disimpan",
-    "gpc_dnt_terkirim",
-    "parameter_pelacak_dibuang",
-    "font_tampilan_ovner",
     "layanan_online_terjemah_dan_suara",
-    "isi_ram_ovner_dan_pemblokir",
+    "ekstensi_copyclip_dari_web_store",
     "isi_ram_toolbar",
     "ekstensi_pasang_dari_crx",
     "terjemahan_teks_terpilih_gelembung",
-    "ekstensi_skrip_konten_jalan",
-    "ekstensi_panel_samping_terbuka",
-    "ekstensi_copyclip_dari_web_store",
 ];
 
 /// CopyClip (panel samping riwayat clipboard) di Chrome Web Store.
