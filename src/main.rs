@@ -5747,8 +5747,10 @@ impl App {
             .map(|d| d.as_secs() / 3600)
             .max()
             .unwrap_or(0);
-        let stale = s.auto_update_filters && max_age > (s.filter_update_hours as u64).max(1) * 3;
-        out.push(item("Shields", "Umur daftar filter", if stale { "peringatan" } else { "ok" }, format!("tertua {max_age} jam (diperbarui tiap {} jam)", s.filter_update_hours)));
+        // Daftar besar diperbarui tiap REFRESH_AFTER (3 hari); beri kelonggaran sehari. (Dulu
+        // dibandingkan dengan jam pembaruan daftar CEPAT x3, sehingga selalu memberi peringatan palsu.)
+        let stale = s.auto_update_filters && max_age > blocker::REFRESH_AFTER.as_secs() / 3600 + 24;
+        out.push(item("Shields", "Umur daftar filter", if stale { "peringatan" } else { "ok" }, format!("tertua {max_age} jam (daftar besar tiap {} jam, daftar cepat tiap {} jam)", blocker::REFRESH_AFTER.as_secs() / 3600, s.filter_update_hours)));
         if stale {
             set("auto_update_filters", "peringatan", format!("daftar filter tertua {max_age} jam"));
         }
@@ -8198,7 +8200,7 @@ fn filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings, force: bool) {
         let wanted = blocker::wanted_lists(&s);
         blocker::write_custom_rules(&dir, &s.custom_rules);
         blocker::prune_lists(&dir, &wanted);
-        let had_cache = blocker::has_cache(&dir);
+        let had_cache = blocker::cache_valid(&dir);
         let stale = if force { wanted.clone() } else { blocker::stale_lists(&dir, &wanted, s.filter_update_hours) };
         let mut changed = false;
         if force || (!stale.is_empty() && s.auto_update_filters) {

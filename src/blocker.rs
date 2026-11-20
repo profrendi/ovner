@@ -168,7 +168,7 @@ const TRACKING_PARAMS: &[&str] = &[
 
 const CACHE_FILE: &str = ".mesin-filter.bin";
 /// Format serialisasi mesin bisa berubah antar versi adblock-rust; naikkan bila berubah.
-const CACHE_TAG: &str = "ovner-filter-v2;adblock-0.13";
+const CACHE_TAG: &str = "ovner-filter-v3;adblock-0.13";
 
 pub fn filters_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("filters")
@@ -196,11 +196,35 @@ fn mtime_secs(p: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// Sidik isi berkas (FNV-1a 64-bit, dibaca per 64 KB supaya tidak memakai RAM besar).
+/// Kunci cache memakai isi, bukan waktu ubah: menyegarkan waktu berkas yang isinya sama (supaya
+/// tidak diunduh lagi) tidak boleh membuat cache dianggap usang, dan isi yang berubah tidak
+/// boleh lolos hanya karena ukurannya sama.
+fn content_hash(p: &Path) -> u64 {
+    use std::io::Read;
+    let mut h: u64 = 0xcbf29ce484222325;
+    let Ok(mut f) = std::fs::File::open(p) else { return 0 };
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for b in &buf[..n] {
+                    h ^= *b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+            }
+            Err(_) => return 0,
+        }
+    }
+    h
+}
+
 fn cache_key(files: &[PathBuf]) -> String {
     let mut key = CACHE_TAG.to_string();
     for f in files {
         let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
-        key.push_str(&format!(";{}:{len}:{}", f.file_name().unwrap_or_default().to_string_lossy(), mtime_secs(f)));
+        key.push_str(&format!(";{}:{len}:{:016x}", f.file_name().unwrap_or_default().to_string_lossy(), content_hash(f)));
     }
     key
 }
@@ -216,12 +240,23 @@ pub fn builtin_engine() -> Engine {
     Engine::new_with_filter_set(set)
 }
 
-/// Muat mesin dari cache bila cocok dengan daftar di disk.
-/// Cache mesin sudah ada (tanpa memuatnya: memuat = ±15 MB alokasi sementara).
-pub fn has_cache(data_dir: &Path) -> bool {
-    filters_dir(data_dir).join(CACHE_FILE).is_file()
+/// Cache mesin ada **dan** cocok dengan daftar di disk. Hanya membaca kepala berkas cache
+/// (kuncinya), tanpa memuat mesinnya: memuat = ±15 MB alokasi sementara.
+/// Sengaja bukan sekadar "berkasnya ada": cache usang yang dianggap sah membuat pemblokir
+/// berjalan dengan daftar bawaan saja (bug 0.8.28).
+pub fn cache_valid(data_dir: &Path) -> bool {
+    use std::io::Read;
+    let files = list_files(data_dir);
+    if files.is_empty() {
+        return false;
+    }
+    let want = format!("{}\n", cache_key(&files));
+    let Ok(mut f) = std::fs::File::open(filters_dir(data_dir).join(CACHE_FILE)) else { return false };
+    let mut head = vec![0u8; want.len()];
+    f.read_exact(&mut head).is_ok() && head == want.as_bytes()
 }
 
+/// Muat mesin dari cache bila cocok dengan daftar di disk.
 pub fn load_cached(data_dir: &Path) -> Option<Engine> {
     let files = list_files(data_dir);
     if files.is_empty() {
@@ -302,6 +337,21 @@ pub fn load_resources(data_dir: &Path) -> Vec<adblock::resources::Resource> {
         .unwrap_or_default()
 }
 
+/// Isi unduhan tampak seperti daftar filter: bukan halaman HTML (galat proxy kantor, login,
+/// blokir jaringan) dan berisi aturan atau tajuk daftar. Daftar kecil yang sah (mis. perbaikan
+/// cepat 300 byte) ikut diterima; sebelumnya semua yang di bawah 1000 byte ditolak.
+fn looks_like_list(t: &str) -> bool {
+    let t = t.trim_start_matches('\u{feff}').trim_start();
+    if t.is_empty() || t.starts_with('<') {
+        return false;
+    }
+    t.len() > 1000
+        || t.lines().any(|l| {
+            let l = l.trim_start();
+            l.starts_with('!') || l.starts_with("[Adblock") || l.starts_with("||") || l.starts_with("@@") || l.contains("##") || l.starts_with('/') || l.starts_with('$')
+        })
+}
+
 /// Unduh daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berubah dan
 /// daftar yang gagal beserta alasannya. `only_missing`: hanya unduh yang belum ada.
 pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing: bool) -> (usize, Vec<String>) {
@@ -319,7 +369,7 @@ pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing
         let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_default();
         match res {
             // Berkas HTML (halaman galat proxy kantor, misalnya) bukan daftar filter.
-            Ok(()) if std::fs::read_to_string(&tmp).is_ok_and(|t| t.len() > 1000 && !t.trim_start().starts_with('<')) => {
+            Ok(()) if std::fs::read_to_string(&tmp).is_ok_and(|t| looks_like_list(&t)) => {
                 let new = std::fs::read(&tmp).unwrap_or_default();
                 if std::fs::read(dir.join(name)).ok().as_deref() == Some(new.as_slice()) {
                     // Isi sama: cukup segarkan waktunya supaya tidak diunduh lagi, tanpa
@@ -627,5 +677,67 @@ mod tests {
     fn css_skips_unsafe_selectors() {
         let sels = vec![".a".to_string(), "x{}".to_string()];
         assert_eq!(css_for(sels.iter()), ".a{display:none!important}\n");
+    }
+
+    #[test]
+    fn cache_tidak_usang_karena_waktu_berkas() {
+        let d = tmp("cache-waktu");
+        let f = filters_dir(&d).join("uji.txt");
+        std::fs::write(&f, "||pelacak.example^$third-party\n").unwrap();
+        // Belum ada cache: tidak sah.
+        assert!(!cache_valid(&d));
+        build_and_cache(&d).unwrap();
+        assert!(cache_valid(&d) && load_cached(&d).is_some());
+        // Menyegarkan waktu berkas yang isinya sama (jalur "isi sama" di download_lists) tidak
+        // boleh membuang cache.
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
+        assert!(cache_valid(&d), "waktu berubah, isi sama: cache harus tetap sah");
+        assert!(load_cached(&d).is_some());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn cache_usang_terdeteksi_dan_tidak_dianggap_sah() {
+        let d = tmp("cache-usang");
+        let f = filters_dir(&d).join("uji.txt");
+        std::fs::write(&f, "||pelacak.example^$third-party\n").unwrap();
+        build_and_cache(&d).unwrap();
+        // Isi berubah dengan ukuran SAMA: harus terdeteksi (kunci memakai isi).
+        std::fs::write(&f, "||pelacak.example^$third-partz\n").unwrap();
+        assert!(!cache_valid(&d), "isi berubah: cache usang tidak boleh sah");
+        assert!(load_cached(&d).is_none());
+        // Daftar bertambah: usang juga.
+        build_and_cache(&d).unwrap();
+        assert!(cache_valid(&d));
+        std::fs::write(filters_dir(&d).join("baru.txt"), "||lain.example^\n").unwrap();
+        assert!(!cache_valid(&d));
+        // Berkas cache rusak / terpotong: tidak sah dan tidak membuat panik.
+        build_and_cache(&d).unwrap();
+        let cf = filters_dir(&d).join(CACHE_FILE);
+        let bytes = std::fs::read(&cf).unwrap();
+        std::fs::write(&cf, &bytes[..10]).unwrap();
+        assert!(!cache_valid(&d) && load_cached(&d).is_none());
+        std::fs::write(&cf, b"").unwrap();
+        assert!(!cache_valid(&d));
+        // Setelah susun ulang dengan isi yang sah, pemblokir penuh benar-benar memblokir.
+        std::fs::write(&f, "||pelacak.example^$third-party\n").unwrap();
+        assert!(!cache_valid(&d));
+        let bytes = build_and_cache(&d).unwrap();
+        assert!(cache_valid(&d));
+        let b = Blocker::new(engine_from_bytes(&bytes).unwrap(), true, &d);
+        assert!(b.should_block("https://pelacak.example/p.gif", PAGE, "image"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn daftar_kecil_sah_diterima_html_ditolak() {
+        assert!(looks_like_list("! Title: perbaikan\n||iklan.example^\n"));
+        assert!(looks_like_list("[Adblock Plus 2.0]\n! x\n"));
+        assert!(looks_like_list("\u{feff}||iklan.example^$third-party\n"));
+        assert!(!looks_like_list(""));
+        assert!(!looks_like_list("<!doctype html><html>Login</html>"));
+        assert!(!looks_like_list("  \n<html>"));
+        assert!(!looks_like_list("Access denied"));
+        assert!(looks_like_list(&"||a.example^\n".repeat(100)));
     }
 }

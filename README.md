@@ -71,6 +71,15 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.29
+
+**Pemblokir iklan kembali memakai daftar lengkap (darurat)**
+- Bug 0.8.28: cache mesin pemblokir dianggap sah hanya karena berkasnya ada. Bila daftar filter berubah atau waktu berkasnya disegarkan, cache menjadi usang tetapi tidak disusun ulang, dan Ovner berjalan hanya dengan daftar bawaan kecil (Diagnostik: "Daftar filter lengkap: belum"). Penyebabnya ada pada saya; cara 0.8.27 yang memeriksa isi sudah diganti tanpa pengganti yang setara.
+- Kini cache dinilai dari **isi** daftar (sidik FNV-1a per 64 KB, tanpa memuat mesin), bukan dari waktu berkas. Menyegarkan waktu berkas yang isinya sama tidak lagi membuang cache, dan isi yang berubah dengan ukuran sama terdeteksi. Cache usang, terpotong, atau kosong otomatis disusun ulang di latar saat Ovner dibuka. Tidak perlu lagi menghapus `filters\.mesin-filter.bin` sendiri.
+- Tes baru: cache tidak usang karena waktu berkas, cache usang/terpotong/kosong terdeteksi, pemblokir benar-benar memblokir setelah disusun ulang.
+- Daftar filter kecil yang sah (mis. perbaikan cepat di bawah 1000 byte) tidak lagi ditolak; halaman HTML tetap ditolak.
+- Diagnostik "Umur daftar filter" tidak lagi memberi peringatan palsu (dibandingkan dengan jadwal daftar besar 3 hari, bukan jam daftar cepat x3).
+
 ## Perbaikan 0.8.28
 
 **Ekstensi Chrome**
