@@ -71,6 +71,33 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.30 (audit kode sendiri)
+
+Audit modul yang tidak dijaga uji otomatis. Setiap temuan punya tes regresi (115 tes lulus), dan yang dulu panik dibuktikan dengan memutar kode lama.
+
+**Data hilang diam-diam (serius)**
+- **Sandi**: bila `passwords.dat` tidak bisa dibuka (folder portabel dipindah ke PC atau akun Windows lain, profil Windows di-reset, berkas rusak), brankas dianggap kosong dan simpan berikutnya menimpanya, jadi semua sandi hilang. Kini salinan asli disimpan sekali sebagai `passwords.dat.rusak`.
+- **Bookmark, riwayat, ikon, setelan, sesi tab, unduhan**: ditulis langsung ke berkas, jadi Ovner yang mati di tengah penulisan meninggalkan berkas terpotong, dibaca sebagai kosong, lalu ditimpa. Kini ditulis atomik (tulis ke `.tmp`, lalu ganti nama; setelan, bookmark, dan sesi juga dipaksa ke disk), dan berkas yang ada tetapi tidak terbaca disalin dulu ke `<nama>.rusak`.
+
+**Keamanan**
+- Sandi yang disimpan dari halaman `https://` tidak lagi ditawarkan di halaman `http://` situs yang sama (halaman http bisa disadap atau disisipi skrip yang membaca sandi yang diisikan). Alamat lokal (localhost) tetap boleh.
+
+**Ovner bisa mati sendiri**
+- Nama berkas PDF dari `Content-Disposition` atau alamat yang memuat `%` lalu karakter non-ASCII (mis. `%aé.pdf`) membuat program panik. Rilis memakai `panic=abort`, jadi seluruh Ovner tertutup hanya karena sebuah situs mengirim nama itu. Diperbaiki.
+- Nama perangkat Windows (`CON`, `NUL`, `COM1`, ...) sebagai nama berkas membuat unduhan tampak berhasil tanpa berkas tersimpan. Kini diberi awalan `_`. Nama berkas PDF juga dibatasi 150 karakter.
+
+**Pemblokir dan privasi**
+- **Domain dasar situs** dihitung dengan tebakan yang salah untuk nama pendek di bawah TLD 2 huruf (`www.kai.id` dianggap `www.kai.id`, bukan `kai.id`; begitu juga `t.co`, `youtu.be`). Akibatnya situs yang sama dianggap pihak ketiga (aturan `$third-party`, pemangkasan referrer, pengungkap CNAME) dan "Hapus data situs ini" tidak menghapus semua subdomain. Kini memakai daftar sufiks publik (`psl`, sudah ikut terkompilasi lewat adblock-rust, jadi exe tidak membesar).
+- Daftar situs di Pengaturan (pengecualian, jangan-tidurkan, JS diblokir, dan lainnya) kini menerima entri yang ditempel dari kolom alamat: `https://www.kompas.com/berita`, `app.lokal:8080`, `user@host`. Dulu entri seperti itu tidak pernah cocok tanpa pemberitahuan.
+- Cache CNAME diberi batas ukuran.
+
+**Lain-lain**
+- Memasang ulang ekstensi tidak lagi bisa membuat ekstensi lama rusak setengah terhapus bila berkasnya sedang dipakai: folder lama dipindah dulu, yang baru dipasang, lalu yang lama dibuang (dikembalikan bila gagal).
+- Rapikan RAM yang diminta pengguna atau karena jendela diminimalkan tidak lagi merapikan proses yang baru dirapikan kurang dari 1 menit lalu.
+- Baca keras dengan Azure tanpa kunci memberi pesan jelas, bukan galat HTTP.
+
+**Belum diperbaiki / belum terbukti** (jujur): perbaikan ini diuji dengan tes unit dan CI Windows; tidak ada langkah CI baru yang menyimulasikan berkas data rusak atau sandi lintas-akun di Windows sungguhan. Yang masih terbuka: pasang ekstensi dari berkas .crx dan Edge Add-ons, `.crx` besar dimuat utuh ke memori, URL panjang di `downloads.json`, dan uji otomatis untuk pengelola sandi, mode gelap, dan proxy anti-blokir.
+
 ## Perbaikan 0.8.29
 
 **Pemblokir iklan kembali memakai daftar lengkap (darurat)**

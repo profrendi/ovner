@@ -40,22 +40,43 @@ pub fn site_of(url: &str) -> String {
     url::Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_ascii_lowercase())).unwrap_or_default()
 }
 
+/// Boleh mengisi login yang disimpan di `saved` ke halaman `current`? Menurunkan https ke http
+/// tidak boleh; alamat lokal (localhost, 127.x, ::1) dianggap aman.
+fn scheme_allows(saved: &str, current: &str) -> bool {
+    let (Ok(s), Ok(c)) = (url::Url::parse(saved), url::Url::parse(current)) else { return true };
+    if s.scheme() != "https" || c.scheme() == "https" {
+        return true;
+    }
+    matches!(c.host_str(), Some("localhost" | "127.0.0.1" | "[::1]" | "::1"))
+}
+
 impl Vault {
     pub fn load(data_dir: &Path) -> Vault {
         let path = data_dir.join("passwords.dat");
-        let data = std::fs::read(&path)
-            .ok()
-            .and_then(|b| crate::win::protect(&b, false))
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Vault { path, data }
+        let raw = std::fs::read(&path).ok().filter(|b| !b.is_empty());
+        let data: Option<Data> = raw.as_deref().and_then(|b| crate::win::protect(b, false)).and_then(|b| serde_json::from_slice(&b).ok());
+        if let (Some(raw), None) = (&raw, &data) {
+            // Berkas ada tetapi tidak bisa dibuka (dipindah ke PC/akun Windows lain, profil
+            // Windows di-reset, berkas rusak). Tanpa ini, simpan berikutnya menimpanya dengan
+            // brankas kosong dan sandi lama hilang selamanya. Simpan salinan sekali; salinan
+            // yang sudah ada tidak ditimpa (itu yang asli).
+            let bak = data_dir.join("passwords.dat.rusak");
+            if !bak.exists() && std::fs::write(&bak, raw).is_ok() {
+                crate::log("[sandi] PERINGATAN: passwords.dat tidak bisa dibuka (akun/PC Windows berbeda atau berkas rusak); salinan asli disimpan di passwords.dat.rusak");
+            }
+        }
+        Vault { path, data: data.unwrap_or_default() }
     }
 
     fn save(&self) {
+        use std::io::Write;
         if let Ok(json) = serde_json::to_vec(&self.data) {
             if let Some(enc) = crate::win::protect(&json, true) {
                 let tmp = self.path.with_extension("tmp");
-                if std::fs::write(&tmp, enc).is_ok() {
+                // Tulis, paksa ke disk, baru ganti berkas lama (mati listrik di tengah tidak
+                // meninggalkan berkas setengah jadi).
+                let ok = std::fs::File::create(&tmp).and_then(|mut f| f.write_all(&enc).and_then(|_| f.sync_all())).is_ok();
+                if ok {
                     let _ = std::fs::rename(&tmp, &self.path);
                 }
             }
@@ -70,10 +91,12 @@ impl Vault {
         self.data.logins.iter().find(|l| l.id == id)
     }
 
-    /// Login untuk halaman ini: host sama (abaikan "www.").
+    /// Login untuk halaman ini: host sama (abaikan "www."). Login yang disimpan dari halaman
+    /// https tidak pernah ditawarkan di halaman http (kecuali alamat lokal): halaman http bisa
+    /// disadap atau disisipi skrip yang membaca sandi yang diisikan.
     pub fn for_url(&self, url: &str) -> Vec<&Login> {
         let site = site_of(url);
-        self.data.logins.iter().filter(|l| !site.is_empty() && l.site == site).collect()
+        self.data.logins.iter().filter(|l| !site.is_empty() && l.site == site && scheme_allows(&l.url, url)).collect()
     }
 
     pub fn is_never(&self, url: &str) -> bool {
@@ -274,6 +297,52 @@ mod tests {
         let n = v3.import_csv("name,url,username,password,note\ngoogle.com,https://accounts.google.com/,\"a@b.c\",\"p,\"\"q\",\"catatan\"\ncause.id,https://cause.id/,x,y,\n");
         assert_eq!(n, 2);
         assert_eq!(v3.for_url("https://accounts.google.com/signin")[0].password, "p,\"q");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn berkas_tak_terbuka_tidak_ditimpa_kosong() {
+        let d = std::env::temp_dir().join(format!("ovner-vault-rusak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // Berkas asli yang tidak bisa dibuka (di Windows: DPAPI akun lain; di sini: bukan JSON).
+        std::fs::write(d.join("passwords.dat"), b"\x01\x02 bukan json, dienkripsi akun lain").unwrap();
+        let mut v = Vault::load(&d);
+        assert!(v.logins().is_empty());
+        let bak = std::fs::read(d.join("passwords.dat.rusak")).unwrap();
+        assert_eq!(bak, b"\x01\x02 bukan json, dienkripsi akun lain");
+        // Menambah login lalu menyimpan boleh; salinan asli tetap utuh.
+        v.upsert("https://a.example/", "u", "p");
+        assert_eq!(std::fs::read(d.join("passwords.dat.rusak")).unwrap(), bak);
+        assert_eq!(Vault::load(&d).logins().len(), 1);
+        // Muat ulang yang sah tidak membuat salinan baru / menimpa salinan lama.
+        std::fs::write(d.join("passwords.dat.rusak"), b"asli").unwrap();
+        let _ = Vault::load(&d);
+        assert_eq!(std::fs::read(d.join("passwords.dat.rusak")).unwrap(), b"asli");
+        // Berkas kosong atau tidak ada bukan "rusak".
+        let d2 = d.join("kosong");
+        std::fs::create_dir_all(&d2).unwrap();
+        let _ = Vault::load(&d2);
+        assert!(!d2.join("passwords.dat.rusak").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn login_https_tidak_diisi_ke_halaman_http() {
+        let d = std::env::temp_dir().join(format!("ovner-vault-skema-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut v = Vault::load(&d);
+        v.upsert("https://bank.example/login", "rendi", "rahasia");
+        v.upsert("http://lama.example/login", "rendi", "x");
+        v.upsert("https://localhost/login", "dev", "y");
+        assert_eq!(v.for_url("https://bank.example/akun").len(), 1);
+        assert!(v.for_url("http://bank.example/akun").is_empty(), "turun ke http tidak boleh");
+        // Login yang memang disimpan dari http boleh dipakai di http dan di https.
+        assert_eq!(v.for_url("http://lama.example/").len(), 1);
+        assert_eq!(v.for_url("https://lama.example/").len(), 1);
+        // Alamat lokal dianggap aman.
+        assert_eq!(v.for_url("http://localhost:3000/").len(), 1);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

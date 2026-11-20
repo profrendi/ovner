@@ -40,16 +40,7 @@ pub struct FilterCtx {
     pub cname: Arc<Mutex<HashMap<String, Option<String>>>>,
 }
 
-/// Domain dasar perkiraan (eTLD+1): `a.b.kompas.com` → `kompas.com`, `x.co.id` → `x.co.id`.
-pub fn base_domain(host: &str) -> String {
-    let parts: Vec<&str> = host.trim_end_matches('.').split('.').collect();
-    if parts.len() <= 2 {
-        return host.to_string();
-    }
-    let n = parts.len();
-    let take = if parts[n - 2].len() <= 3 && parts[n - 1].len() == 2 { 3 } else { 2 };
-    parts[n.saturating_sub(take)..].join(".")
-}
+pub use crate::shields::base_domain;
 
 /// Pemeriksaan CNAME untuk subdomain situs sendiri (tempat pelacak biasa menyamar).
 /// Pencarian DNS dilakukan di thread latar; permintaan pertama ke host baru dibiarkan lewat.
@@ -64,6 +55,11 @@ fn cname_blocked(ctx: &FilterCtx, uri: &str, host: &str, page: &str, rtype: &str
         Some(None) => false,
         None => {
             if let Ok(mut m) = ctx.cname.lock() {
+                // Batas ukuran: sesi berhari-hari di situs bersubdomain unik tidak boleh membuat
+                // cache ini terus membesar.
+                if m.len() > 4000 {
+                    m.clear();
+                }
                 m.insert(host.to_string(), None);
             }
             let (cache, h) = (ctx.cname.clone(), host.to_string());

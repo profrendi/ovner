@@ -204,9 +204,35 @@ pub fn install_crx(data: &Path, id: &str, crx: &[u8]) -> Result<PathBuf, String>
         let _ = std::fs::write(tmp.join("manifest.json"), serde_json::to_string_pretty(&m).unwrap_or_default());
     }
     let dest = base.join(id);
-    let _ = std::fs::remove_dir_all(&dest);
-    std::fs::rename(&tmp, &dest).map_err(|e| format!("folder ekstensi tidak bisa dipindah: {e}"))?;
+    swap_dir(&tmp, &dest)?;
     Ok(dest)
+}
+
+/// Ganti folder `dest` dengan `new` tanpa pernah meninggalkan `dest` setengah terhapus: yang lama
+/// dipindah dulu (rename satu langkah, gagal utuh bila ada berkas yang sedang dipakai
+/// WebView2), yang baru dipasang, baru yang lama dibuang. Gagal di mana pun: yang lama kembali.
+/// (Dulu `remove_dir_all` lalu `rename`: berkas terkunci membuat ekstensi lama rusak sebagian.)
+fn swap_dir(new: &Path, dest: &Path) -> Result<(), String> {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".lama");
+    let old = dest.with_file_name(name);
+    let _ = std::fs::remove_dir_all(&old);
+    let had_old = dest.exists();
+    if had_old {
+        if let Err(e) = std::fs::rename(dest, &old) {
+            let _ = std::fs::remove_dir_all(new);
+            return Err(format!("ekstensi lama sedang dipakai, tidak bisa diganti (tutup tab yang memakainya lalu coba lagi): {e}"));
+        }
+    }
+    if let Err(e) = std::fs::rename(new, dest) {
+        if had_old {
+            let _ = std::fs::rename(&old, dest);
+        }
+        let _ = std::fs::remove_dir_all(new);
+        return Err(format!("folder ekstensi tidak bisa dipindah: {e}"));
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(())
 }
 
 /// Simpan berkas .crx asli (untuk dibagikan/diperiksa) ke `dir`; nama "<nama ekstensi> <versi>.crx".
@@ -479,5 +505,31 @@ mod tests {
         assert_eq!(ext_url(&i.id, &i.panel), format!("chrome-extension://{}/side.html", i.id));
         assert_eq!(i.perms, vec!["sidePanel", "storage"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn swap_dir_mengganti_dan_tidak_merusak_yang_lama() {
+        let d = std::env::temp_dir().join(format!("ovner-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (dest, new) = (d.join("ext"), d.join(".ext-baru"));
+        // Pemasangan pertama.
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("v.txt"), "1").unwrap();
+        swap_dir(&new, &dest).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("v.txt")).unwrap(), "1");
+        assert!(!new.exists());
+        // Pembaruan: yang lama diganti penuh, tanpa sisa ".lama".
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("v.txt"), "2").unwrap();
+        std::fs::write(new.join("baru.txt"), "x").unwrap();
+        swap_dir(&new, &dest).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("v.txt")).unwrap(), "2");
+        assert!(dest.join("baru.txt").exists() && !d.join("ext.lama").exists());
+        // Gagal memasang yang baru (folder baru tidak ada): yang lama kembali utuh.
+        assert!(swap_dir(&d.join("tidak-ada"), &dest).is_err());
+        assert_eq!(std::fs::read_to_string(dest.join("v.txt")).unwrap(), "2");
+        assert!(dest.join("baru.txt").exists() && !d.join("ext.lama").exists());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

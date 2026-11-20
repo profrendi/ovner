@@ -143,7 +143,7 @@ pub fn write_custom_rules(data_dir: &Path, rules: &str) -> bool {
     if std::fs::read_to_string(&p).ok().as_deref() == Some(text.as_str()) {
         return false;
     }
-    std::fs::write(&p, text).is_ok()
+    crate::store::write_atomic(&p, text.as_bytes(), false).is_ok()
 }
 
 /// Daftar besar diperbarui bila sudah lebih tua dari ini (daftar kecil: `filter_update_hours`).

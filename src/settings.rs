@@ -547,7 +547,28 @@ fn escape_param(v: &str) -> String {
 }
 
 pub fn norm_host(h: &str) -> String {
-    h.trim().trim_start_matches("www.").trim_end_matches('/').to_ascii_lowercase()
+    // Entri daftar sering ditempel dari kolom alamat: buang skema, jalur, kredensial, port, "www.".
+    let mut s = h.trim().to_ascii_lowercase();
+    if let Some(i) = s.find("://") {
+        s = s[i + 3..].to_string();
+    }
+    s.truncate(s.find(['/', '?', '#']).unwrap_or(s.len()));
+    if let Some(at) = s.rfind('@') {
+        s = s[at + 1..].to_string();
+    }
+    if s.starts_with('[') {
+        // IPv6: "[::1]:3000" → "[::1]".
+        if let Some(i) = s.find(']') {
+            s.truncate(i + 1);
+        }
+    } else {
+        if let Some((host, port)) = s.rsplit_once(':') {
+            if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) {
+                s = host.to_string();
+            }
+        }
+    }
+    s.trim_start_matches("www.").trim_end_matches('.').to_string()
 }
 
 /// Nilai setelan untuk log: teks/daftar panjang dipendekkan.
@@ -629,10 +650,7 @@ impl Settings {
     }
 
     pub fn load(data_dir: &Path) -> Settings {
-        let mut s: Settings = std::fs::read_to_string(Self::path(data_dir))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let mut s: Settings = crate::store::read(&Self::path(data_dir));
         s.migrate();
         s.normalize();
         s
@@ -641,7 +659,7 @@ impl Settings {
     pub fn save(&self, data_dir: &Path) {
         let _ = std::fs::create_dir_all(data_dir);
         if let Ok(t) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(Self::path(data_dir), t);
+            let _ = crate::store::write_atomic(&Self::path(data_dir), t.as_bytes(), true);
         }
         // Riwayat setelan: setiap perubahan (dari halaman Pengaturan, tombol toolbar, menu, atau
         // preset) dicatat dengan nilai lama → baru, dibanding simpanan sebelumnya.
@@ -1392,5 +1410,39 @@ mod tests {
         assert!(toggle_host(&mut s.farbling_off, "bank.co.id"));
         assert_eq!(s.farbling_for("ib.bank.co.id"), "off");
         assert_eq!(s.farbling_for("kompas.com"), "standard");
+    }
+
+    #[test]
+    fn setelan_rusak_tidak_menghilangkan_diam_diam() {
+        let dir = std::env::temp_dir().join(format!("ovner-set-rusak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let asli = r#"{"setup_done":true,"language":"id","sleep_tabs_minutes":7"#; // terpotong
+        std::fs::write(Settings::path(&dir), asli).unwrap();
+        let s = Settings::load(&dir);
+        assert!(!s.setup_done, "setelan rusak jatuh ke bawaan");
+        s.save(&dir);
+        let bak = dir.join(format!("{}.rusak", Settings::path(&dir).file_name().unwrap().to_string_lossy()));
+        assert_eq!(std::fs::read_to_string(bak).unwrap(), asli);
+        assert!(Settings::load(&dir).language.len() <= 4);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn norm_host_menerima_yang_ditempel_dari_kolom_alamat() {
+        assert_eq!(norm_host("https://www.Kompas.com/berita?x=1#a"), "kompas.com");
+        assert_eq!(norm_host("  WWW.detik.com/ "), "detik.com");
+        assert_eq!(norm_host("app.lokal:8080"), "app.lokal");
+        assert_eq!(norm_host("http://user:pw@intranet.kantor.id:8443/x"), "intranet.kantor.id");
+        assert_eq!(norm_host("kompas.com."), "kompas.com");
+        assert_eq!(norm_host("[::1]:3000"), "[::1]");
+        assert_eq!(norm_host(""), "");
+        // Entri yang ditempel kini cocok dengan host halaman.
+        assert!(host_in(&["kompas.com".to_string()], "https://www.kompas.com/x".trim_start_matches("https://").split('/').next().unwrap()));
+        let mut list = vec![norm_host("https://www.kompas.com/berita")];
+        assert!(host_in(&list, "m.kompas.com"));
+        assert!(!host_in(&list, "evilkompas.com"));
+        assert!(!toggle_host(&mut list, "kompas.com"));
+        assert!(list.is_empty());
     }
 }
