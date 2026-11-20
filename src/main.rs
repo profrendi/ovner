@@ -4296,7 +4296,7 @@ impl App {
         {
             let live = self.all_tabs().filter(|t| t.webview.is_some()).count() as u64;
             let commit = |k: &str| per.get(k).and_then(|v| v["commit"].as_f64()).unwrap_or(0.0);
-            let smp = metrics::Sample { min: self.started.elapsed().as_secs_f64() / 60.0, live, heap: Some(heap::now() as f64 / 1_048_576.0), ovner: commit("ovner"), browser: commit("browser") };
+            let smp = metrics::Sample { min: self.started.elapsed().as_secs_f64() / 60.0, live, heap: Some(heap::now() as f64 / 1_048_576.0), ovner: commit("ovner"), browser: commit("browser"), toolbar: per.get("toolbar").and_then(|v| v["commit"].as_f64()) };
             self.ram_watch.push_back(smp);
             while self.ram_watch.len() > 180 {
                 self.ram_watch.pop_front();

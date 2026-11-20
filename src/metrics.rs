@@ -99,11 +99,13 @@ pub struct Sample {
     pub ovner: f64,
     /// Memori komit proses inti WebView2 (MB).
     pub browser: f64,
+    /// Memori komit renderer toolbar Ovner (MB); tidak ada sebelum 0.8.26.
+    pub toolbar: Option<f64>,
 }
 
 pub fn sample_of(v: &serde_json::Value) -> Option<Sample> {
     let commit = |k: &str| v["per_jenis"][k]["commit"].as_f64();
-    Some(Sample { min: v["menit"].as_f64()?, live: v["tab_hidup"].as_u64()?, heap: v["heap_rust"].as_f64(), ovner: commit("ovner")?, browser: commit("browser").unwrap_or(0.0) })
+    Some(Sample { min: v["menit"].as_f64()?, live: v["tab_hidup"].as_u64()?, heap: v["heap_rust"].as_f64(), ovner: commit("ovner")?, browser: commit("browser").unwrap_or(0.0), toolbar: commit("toolbar") })
 }
 
 /// Kemiringan (MB per jam) dari titik (menit, MB).
@@ -134,6 +136,7 @@ pub struct Trend {
     pub heap: Option<f64>,
     pub ovner: f64,
     pub browser: f64,
+    pub toolbar: Option<f64>,
 }
 
 pub const WARMUP_MIN: f64 = 10.0;
@@ -141,6 +144,7 @@ pub const MIN_SPAN_MIN: f64 = 90.0;
 pub const HEAP_LIMIT: f64 = 4.0;
 pub const OVNER_LIMIT: f64 = 8.0;
 pub const BROWSER_LIMIT: f64 = 30.0;
+pub const TOOLBAR_LIMIT: f64 = 10.0;
 
 /// Potong sampel per sesi dan per jumlah tab hidup, lalu hitung tren tiap potongan yang cukup
 /// panjang (`min_span` menit).
@@ -153,7 +157,8 @@ pub fn trends(samples: &[Sample], min_span: f64) -> Vec<Trend> {
             if span >= min_span {
                 let pts = |f: &dyn Fn(&Sample) -> f64| seg.iter().map(|s| (s.min, f(s))).collect::<Vec<_>>();
                 let heap = seg.iter().all(|s| s.heap.is_some()).then(|| slope_per_hour(&pts(&|s| s.heap.unwrap_or(0.0))));
-                out.push(Trend { minutes: span, live: seg[0].live, heap, ovner: slope_per_hour(&pts(&|s| s.ovner)), browser: slope_per_hour(&pts(&|s| s.browser)) });
+                let toolbar = seg.iter().all(|s| s.toolbar.is_some()).then(|| slope_per_hour(&pts(&|s| s.toolbar.unwrap_or(0.0))));
+                out.push(Trend { minutes: span, live: seg[0].live, heap, ovner: slope_per_hour(&pts(&|s| s.ovner)), browser: slope_per_hour(&pts(&|s| s.browser)), toolbar });
             }
         }
         seg.clear();
@@ -182,6 +187,9 @@ pub fn verdict(t: &Trend) -> Option<String> {
     }
     if t.ovner > OVNER_LIMIT {
         why.push(format!("ovner.exe +{:.1} MB/jam", t.ovner));
+    }
+    if let Some(tb) = t.toolbar.filter(|x| *x > TOOLBAR_LIMIT) {
+        why.push(format!("toolbar Ovner +{tb:.1} MB/jam"));
     }
     if t.browser > BROWSER_LIMIT {
         why.push(format!("proses inti WebView2 +{:.1} MB/jam", t.browser));
@@ -245,7 +253,7 @@ mod tests {
     }
 
     fn run(min0: f64, n: usize, live: u64, heap: f64, grow: f64) -> Vec<super::Sample> {
-        (0..n).map(|i| super::Sample { min: min0 + i as f64, live, heap: Some(heap + grow * i as f64 / 60.0), ovner: 78.0, browser: 60.0 }).collect()
+        (0..n).map(|i| super::Sample { min: min0 + i as f64, live, heap: Some(heap + grow * i as f64 / 60.0), ovner: 78.0, browser: 60.0, toolbar: Some(30.0) }).collect()
     }
 
     #[test]
@@ -277,7 +285,7 @@ mod tests {
     #[test]
     fn user_session_0824_has_no_leak() {
         // Potongan nyata dari PC pengguna (0.8.24, 14:56–15:26): ovner.exe datar ±78 MB.
-        let s: Vec<super::Sample> = (16..46).map(|m| super::Sample { min: m as f64, live: 1, heap: None, ovner: 78.0 + if m % 7 == 0 { 1.0 } else { 0.0 }, browser: 69.0 }).collect();
+        let s: Vec<super::Sample> = (16..46).map(|m| super::Sample { min: m as f64, live: 1, heap: None, ovner: 78.0 + if m % 7 == 0 { 1.0 } else { 0.0 }, browser: 69.0, toolbar: None }).collect();
         let t = super::trends(&s, 25.0);
         assert!(super::verdict(&t[0]).is_none(), "{:?}", t);
     }
