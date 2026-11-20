@@ -820,10 +820,10 @@ impl App {
             "terjemahan_teks_terpilih_gelembung" => {
                 crate::translate::MOCK.store(true, std::sync::atomic::Ordering::Relaxed);
                 if sub == 1 {
-                    self.ci_open("/tr");
+                    self.ci_open("/tr?gelembung=1");
                     return Out::Wait;
                 }
-                let Some(j) = self.ci_tab("/tr") else { return Out::Wait };
+                let Some(j) = self.ci_tab("/tr?gelembung=1") else { return Out::Wait };
                 if sub == 8 {
                     if let Some(wv) = &self.tabs[j].webview {
                         let _ = wv.evaluate_script("(function(){var r=document.createRange();r.selectNodeContents(document.getElementById('a'));var s=getSelection();s.removeAllRanges();s.addRange(r);})()");
