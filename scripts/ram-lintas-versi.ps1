@@ -79,9 +79,13 @@ foreach ($tag in $plan) {
   Stop-Ovner
   Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Ovner", "$env:APPDATA\Ovner" -ErrorAction SilentlyContinue
 
-  # B: dibuka dengan 10 halaman uji
-  $p = Start-Process $exe.FullName -ArgumentList (@("--portable") + $urls) -WorkingDirectory $exe.DirectoryName -PassThru
-  Start-Sleep 35
+  # B: 10 halaman uji dibuka satu per satu lewat instance yang sudah jalan (seperti mengeklik
+  # tautan dari aplikasi lain). Membuka banyak alamat sekaligus di baris perintah hanya memuat
+  # tab pertama di semua versi (hasil uji 2026-11-20: renderer selalu 2).
+  $p = Start-Process $exe.FullName -ArgumentList "--portable" -WorkingDirectory $exe.DirectoryName -PassThru
+  Start-Sleep 10
+  foreach ($u in $urls) { Start-Process $exe.FullName -ArgumentList @("--portable", $u) -WorkingDirectory $exe.DirectoryName; Start-Sleep 2 }
+  Start-Sleep 25
   $b = Measure-Ram
   $r = Count-Renderers
   Stop-Ovner

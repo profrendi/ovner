@@ -71,6 +71,15 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.27
+
+- Toolbar tidak lagi menyalakan mesin suara Windows (speechSynthesis/SAPI) saat dibuka; mesin suara baru dimuat ketika Baca keras dipakai.
+- Uji GitHub mengukur isi RAM toolbar (proses, heap JavaScript, jumlah elemen) — hasil 0.8.26: toolbar 15 MB saat diam, heap JS 9,5 MB, 116 elemen.
+- Pemantau kebocoran juga memantau renderer toolbar Ovner (peringatan bila naik terus > 10 MB/jam dengan tab hidup tetap).
+- Workflow RAM lintas versi: 10 halaman uji kini dibuka satu per satu lewat Ovner yang sudah berjalan (cara lama hanya memuat tab pertama).
+
+Hasil RAM lintas versi (GitHub, 20 Nov 2026, RAM diam 1 tab, Working Set - Private): 0.1.0 = 97 MB · 0.4.1–0.7.0 = 98–102 MB · 0.7.1–0.8.22 = 101–107 MB · 0.8.23–0.8.26 = 110–114 MB (pengukuran ulang versi yang sama berselisih ±1–3 MB). ovner.exe sendiri 13–14 MB (0.1–0.3) → 19–21 MB sejak 0.7.1, tetap sejak itu.
+
 ## Perbaikan 0.8.26
 
 **Ekstensi Chrome dari Chrome Web Store**
