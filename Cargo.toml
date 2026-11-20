@@ -1,6 +1,6 @@
 [package]
 name = "ovner"
-version = "0.8.29"
+version = "0.8.30"
 edition = "2021"
 description = "Browser ringan untuk Windows: mesin WebView2 + pemblokir iklan Brave (adblock-rust), tanpa hak admin"
 license = "MIT"
@@ -21,6 +21,9 @@ sha2 = "0.11"
 ed25519-dalek = { version = "3", default-features = false }
 # Kode QR (klik kanan → Buat kode QR), murni Rust tanpa dependensi.
 qrcodegen = "1.8"
+# Daftar sufiks publik (sudah ikut terkompilasi lewat adblock-rust, jadi tidak menambah ukuran exe):
+# domain dasar situs yang benar (kai.id, t.co, co.uk, blogspot.com).
+psl = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

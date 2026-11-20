@@ -1415,13 +1415,7 @@ fn make_popup(tenv: &TabEnv, opener: u64, private: bool, url: &str) -> Option<we
 
 /// Domain dasar (kompas.com, bpjsketenagakerjaan.go.id) untuk mengelompokkan subdomain.
 fn netfilter_base_domain(host: &str) -> String {
-    let parts: Vec<&str> = host.trim_end_matches('.').split('.').collect();
-    if parts.len() <= 2 {
-        return host.to_string();
-    }
-    let n = parts.len();
-    let take = if parts[n - 2].len() <= 3 && parts[n - 1].len() == 2 { 3 } else { 2 };
-    parts[n.saturating_sub(take)..].join(".")
+    shields::base_domain(host)
 }
 
 fn send(proxy: &EventLoopProxy<UserEvent>, e: UserEvent) {
@@ -2382,13 +2376,13 @@ impl App {
 
     fn save_sessions(&self) {
         if let Ok(t) = serde_json::to_string(&self.sessions) {
-            let _ = std::fs::write(data_dir().join("sessions.json"), t);
+            let _ = store::write_atomic(&data_dir().join("sessions.json"), t.as_bytes(), true);
         }
     }
 
     fn save_tab_stats(&self) {
         if let Ok(t) = serde_json::to_string(&self.tab_stats) {
-            let _ = std::fs::write(data_dir().join("tab-stats.json"), t);
+            let _ = store::write_atomic(&data_dir().join("tab-stats.json"), t.as_bytes(), false);
         }
     }
 
@@ -3212,7 +3206,7 @@ impl App {
         }
         let keep: Vec<&Download> = self.downloads.iter().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
         if let Ok(t) = serde_json::to_string(&keep) {
-            let _ = std::fs::write(data_dir().join("downloads.json"), t);
+            let _ = store::write_atomic(&data_dir().join("downloads.json"), t.as_bytes(), false);
         }
     }
 
@@ -3388,7 +3382,7 @@ impl App {
                 }
                 if self.dl_meta.get(&id).is_some_and(|m| m.pdf) && total >= 2 * 1_048_576 && self.pdf_learned.insert(pdf_key(&url)) {
                     if let Ok(t) = serde_json::to_string(&self.pdf_learned) {
-                        let _ = std::fs::write(data_dir().join("pdf_endpoints.json"), t);
+                        let _ = store::write_atomic(&data_dir().join("pdf_endpoints.json"), t.as_bytes(), false);
                     }
                 }
                 self.connecting_done(id);
@@ -4863,7 +4857,7 @@ impl App {
             windows: self.others.iter().map(|w| one(&w.tabs, w.active)).filter(|w| !w.tabs.is_empty()).collect(),
         };
         if let Ok(text) = serde_json::to_string(&s) {
-            let _ = std::fs::write(data_dir().join("session.json"), text);
+            let _ = store::write_atomic(&data_dir().join("session.json"), text.as_bytes(), false);
         }
     }
 
@@ -9204,7 +9198,7 @@ fn main() {
         pw_offer: None,
         downloads: {
             let mut v: Vec<Download> =
-                std::fs::read_to_string(data_dir().join("downloads.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+                store::read(&data_dir().join("downloads.json"));
             // Unduhan yang belum selesai saat Ovner ditutup tidak bisa dilanjutkan lagi.
             for d in &mut v {
                 // 0.8.15: kabar "Menyiapkan komponen …" dan galatnya tertempel di nama unduhan video.
@@ -9244,7 +9238,7 @@ fn main() {
         dl_no_yield: HashSet::new(),
         eco_on: false,
         pdf_race: HashMap::new(),
-        pdf_learned: std::fs::read_to_string(data_dir().join("pdf_endpoints.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
+        pdf_learned: store::read(&data_dir().join("pdf_endpoints.json")),
         bm_edit: None,
         bm_edit_from: None,
         last_bm_folder: String::new(),
@@ -9328,8 +9322,8 @@ fn main() {
         frames_at: Instant::now(),
         frames_ok,
         problems: Vec::new(),
-        tab_stats: std::fs::read_to_string(data_dir().join("tab-stats.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
-        sessions: std::fs::read_to_string(data_dir().join("sessions.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
+        tab_stats: store::read(&data_dir().join("tab-stats.json")),
+        sessions: store::read(&data_dir().join("sessions.json")),
         antiblock_port,
         env_error,
         diag: Vec::new(),
@@ -9350,7 +9344,7 @@ fn main() {
     // Pulihkan tab terakhir: hanya tab aktif yang dimuat, sisanya tidur sampai diklik.
     let restore = app.settings.borrow().restore_tabs;
     let session: Session = if restore {
-        std::fs::read_to_string(data_dir().join("session.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        store::read(&data_dir().join("session.json"))
     } else {
         Session::default()
     };

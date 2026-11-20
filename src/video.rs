@@ -658,7 +658,7 @@ pub fn safe_name(title: &str) -> String {
     let s: String = title.chars().map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c }).collect();
     let s = s.trim().trim_end_matches(['.', ' ']).to_string();
     let s: String = s.chars().take(150).collect();
-    if s.is_empty() { "video".into() } else { s }
+    if s.is_empty() { "video".into() } else { crate::dlengine::avoid_reserved(&s) }
 }
 
 /// Buang ekstensi yang dikenal dari nama berkas yang diketik pengguna.

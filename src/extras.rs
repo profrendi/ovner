@@ -616,7 +616,14 @@ impl App {
                 let (key, region) = if engine == "azure" { (self.azure_key(), self.settings.borrow().tts_azure_region.clone()) } else { (String::new(), String::new()) };
                 let p = self.proxy.clone();
                 std::thread::spawn(move || {
-                    let r = if engine == "azure" { tts::azure_speak(&key, &region, &text, &voice, rate) } else { tts::edge_speak(&text, &voice, rate) };
+                    let r = if engine == "azure" && key.is_empty() {
+                        // Sama seperti daftar suara: pesan jelas, bukan galat HTTP 401 dari Azure.
+                        Err("Kunci Azure Speech belum diisi di Pengaturan".to_string())
+                    } else if engine == "azure" {
+                        tts::azure_speak(&key, &region, &text, &voice, rate)
+                    } else {
+                        tts::edge_speak(&text, &voice, rate)
+                    };
                     let v = match r {
                         Ok(sp) => json!({"req": req, "mp3": base64::engine::general_purpose::STANDARD.encode(&sp.mp3), "marks": sp.marks}),
                         Err(e) => {

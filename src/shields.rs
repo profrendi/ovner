@@ -397,8 +397,42 @@ pub fn decode_data_url(u: &str) -> Option<(String, Vec<u8>)> {
     Some((mime, bytes))
 }
 
+/// Domain dasar situs (eTLD+1) menurut daftar sufiks publik: `a.b.kompas.com` → `kompas.com`,
+/// `www.kai.id` → `kai.id`, `x.co.id` → `x.co.id`, `a.blogspot.com` → `a.blogspot.com`.
+/// Alamat IP dan nama tanpa sufiks publik (localhost) dikembalikan apa adanya.
+/// (Dulu memakai tebakan "label kedua ≤ 3 huruf + TLD 2 huruf = 3 label", yang salah untuk
+/// kai.id, t.co, youtu.be: situs yang sama dianggap pihak ketiga.)
+pub fn base_domain(host: &str) -> String {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    if h.parse::<std::net::IpAddr>().is_ok() || h.starts_with('[') {
+        return h;
+    }
+    psl::domain_str(&h).map(str::to_string).unwrap_or(h)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn base_domain_sufiks_publik() {
+        // Nama pendek di bawah TLD 2 huruf: dulu salah (menjadi www.kai.id dst.).
+        assert_eq!(base_domain("www.kai.id"), "kai.id");
+        assert_eq!(base_domain("booking.kai.id"), "kai.id");
+        assert_eq!(base_domain("www.t.co"), "t.co");
+        assert_eq!(base_domain("www.youtu.be"), "youtu.be");
+        assert_eq!(base_domain("a.b.bca.co.id"), "bca.co.id");
+        assert_eq!(base_domain("www.ojk.go.id"), "ojk.go.id");
+        assert_eq!(base_domain("news.bbc.co.uk"), "bbc.co.uk");
+        // Sufiks privat: tiap subdomain blogspot adalah situs berbeda.
+        assert_eq!(base_domain("a.blogspot.com"), "a.blogspot.com");
+        assert_ne!(base_domain("a.blogspot.com"), base_domain("b.blogspot.com"));
+        // Huruf besar, titik akhir, IP, localhost.
+        assert_eq!(base_domain("WWW.Kompas.COM."), "kompas.com");
+        assert_eq!(base_domain("192.168.1.10"), "192.168.1.10");
+        assert_eq!(base_domain("127.0.0.1"), "127.0.0.1");
+        assert_eq!(base_domain("localhost"), "localhost");
+        assert_eq!(base_domain(""), "");
+    }
+
     #[test]
     fn site_features() {
         let mut s = Settings::default();

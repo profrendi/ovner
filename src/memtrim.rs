@@ -107,7 +107,18 @@ impl Trimmer {
             if p.working < MIN_SIZE {
                 continue;
             }
-            if !force {
+            if force {
+                // Diminta pengguna/diminimalkan boleh mengabaikan jarak normal dan syarat bertambah,
+                // tetapi tidak boleh merapikan proses yang baru saja dirapikan: menekan tombol
+                // berulang atau menimbulkan/menutup jendela berkali-kali hanya membuang CPU dan
+                // disk (halaman dimuat ulang dari pagefile), dan hasil penilaian 1 menit belum selesai.
+                if let Some(st) = self.state.get(&p.pid) {
+                    if now.duration_since(st.last) < CHECK_AFTER {
+                        skipped.push((p.kind.clone(), "baru saja dirapikan"));
+                        continue;
+                    }
+                }
+            } else {
                 if let Some(st) = self.state.get(&p.pid) {
                     if st.bounces >= MAX_BOUNCES && !pressure {
                         skipped.push((p.kind.clone(), "berhenti dirapikan (2× memantul)"));
@@ -256,5 +267,21 @@ mod tests {
     fn low_memory_threshold_scales() {
         assert_eq!(low_memory_threshold(8 * 1024 * MB), 512 * MB);
         assert_eq!(low_memory_threshold(16 * 1024 * MB) / MB, 983);
+    }
+
+    #[test]
+    fn rapikan_paksa_tidak_berulang_dalam_semenit() {
+        let mut t = Trimmer::new();
+        let t0 = Instant::now();
+        let base = Duration::from_secs(300);
+        let procs = vec![c(3, "renderer", 120, None)];
+        assert_eq!(t.choose(t0, &procs, base, true, false).0, vec![3]);
+        t.record(t0, vec![Trimmed { pid: 3, kind: "renderer".into(), before: 120 * MB, after: 20 * MB }]);
+        // Ditekan lagi 10 detik kemudian: dilewati, dengan alasan yang tercatat.
+        let (pick, skipped) = t.choose(t0 + Duration::from_secs(10), &procs, base, true, false);
+        assert!(pick.is_empty());
+        assert_eq!(skipped, vec![("renderer".to_string(), "baru saja dirapikan")]);
+        // Setelah masa penilaian (1 menit) boleh lagi.
+        assert_eq!(t.choose(t0 + CHECK_AFTER + Duration::from_secs(1), &procs, base, true, false).0, vec![3]);
     }
 }

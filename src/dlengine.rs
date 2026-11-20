@@ -239,13 +239,18 @@ pub fn categorized(path: &Path) -> PathBuf {
 /// Karakter yang dilarang Windows diganti, dan selalu berakhiran `.pdf`.
 pub fn pdf_name(disposition: &str, url: &str) -> String {
     fn pct(s: &str) -> String {
+        // Bekerja per byte: mengiris `&s[i..i+3]` panik bila memotong karakter UTF-8
+        // (mis. "%aé"), dan release memakai panic=abort sehingga seluruh Ovner mati.
+        fn hex(b: u8) -> Option<u8> {
+            (b as char).to_digit(16).map(|d| d as u8)
+        }
         let b = s.as_bytes();
         let mut out = Vec::with_capacity(b.len());
         let mut i = 0;
         while i < b.len() {
             if b[i] == b'%' && i + 2 < b.len() {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(v);
+                if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                    out.push(h * 16 + l);
                     i += 3;
                     continue;
                 }
@@ -281,7 +286,22 @@ pub fn pdf_name(disposition: &str, url: &str) -> String {
     if !name.to_ascii_lowercase().ends_with(".pdf") {
         name.push_str(".pdf");
     }
-    name
+    // Panjang jalur Windows terbatas (260): potong nama, pertahankan ".pdf".
+    if name.chars().count() > 150 {
+        let stem: String = name[..name.len() - 4].chars().take(146).collect();
+        name = format!("{}.pdf", stem.trim_end_matches(['.', ' ']));
+    }
+    avoid_reserved(&name)
+}
+
+/// Nama perangkat Windows (CON, NUL, COM1, ...) tidak bisa dipakai sebagai nama berkas, dengan
+/// atau tanpa ekstensi: membuat "CON.pdf" membuka perangkat konsol dan tidak ada berkas yang
+/// tersimpan, tanpa galat. Beri awalan "_".
+pub fn avoid_reserved(name: &str) -> String {
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit() && stem.as_bytes()[3] != b'0');
+    if reserved { format!("_{name}") } else { name.to_string() }
 }
 
 /// Alamat yang biasanya menghasilkan berkas (PDF kartu, laporan, ekspor). Hanya bagian path
@@ -937,5 +957,26 @@ mod tests {
         std::fs::write(&a, b"x").unwrap();
         assert_eq!(unique_path(&a).file_name().unwrap(), "laporan (1).pdf");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nama_pdf_tidak_membuat_panik_dan_aman_windows() {
+        // Dulu panik: "%a" lalu karakter multibyte memotong batas UTF-8.
+        assert_eq!(pdf_name("", "https://x.id/%a\u{e9}.pdf"), "%a\u{e9}.pdf");
+        assert_eq!(pdf_name("attachment; filename*=UTF-8''%\u{e9}1x.pdf", "https://x/y"), "%\u{e9}1x.pdf");
+        assert_eq!(pdf_name("attachment; filename*=UTF-8''a%2", "https://x/y"), "a%2.pdf");
+        assert_eq!(pdf_name("attachment; filename*=UTF-8''a%+f.pdf", "https://x/y"), "a%+f.pdf", "tanda + bukan heksadesimal sah");
+        assert_eq!(pdf_name("", "https://x.id/Kartu%20BPJS%C3%A9.pdf"), "Kartu BPJS\u{e9}.pdf");
+        // Nama perangkat Windows.
+        for n in ["CON", "con.pdf", "NUL.pdf", "Aux", "COM1.pdf", "lpt9"] {
+            let r = pdf_name(&format!("attachment; filename=\"{n}\""), "https://x/y");
+            assert!(r.starts_with('_') && r.to_ascii_lowercase().ends_with(".pdf"), "{n} -> {r}");
+        }
+        assert_eq!(pdf_name("attachment; filename=\"COM0.pdf\"", "https://x/y"), "COM0.pdf");
+        assert_eq!(pdf_name("attachment; filename=\"console.pdf\"", "https://x/y"), "console.pdf");
+        // Panjang dibatasi, ekstensi tetap.
+        let long = "a".repeat(400);
+        let r = pdf_name(&format!("attachment; filename=\"{long}.pdf\""), "https://x/y");
+        assert!(r.chars().count() <= 150 && r.ends_with(".pdf"), "{}", r.len());
     }
 }

@@ -30,13 +30,66 @@ pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn read<T: for<'a> Deserialize<'a> + Default>(p: &Path) -> T {
-    std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+/// Baca berkas JSON. Berkas tidak ada = nilai awal. Berkas ADA tetapi tidak bisa diurai
+/// (terpotong karena mati listrik, rusak, dari versi lain) juga memberi nilai awal, tetapi
+/// salinan aslinya disimpan sekali sebagai `<nama>.rusak`. Tanpa itu, simpan berikutnya
+/// menimpa berkas dengan data kosong dan bookmark/sesi/setelan lama hilang selamanya.
+pub fn read<T: for<'a> Deserialize<'a> + Default>(p: &Path) -> T {
+    let Ok(text) = std::fs::read_to_string(p) else {
+        // Tidak ada, atau bukan teks UTF-8 yang sah: bila ada dan tidak kosong, selamatkan.
+        if std::fs::metadata(p).is_ok_and(|m| m.len() > 0) {
+            keep_broken(p);
+        }
+        return T::default();
+    };
+    match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => {
+            if !text.trim().is_empty() {
+                keep_broken(p);
+            }
+            T::default()
+        }
+    }
+}
+
+fn keep_broken(p: &Path) {
+    let mut name = p.file_name().unwrap_or_default().to_os_string();
+    name.push(".rusak");
+    let bak = p.with_file_name(name);
+    if !bak.exists() && std::fs::copy(p, &bak).is_ok() {
+        crate::log(&format!("PERINGATAN: {} tidak bisa dibaca (terpotong atau rusak); salinan aslinya disimpan di {}", p.display(), bak.display()));
+    }
+}
+
+/// Tulis berkas secara atomik: tulis ke `<nama>.tmp`, lalu ganti berkas lama dengan rename.
+/// Proses yang mati di tengah penulisan meninggalkan berkas lama yang utuh, bukan berkas
+/// terpotong. `durable`: paksa ke disk (fsync) dulu, supaya mati listrik pun aman; dipakai
+/// untuk data berharga (setelan, bookmark, sesi). Yang sering ditulis dan mudah dibuat ulang
+/// tidak perlu fsync.
+pub fn write_atomic(p: &Path, data: &[u8], durable: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = p.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = p.with_file_name(name);
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        if durable {
+            f.sync_all()?;
+        }
+        drop(f);
+        std::fs::rename(&tmp, p)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
 fn write<T: Serialize>(p: &Path, v: &T) {
     if let Ok(t) = serde_json::to_string(v) {
-        let _ = std::fs::write(p, t);
+        let _ = write_atomic(p, t.as_bytes(), true);
     }
 }
 
@@ -669,6 +722,53 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    fn tmpdir(n: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ovner-store-{n}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn berkas_terpotong_tidak_hilang_diam_diam() {
+        let d = tmpdir("potong");
+        let p = d.join("bookmarks.json");
+        let asli = r#"[{"url":"https://a.id/","title":"A","added":1},{"url":"https://b.id/","title":"B","added":2"#; // terpotong
+        std::fs::write(&p, asli).unwrap();
+        let v: Vec<Bookmark> = read(&p);
+        assert!(v.is_empty());
+        assert_eq!(std::fs::read_to_string(d.join("bookmarks.json.rusak")).unwrap(), asli, "salinan asli harus selamat");
+        // Menyimpan data baru tidak boleh menghapus salinan asli.
+        write(&p, &vec![Bookmark { url: "https://c.id/".into(), title: "C".into(), added: 3, folder: String::new() }]);
+        assert_eq!(std::fs::read_to_string(d.join("bookmarks.json.rusak")).unwrap(), asli);
+        let v: Vec<Bookmark> = read(&p);
+        assert_eq!(v.len(), 1);
+        // Berkas tidak ada atau kosong: bukan rusak, tidak ada salinan.
+        let d2 = tmpdir("kosong");
+        let v: Vec<Bookmark> = read(&d2.join("x.json"));
+        assert!(v.is_empty());
+        std::fs::write(d2.join("y.json"), "  \n").unwrap();
+        let v: Vec<Bookmark> = read(&d2.join("y.json"));
+        assert!(v.is_empty());
+        assert!(!d2.join("x.json.rusak").exists() && !d2.join("y.json.rusak").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&d2).unwrap();
+    }
+
+    #[test]
+    fn tulis_atomik_mengganti_tanpa_sisa() {
+        let d = tmpdir("atomik");
+        let p = d.join("data.json");
+        write_atomic(&p, b"satu", true).unwrap();
+        write_atomic(&p, b"dua", false).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"dua");
+        assert!(!d.join("data.json.tmp").exists(), "berkas sementara tidak boleh tertinggal");
+        // Gagal menulis (folder tujuan tidak ada): tidak ada sisa, berkas lama tak tersentuh.
+        assert!(write_atomic(&d.join("tidak-ada").join("x.json"), b"x", true).is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), b"dua");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     use super::*;
 
     #[test]
