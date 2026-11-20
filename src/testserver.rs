@@ -122,6 +122,12 @@ fn handle(mut s: TcpStream) -> std::io::Result<()> {
         "/echo" => ("200 OK", "text/plain; charset=utf-8", seen_headers.clone().into_bytes(), true, String::new()),
         // Ekstensi Chrome buatan (CRX3) untuk uji pasang ekstensi.
         "/ext.crx" => ("200 OK", "application/x-chrome-extension", crate::extensions::test_crx().1, true, String::new()),
+        // Halaman dengan tautan .crx (seperti tombol Web Store): unduhannya harus dicegat Ovner.
+        "/crx-page" => {
+            let id = crate::extensions::test_crx().0;
+            ("200 OK", "text/html; charset=utf-8", format!("<!doctype html><title>crx</title><a id=a href=\"/crx/{id}_1.crx\">Tambahkan</a>").into_bytes(), true, String::new())
+        }
+        p if p.starts_with("/crx/") => ("200 OK", "application/x-chrome-extension", crate::extensions::test_crx().1, true, String::new()),
         "/tr" => ("200 OK", "text/html; charset=utf-8", html("Translate test", r#"<p id=a>Hello world</p><p id=b>Good morning, how are you?</p><code id=c>let x = 1;</code>"#), true, String::new()),
         "/read" => (
             "200 OK",

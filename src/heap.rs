@@ -10,12 +10,17 @@ pub struct Counting;
 
 static NOW: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+/// Puncak sejak terakhir heap Windows dirapikan (lihat `take_recent_peak`).
+static RECENT: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
 fn grew(n: usize) {
     let v = NOW.fetch_add(n, Relaxed) + n;
     if v > PEAK.load(Relaxed) {
         PEAK.store(v, Relaxed);
+    }
+    if v > RECENT.load(Relaxed) {
+        RECENT.store(v, Relaxed);
     }
 }
 
@@ -59,6 +64,13 @@ pub fn now() -> u64 {
 /// Puncak heap Rust sejak Ovner mulai.
 pub fn peak() -> u64 {
     PEAK.load(Relaxed) as u64
+}
+
+/// Puncak sejak panggilan sebelumnya, lalu diatur ulang ke pemakaian sekarang. Selisih besar
+/// dengan `now()` = ada pekerjaan besar yang sudah selesai (mis. mesin filter disusun ulang),
+/// saatnya mengembalikan memori bebas ke Windows.
+pub fn take_recent_peak() -> u64 {
+    RECENT.swap(NOW.load(Relaxed), Relaxed) as u64
 }
 
 #[cfg(test)]

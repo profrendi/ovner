@@ -179,6 +179,68 @@ pub fn trends(samples: &[Sample], min_span: f64) -> Vec<Trend> {
     out
 }
 
+/// Kenaikan pada jumlah tab hidup yang SAMA di waktu yang berbeda dalam satu sesi (mis. 2 tab
+/// hidup jam 09.00 vs 2 tab hidup jam 11.00). Melengkapi `trends`, yang butuh 90 menit tanpa
+/// perubahan jumlah tab — jarang terjadi karena tab sering dibuka dan ditidurkan.
+pub fn drifts(samples: &[Sample]) -> Vec<Trend> {
+    // Potongan: satu sesi, jumlah tab hidup sama, berurutan, ≥ 10 sampel, setelah pemanasan.
+    let mut segs: Vec<(usize, Vec<Sample>)> = Vec::new();
+    let mut session = 0;
+    let mut cur: Vec<Sample> = Vec::new();
+    let mut last_min = f64::MAX;
+    let push = |cur: &mut Vec<Sample>, segs: &mut Vec<(usize, Vec<Sample>)>, session: usize| {
+        if cur.len() >= 10 {
+            segs.push((session, std::mem::take(cur)));
+        } else {
+            cur.clear();
+        }
+    };
+    for s in samples {
+        if s.min < last_min {
+            push(&mut cur, &mut segs, session);
+            session += 1;
+        }
+        last_min = s.min;
+        if s.min < WARMUP_MIN {
+            continue;
+        }
+        if let Some(l) = cur.last() {
+            if s.live != l.live || s.min - l.min > 3.0 {
+                push(&mut cur, &mut segs, session);
+            }
+        }
+        cur.push(*s);
+    }
+    push(&mut cur, &mut segs, session);
+    let mean = |v: &[Sample], f: &dyn Fn(&Sample) -> Option<f64>| -> Option<f64> {
+        let xs: Vec<f64> = v.iter().filter_map(f).collect();
+        (xs.len() == v.len() && !xs.is_empty()).then(|| xs.iter().sum::<f64>() / xs.len() as f64)
+    };
+    let mut out = Vec::new();
+    let mut keys: Vec<(usize, u64)> = segs.iter().map(|(ses, v)| (*ses, v[0].live)).collect();
+    keys.sort();
+    keys.dedup();
+    for (ses, live) in keys {
+        let same: Vec<&Vec<Sample>> = segs.iter().filter(|(s2, v)| *s2 == ses && v[0].live == live).map(|(_, v)| v).collect();
+        let (Some(a), Some(b)) = (same.first(), same.last()) else { continue };
+        let mid = |v: &Vec<Sample>| (v[0].min + v[v.len() - 1].min) / 2.0;
+        let gap = mid(b) - mid(a);
+        if same.len() < 2 || gap < 60.0 {
+            continue;
+        }
+        let per_h = |f: &dyn Fn(&Sample) -> Option<f64>| -> Option<f64> { Some((mean(b, f)? - mean(a, f)?) / gap * 60.0) };
+        out.push(Trend {
+            minutes: gap,
+            live,
+            heap: per_h(&|s| s.heap),
+            ovner: per_h(&|s| Some(s.ovner)).unwrap_or(0.0),
+            browser: per_h(&|s| Some(s.browser)).unwrap_or(0.0),
+            toolbar: per_h(&|s| s.toolbar),
+        });
+    }
+    out
+}
+
 /// Peringatan bila tren mirip kebocoran.
 pub fn verdict(t: &Trend) -> Option<String> {
     let mut why = Vec::new();
@@ -219,9 +281,10 @@ pub fn analyze(data: &Path) -> (String, bool) {
         return ("belum ada pengukuran (aktifkan Pengukuran per menit di Pengaturan)".into(), false);
     }
     let hours = samples.len() as f64 / 60.0;
-    let tr = trends(&samples, MIN_SPAN_MIN);
+    let mut tr = trends(&samples, MIN_SPAN_MIN);
+    tr.extend(drifts(&samples));
     if tr.is_empty() {
-        return (format!("{hours:.1} jam data dari {sessions} sesi, tetapi belum ada potongan ≥ {MIN_SPAN_MIN:.0} menit dengan jumlah tab hidup tetap; pakai Ovner lebih lama tanpa membuka/menidurkan tab"), false);
+        return (format!("{hours:.1} jam data dari {sessions} sesi, tetapi belum ada pembanding: perlu {MIN_SPAN_MIN:.0} menit dengan jumlah tab hidup tetap, atau jumlah tab hidup yang sama di dua waktu berjarak ≥ 1 jam"), false);
     }
     let warns: Vec<String> = tr.iter().filter_map(verdict).collect();
     let max = |f: &dyn Fn(&Trend) -> f64| tr.iter().map(f).fold(f64::MIN, f64::max);
@@ -280,6 +343,22 @@ mod tests {
         // Pemanasan 10 menit pertama tidak dihitung.
         let warm = super::trends(&run(0.0, 95, 1, 20.0, 0.0), 90.0);
         assert!(warm.is_empty());
+    }
+
+    #[test]
+    fn same_tab_count_later_is_compared() {
+        // 2 tab hidup jam ke-1, 4 tab di antaranya, 2 tab lagi 2 jam kemudian: inti naik 40 MB.
+        let mk = |m: f64, live: u64, browser: f64| super::Sample { min: m, live, heap: Some(20.0), ovner: 78.0, browser, toolbar: Some(30.0) };
+        let mut s: Vec<super::Sample> = (10..30).map(|m| mk(m as f64, 2, 70.0)).collect();
+        s.extend((30..130).map(|m| mk(m as f64, 4, 150.0)));
+        s.extend((130..150).map(|m| mk(m as f64, 2, 110.0)));
+        let d = super::drifts(&s);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert!((d[0].browser - 20.0).abs() < 0.5, "{d:?}");
+        assert!(super::verdict(&d[0]).is_none(), "20 MB/jam masih di bawah batas inti");
+        // Tidak ada kenaikan: tidak ada peringatan.
+        let flat: Vec<super::Sample> = (10..150).map(|m| mk(m as f64, if (30..130).contains(&m) { 4 } else { 2 }, 70.0)).collect();
+        assert!(super::drifts(&flat).iter().all(|t| super::verdict(t).is_none()));
     }
 
     #[test]

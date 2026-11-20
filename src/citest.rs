@@ -63,6 +63,7 @@ const STEPS: &[(&str, u64)] = &[
     // 0.8.26 (masa percobaan): ekstensi Chrome. Dijalankan setelah patokan RAM supaya proses
     // ekstensi tidak ikut terhitung di patokan.
     ("ekstensi_pasang_dari_crx", 40),
+    ("terjemahan_teks_terpilih_gelembung", 30),
     ("ekstensi_skrip_konten_jalan", 30),
     ("ekstensi_panel_samping_terbuka", 30),
     ("ekstensi_copyclip_dari_web_store", 90),
@@ -85,6 +86,7 @@ const PROBATION: &[&str] = &[
     "isi_ram_ovner_dan_pemblokir",
     "isi_ram_toolbar",
     "ekstensi_pasang_dari_crx",
+    "terjemahan_teks_terpilih_gelembung",
     "ekstensi_skrip_konten_jalan",
     "ekstensi_panel_samping_terbuka",
     "ekstensi_copyclip_dari_web_store",
@@ -776,13 +778,23 @@ impl App {
             }
             "ekstensi_pasang_dari_crx" | "ekstensi_copyclip_dari_web_store" => {
                 let store = name.contains("copyclip");
-                let (id, url) = if store { (COPYCLIP_ID.to_string(), None) } else { (crate::extensions::test_crx().0, Some(self.ci.as_ref().unwrap().url("/ext.crx"))) };
+                let id = if store { COPYCLIP_ID.to_string() } else { crate::extensions::test_crx().0 };
                 if sub == 1 {
                     if !self.ext_env {
                         return Out::Fail("mesin WebView2 dibuat tanpa dukungan ekstensi".into());
                     }
-                    self.ext_install(&id, url);
+                    if store {
+                        self.ext_install(&id, None, false);
+                    } else {
+                        // Seperti menekan tombol di Web Store: halaman mengunduh .crx, Ovner mencegat.
+                        self.ci_open("/crx-page");
+                    }
                     return Out::Wait;
+                }
+                if !store && sub == 8 {
+                    if let Some(wv) = self.ci_tab("/crx-page").and_then(|j| self.tabs[j].webview.as_ref()) {
+                        let _ = wv.evaluate_script("document.getElementById('a').click()");
+                    }
                 }
                 if let Some((eid, e)) = self.ext_err.clone().filter(|(eid, _)| *eid == id) {
                     return Out::Fail(format!("{eid}: {e}"));
@@ -804,6 +816,43 @@ impl App {
                     Some(Err(e)) => Out::Fail(format!("dipasang, tetapi WebView2 menolak memuat: {e}")),
                     None => Out::Wait,
                 }
+            }
+            "terjemahan_teks_terpilih_gelembung" => {
+                crate::translate::MOCK.store(true, std::sync::atomic::Ordering::Relaxed);
+                if sub == 1 {
+                    self.ci_open("/tr");
+                    return Out::Wait;
+                }
+                let Some(j) = self.ci_tab("/tr") else { return Out::Wait };
+                if sub == 8 {
+                    if let Some(wv) = &self.tabs[j].webview {
+                        let _ = wv.evaluate_script("(function(){var r=document.createRange();r.selectNodeContents(document.getElementById('a'));var s=getSelection();s.removeAllRanges();s.addRange(r);})()");
+                    }
+                    return Out::Wait;
+                }
+                if sub == 10 {
+                    self.translate_selection(j, "Hello world");
+                    return Out::Wait;
+                }
+                if let Some(r) = self.ci.as_mut().unwrap().eval.take() {
+                    let txt: String = serde_json::from_str(&r).unwrap_or_default();
+                    let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_default();
+                    if v["open"] == true && v["out"].as_str().is_some_and(|o| o.contains("HELLO WORLD")) {
+                        crate::translate::MOCK.store(false, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(wv) = &self.tabs[j].webview {
+                            let _ = wv.evaluate_script("window.__ovnerTrB && __ovnerTrB.close()");
+                        }
+                        return Out::Pass(format!("gelembung muncul di halaman (dekat teks yang dipilih) dengan hasil {:?} dan pilihan bahasa", v["out"].as_str().unwrap_or("")));
+                    }
+                    self.ci.as_mut().unwrap().note = format!("gelembung: {txt}");
+                }
+                if sub > 10 && sub % 3 == 0 {
+                    if let Some(wv) = &self.tabs[j].webview {
+                        let p = self.proxy.clone();
+                        let _ = wv.evaluate_script_with_callback("window.__ovnerTrB ? __ovnerTrB.peek() : 'tidak ada'", move |r| crate::send(&p, UserEvent::CiEval(r)));
+                    }
+                }
+                Out::Wait
             }
             "ekstensi_skrip_konten_jalan" => {
                 if sub == 1 {

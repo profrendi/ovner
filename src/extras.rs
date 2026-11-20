@@ -5,6 +5,8 @@ use super::*;
 use base64::Engine;
 
 pub const TRANSLATE_JS: &str = include_str!("ui/translate.js");
+/// Gelembung terjemahan teks yang dipilih (disuntikkan saat dipakai).
+pub const TRBUBBLE_JS: &str = include_str!("ui/trbubble.js");
 pub const READER_JS: &str = include_str!("ui/reader.js");
 pub const SOURCE_HTML: &str = include_str!("ui/source.html");
 
@@ -37,6 +39,13 @@ pub fn ctx_items(en: bool, info: &Value) -> Vec<win::CtxItem> {
     }
     if matches!(kind, "video" | "audio") {
         v.push(C::cmd(&l("Unduh video ini", "Download this video"), "video-dl"));
+        v.push(C::sep());
+    }
+    // Halaman ekstensi di Chrome Web Store: pasang lewat Ovner (tombol bawaan Web Store tidak
+    // bisa dipakai di luar Chrome).
+    if crate::extensions::store_id(page).is_some() {
+        v.push(C::cmd(&l("Tambahkan ekstensi ini ke Ovner", "Add this extension to Ovner"), "ext-add"));
+        v.push(C::cmd(&l("Unduh berkas .crx ekstensi ini", "Download this extension's .crx file"), "ext-crx"));
         v.push(C::sep());
     }
     v.push(C::cmd(&l("Terjemahkan halaman…", "Translate page…"), "translate"));
@@ -103,7 +112,10 @@ impl App {
             t.media.remove(0);
         }
         let first = t.media.is_empty();
-        log(&format!("[video] media terdeteksi ({}{}): {}", hit.kind, if hit.len > 0 { format!(", {} KB", hit.len / 1024) } else { String::new() }, hit.url.chars().take(300).collect::<String>()));
+        // Dicatat sekali per halaman (siaran live memuat ulang daftar putarnya terus-menerus).
+        if first {
+            log(&format!("[video] media terdeteksi ({}{}): {}", hit.kind, if hit.len > 0 { format!(", {} KB", hit.len / 1024) } else { String::new() }, hit.url.chars().take(300).collect::<String>()));
+        }
         t.media.push(hit);
         if first && i == self.active {
             self.render();
@@ -141,7 +153,12 @@ impl App {
                 self.start_translate(i, None);
                 let _ = self.toolbar.evaluate_script("window.ovner && ovner.trOpen && ovner.trOpen()");
             }
-            "translate-sel" => self.translate_selection(info["sel"].as_str().unwrap_or("")),
+            "translate-sel" => self.translate_selection(i, info["sel"].as_str().unwrap_or("")),
+            "ext-add" | "ext-crx" => {
+                if let Some(eid) = crate::extensions::store_id(&page) {
+                    self.ext_install(&eid, None, cmd == "ext-crx");
+                }
+            }
             "read" => self.start_read(i, false),
             "read-sel" => self.start_read(i, true),
             "sleep-this" => {
@@ -304,7 +321,7 @@ impl App {
     /// daftar unduhan.
     pub(crate) fn save_file_download(&mut self, name: &str, bytes: &[u8], url: &str) {
         let dir = download_dir_of(&self.settings.borrow());
-        let path = dlengine::categorized(&dir.join(name));
+        let path = crate::sorted_download_path(&self.settings.borrow(), &dir.join(name));
         if let Some(d) = path.parent() {
             let _ = std::fs::create_dir_all(d);
         }
@@ -431,31 +448,59 @@ impl App {
         }
     }
 
-    pub(crate) fn translate_selection(&mut self, text: &str) {
+    /// Terjemahkan teks yang dipilih di tab `i`; hasilnya tampil dalam gelembung tepat di bawah
+    /// teks itu (bukan di panel toolbar). `to`: bahasa yang dipilih di gelembung (diingat).
+    pub(crate) fn translate_selection(&mut self, i: usize, text: &str) {
+        self.translate_selection_to(i, text, None);
+    }
+
+    pub(crate) fn translate_selection_to(&mut self, i: usize, text: &str, to: Option<String>) {
         let text: String = text.chars().take(5000).collect();
         if text.trim().is_empty() {
             return;
         }
+        let Some(t) = self.tabs.get(i) else { return };
+        let Some(wv) = t.webview.as_ref() else { return };
+        let id = t.id;
+        if let Some(to) = &to {
+            let mut s = self.settings.borrow_mut();
+            if s.translate_sel_to != *to {
+                s.translate_sel_to = to.clone();
+                s.save(data_dir());
+            }
+        }
         let (engine, to_set) = {
             let s = self.settings.borrow();
-            (s.translate_engine.clone(), s.translate_to.clone())
+            (s.translate_engine.clone(), s.translate_sel_to.clone())
         };
+        let en = self.lang.code() == "en";
+        if to.is_none() {
+            let langs: Vec<Value> = std::iter::once(json!(["auto", if en { "Automatic" } else { "Otomatis" }]))
+                .chain(translate::LANGS.iter().map(|(c, idn, enn)| json!([c, if en { *enn } else { *idn }])))
+                .collect();
+            let open = json!({"text": text, "to": to_set, "langs": langs, "en": en});
+            let _ = wv.evaluate_script(&format!("{TRBUBBLE_JS};window.__ovnerTrB && __ovnerTrB.open({open})"));
+        }
         let p = self.proxy.clone();
-        post_page(&self.toolbar, "trSel", &json!({"text": text, "busy": true}).to_string(), "window.ovner && ovner.trSel");
         std::thread::spawn(move || {
-            // Bahasa tujuan otomatis: deteksi dulu lewat terjemahan ke Indonesia.
-            let to = if to_set == "auto" { "id".to_string() } else { to_set };
-            let mut r = translate::translate(&engine, std::slice::from_ref(&text), "", &to);
+            // Otomatis: bahasa lain → Indonesia, teks Indonesia → Inggris.
+            let auto = to_set == "auto";
+            let target = if auto { "id".to_string() } else { to_set.clone() };
+            let mut r = translate::translate(&engine, std::slice::from_ref(&text), "", &target);
             if let Ok(o) = &r {
-                if to == "id" && o.detected.as_deref().is_some_and(|d| d.starts_with("id")) {
+                if auto && o.detected.as_deref().is_some_and(|d| d.starts_with("id")) {
                     r = translate::translate(&engine, std::slice::from_ref(&text), "id", "en");
                 }
             }
+            let name = |c: &str| translate::LANGS.iter().find(|(k, _, _)| c.starts_with(k)).map(|(_, idn, enn)| if en { *enn } else { *idn }).unwrap_or(c).to_string();
             let v = match r {
-                Ok(o) => json!({"text": text, "out": o.texts.first().cloned().unwrap_or_default(), "from": o.detected.unwrap_or_default()}),
+                Ok(o) => {
+                    let from = o.detected.unwrap_or_default();
+                    json!({"text": text, "out": o.texts.first().cloned().unwrap_or_default(), "from": from, "fromName": name(&from)})
+                }
                 Err(e) => json!({"text": text, "err": e}),
             };
-            send(&p, UserEvent::TrSel(v));
+            send(&p, UserEvent::TrSel(id, v));
         });
     }
 

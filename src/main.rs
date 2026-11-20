@@ -501,6 +501,23 @@ fn file_kind(path: &str) -> &'static str {
     }
 }
 
+/// Subfolder jenis berkas (Video, Documents, …) hanya dibuat di folder Downloads bawaan
+/// Windows. Lokasi yang dipilih sendiri (Pengaturan, "Save as", dialog video) dipakai apa adanya.
+fn sort_downloads_here(s: &Settings, dir: &Path) -> bool {
+    if !s.dl_box_v2 || !s.download_dir.trim().is_empty() {
+        return false;
+    }
+    let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    norm(dir) == norm(&download_dir_of(s)) || win::downloads_dir().is_some_and(|d| norm(dir) == norm(&d))
+}
+
+fn sorted_download_path(s: &Settings, path: &Path) -> PathBuf {
+    match path.parent() {
+        Some(d) if sort_downloads_here(s, d) => dlengine::categorized(path),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// Berkas video (untuk tombol "Ambil subtitle (.srt)").
 fn is_video_file(path: &str) -> bool {
     let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -591,6 +608,8 @@ enum UserEvent {
     ExtLoaded(String, Result<(String, String), String>),
     /// Ekstensi dari Web Store selesai diunduh/dipasang: (id, folder / alasan gagal).
     ExtInstalled(String, Result<String, String>),
+    /// Berkas .crx untuk disimpan: (id, isi / alasan gagal).
+    ExtCrx(String, Result<Vec<u8>, String>),
     /// Penangkap media: video/audio yang dimuat tab.
     Media(u64, win::MediaHit),
     /// Halaman tab mendapat fokus (panel toolbar ditutup).
@@ -604,7 +623,7 @@ enum UserEvent {
     /// Hasil terjemahan satu kelompok: (tab, nomor terjemahan, kelompok, hasil).
     Translated(u64, u64, u64, Result<(Vec<String>, Option<String>), String>),
     /// Hasil terjemahan teks yang dipilih.
-    TrSel(Value),
+    TrSel(u64, Value),
     /// Hasil suara/daftar suara baca keras untuk toolbar (nama fungsi, data).
     TtsResult(&'static str, Value),
     /// Hasil uji fitur (Diagnostik); true = kelompok terakhir.
@@ -900,6 +919,11 @@ struct App {
     ui_pids: Vec<u32>,
     /// Sampel RAM per menit (3 jam terakhir) untuk pemantau kebocoran.
     ram_watch: std::collections::VecDeque<metrics::Sample>,
+    eco_prev_idle: HashSet<u32>,
+    eco_logged: Option<Instant>,
+    last_compact: Instant,
+    next_bg_check: Option<Instant>,
+    last_update_check: Instant,
     leak_warned: Option<Instant>,
     menus: Menus,
     menu_tab: Option<u64>,
@@ -1323,7 +1347,7 @@ fn build_tab_view(
                 let dir = download_dir_of(&s);
                 let _ = std::fs::create_dir_all(&dir);
                 let path = dir.join(name);
-                let path = if s.dl_box_v2 { dlengine::categorized(&path) } else { path };
+                let path = sorted_download_path(&s, &path);
                 Some((free_download_path(&path).display().to_string(), measure))
             },
             move |ev| send(&p_pdf, UserEvent::Download(id, ev)),
@@ -1352,13 +1376,7 @@ fn build_tab_view(
         },
         {
             let st = tenv.settings.clone();
-            move |path| {
-                if st.borrow().dl_box_v2 {
-                    dlengine::categorized(Path::new(path)).display().to_string()
-                } else {
-                    path.to_string()
-                }
-            }
+            move |path| sorted_download_path(&st.borrow(), Path::new(path)).display().to_string()
         },
     );
     if !private {
@@ -1733,23 +1751,28 @@ impl App {
         })
     }
 
-    /// Pasang ekstensi dari Chrome Web Store (`url` = sumber .crx lain, untuk uji).
-    fn ext_install(&mut self, id: &str, url: Option<String>) {
+    /// Pasang ekstensi dari Chrome Web Store (`url` = sumber .crx lain, untuk uji). `save_only`:
+    /// hanya simpan berkas .crx-nya ke folder unduhan (untuk dibagikan/diperiksa kodenya).
+    fn ext_install(&mut self, id: &str, url: Option<String>, save_only: bool) {
         if !extensions::is_id(id) || self.ext_busy.is_some() {
             return;
         }
         self.ext_busy = Some(id.to_string());
         self.ext_err = None;
-        log(&format!("[ekstensi] memasang {id} dari {}", url.as_deref().unwrap_or("Chrome Web Store")));
+        let src = url.clone().unwrap_or_else(|| extensions::crx_url(id, &wry::webview_version().unwrap_or_default()));
+        log(&format!("[ekstensi] {} {id}: unduh {}", if save_only { "simpan .crx" } else { "memasang" }, display_url(&src)));
         let (p, data, id2) = (self.proxy.clone(), data_dir().to_path_buf(), id.to_string());
-        let chromium = wry::webview_version().unwrap_or_default();
         std::thread::spawn(move || {
-            let crx = match &url {
-                Some(u) => extensions::download_from(u),
-                None => extensions::download(&id2, &chromium),
-            };
-            let r = crx.and_then(|c| extensions::install_crx(&data, &id2, &c)).map(|d| d.display().to_string());
-            send(&p, UserEvent::ExtInstalled(id2, r));
+            let crx = extensions::download_from(&src);
+            if save_only {
+                send(&p, UserEvent::ExtCrx(id2, crx));
+                return;
+            }
+            let r = crx.and_then(|c| {
+                log(&format!("[ekstensi] {id2}: .crx diterima {} KB, mengekstrak…", c.len() / 1024));
+                extensions::install_crx(&data, &id2, &c)
+            });
+            send(&p, UserEvent::ExtInstalled(id2, r.map(|d| d.display().to_string())));
         });
         self.last_render_key.clear();
         self.render();
@@ -1785,6 +1808,28 @@ impl App {
                 }
                 log(&format!("[ekstensi] terpasang: {id} di {dir}{}", if loading { "" } else { " (aktif setelah Ovner dimulai ulang)" }));
                 self.refresh_ext_infos();
+            }
+        }
+        self.each_window(|a| {
+            a.last_render_key.clear();
+            a.render();
+        });
+    }
+
+    /// Berkas .crx diterima untuk disimpan: taruh di folder unduhan (tampil di daftar unduhan).
+    fn on_ext_crx(&mut self, id: String, r: Result<Vec<u8>, String>) {
+        self.ext_busy = None;
+        match r {
+            Err(e) => {
+                log(&format!("[ekstensi] GALAT: .crx {id} gagal diunduh: {e}"));
+                self.ext_err = Some((id, e));
+            }
+            Ok(bytes) => {
+                let (name, ver) = self.ext_infos.iter().find(|i| i.id == id).map(|i| (i.name.clone(), i.version.clone())).unwrap_or_else(|| (id.clone(), String::new()));
+                let clean: String = name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { ' ' } else { c }).collect();
+                let file = format!("{} {ver}", clean.split_whitespace().collect::<Vec<_>>().join(" ")).trim().to_string() + ".crx";
+                self.save_file_download(&file, &bytes, &extensions::crx_url(&id, ""));
+                log(&format!("[ekstensi] .crx disimpan: {file} ({} KB) di folder unduhan", bytes.len() / 1024));
             }
         }
         self.each_window(|a| {
@@ -2496,7 +2541,11 @@ impl App {
         for w in &self.others {
             look(&w.tabs, w.active, w.split, w.background || self.in_tray);
         }
-        let want: HashSet<u32> = idle.difference(&awake).copied().collect();
+        let idle_now: HashSet<u32> = idle.difference(&awake).copied().collect();
+        // Histeresis: proses baru dihematkan bila menganggur di dua pemeriksaan berturut-turut
+        // (dulu bolak-balik hemat/tidak tiap 10 detik → log penuh dan CPU terbuang).
+        let want: HashSet<u32> = idle_now.iter().filter(|p| self.eco_prev_idle.contains(p) || self.eco_pids.contains(p)).copied().collect();
+        self.eco_prev_idle = idle_now;
         let start: Vec<u32> = want.difference(&self.eco_pids).copied().collect();
         let stop: Vec<u32> = self.eco_pids.difference(&want).copied().collect();
         if !start.is_empty() {
@@ -2506,8 +2555,9 @@ impl App {
             win::set_pids_eco(&stop, false);
         }
         // Dicatat hanya bila jumlahnya berubah (dulu tiap 10 detik, memenuhi log).
-        static LOGGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
-        if (!start.is_empty() || !stop.is_empty()) && LOGGED.swap(want.len(), std::sync::atomic::Ordering::Relaxed) != want.len() {
+        // Paling sering tiap 10 menit.
+        if (!start.is_empty() || !stop.is_empty()) && self.eco_logged.is_none_or(|t| t.elapsed() >= Duration::from_secs(600)) {
+            self.eco_logged = Some(Instant::now());
             log(&format!("[ram] efisiensi per proses: {} proses hemat (+{} -{})", want.len(), start.len(), stop.len()));
         }
         self.eco_pids = want;
@@ -2576,6 +2626,9 @@ impl App {
         // Tab video/berat baru ditutup/ditidurkan: GPU dan proses tanpa tab boleh dirapikan.
         let gone = std::mem::take(&mut self.gpu_trim);
         let net_busy = self.downloading() || !self.pdf_race.is_empty() || !self.video_jobs.is_empty();
+        // RAM Windows menipis (tersedia < 25%): boleh merapikan lebih agresif.
+        let pressure = win::mem_status().is_some_and(|(total, avail)| avail < total / 4);
+        let calm = all_bg || pressure;
         // Peta proses → tab dianggap segar bila diminta dalam 30 detik terakhir.
         let map_fresh = self.frames_ok && !self.renderer_frames.is_empty() && self.frames_at.elapsed() < Duration::from_secs(30);
         let (mut shown, mut busy, mut known) = (HashSet::new(), HashSet::new(), HashSet::new());
@@ -2618,19 +2671,22 @@ impl App {
                     "gpu" if audio => Some("video/suara diputar"),
                     "gpu" if !(all_bg || gone || user_idle) => Some("jendela terbuka (GPU menggambar)"),
                     "gpu" => None,
-                    "network" => (net_busy || loading).then_some("jaringan dipakai"),
+                    "network" if net_busy || loading => Some("jaringan dipakai"),
+                    // Proses inti & jaringan dipakai terus selama jendela terbuka: merapikannya
+                    // hanya membuat halamannya dibaca ulang dari disk (memantul).
+                    "network" | "browser" => (!(calm || idle >= 120 || gone)).then_some("dipakai jendela yang terbuka"),
                     "audio" => audio.then_some("suara diputar"),
                     // Proses Ovner sendiri: jendela/toolbar digambar WebView2, prosesnya hampir
                     // selalu menganggur; sisa saat mulai (mesin filter iklan) tidak perlu ditahan.
                     "ovner" => None,
-                    _ => (!(all_bg || idle >= 10 || gone)).then_some("sedang dipakai"),
+                    _ => (!(calm || idle >= 120 || gone)).then_some("sedang dipakai"),
                 };
                 let blocked = blocked.or_else(|| fresh_cpu.get(&pid).filter(|c| **c > 5.0).map(|_| "CPU sibuk"));
                 memtrim::Candidate { pid, kind: p.kind.clone(), working: p.working, blocked }
             })
             .collect();
         let every = self.settings.borrow().trim_every_minutes.max(1) as u64;
-        let (pick, skipped) = self.trimmer.choose(now, &cands, Duration::from_secs(every * 60), force);
+        let (pick, skipped) = self.trimmer.choose(now, &cands, Duration::from_secs(every * 60), force, pressure);
         let kind_of: HashMap<u32, String> = procs.iter().map(|p| (p.pid, p.kind.clone())).collect();
         let done: Vec<memtrim::Trimmed> = win::trim_pids(&pick)
             .into_iter()
@@ -2666,11 +2722,11 @@ impl App {
             let mb = |b: u64| b / 1_048_576;
             let bounced: Vec<String> = v.bounced.iter().map(|(k, x)| format!("{k} (jeda ×{x})")).collect();
             log(&format!(
-                "[ram] hasil rapikan 1 menit kemudian: {} MB sebelum → {} MB sekarang ({}% tetap lepas){}",
+                "[ram] INFO: hasil rapikan 1 menit kemudian: {} MB sebelum → {} MB sekarang ({}% tetap lepas){}",
                 mb(v.before),
                 mb(v.now),
                 v.held_pct(),
-                if bounced.is_empty() { String::new() } else { format!("; memantul: {}", bounced.join(", ")) }
+                if bounced.is_empty() { String::new() } else { format!("; memantul (dirapikan lebih jarang, berhenti setelah 2×): {}", bounced.join(", ")) }
             ));
         }
     }
@@ -3166,6 +3222,19 @@ impl App {
                 log(&text);
                 return;
             }
+            win::DlEvent::Crx { url, name } => {
+                match extensions::crx_id(&url, &name) {
+                    Some(eid) => {
+                        log(&format!("[ekstensi] unduhan .crx dari halaman dicegat (Chromium memblokirnya), dipasang lewat Ovner: {eid}"));
+                        // Dari server Google: unduh ulang lewat jalur Web Store Ovner; dari situs lain
+                        // (toko ekstensi lain, server uji): pakai alamat itu.
+                        let google = url.contains("google.com/") || url.contains("googleusercontent.com/");
+                        self.ext_install(&eid, (!google).then(|| url.clone()), false);
+                    }
+                    None => log(&format!("[ekstensi] PERINGATAN: unduhan .crx dicegat tetapi ID ekstensinya tidak dikenali: {}", display_url(&url))),
+                }
+                return;
+            }
             win::DlEvent::Waiting { id, url } => {
                 // Ditampilkan bila server belum menjawab setelah sebentar (lihat on_tick), supaya
                 // halaman biasa yang alamatnya berisi "download" tidak berkedip di daftar.
@@ -3215,7 +3284,7 @@ impl App {
                 }
                 let base = self.downloads.iter().find(|d| d.id == id && !d.path.is_empty()).map(|d| d.path.clone()).unwrap_or_else(|| {
                     let mut dir = self.download_dir();
-                    if self.settings.borrow().dl_box_v2 {
+                    if sort_downloads_here(&self.settings.borrow(), &dir) {
                         dir = dir.join("Documents");
                     }
                     let _ = std::fs::create_dir_all(&dir);
@@ -3591,7 +3660,7 @@ impl App {
                             // Jalur awal selesai sebelum halaman menjawab: nama dari alamat.
                             let url = self.downloads[pos].url.clone();
                             let mut dir = self.download_dir();
-                            if self.settings.borrow().dl_box_v2 {
+                            if sort_downloads_here(&self.settings.borrow(), &dir) {
                                 dir = dir.join("Documents");
                             }
                             let p = free_download_path(&dir.join(dlengine::pdf_name("", &url)));
@@ -3915,7 +3984,7 @@ impl App {
     /// Folder simpan bawaan untuk video/audio (Video/Music bila Download box v2).
     fn video_dir(&self, audio: bool) -> PathBuf {
         let out = self.download_dir();
-        if self.settings.borrow().dl_box_v2 {
+        if sort_downloads_here(&self.settings.borrow(), &out) {
             out.join(if audio { "Music" } else { "Video" })
         } else {
             out
@@ -4303,7 +4372,9 @@ impl App {
             }
             if self.ram_watch.len() % 60 == 0 && self.leak_warned.is_none_or(|t| t.elapsed() > Duration::from_secs(3 * 3600)) {
                 let v: Vec<metrics::Sample> = self.ram_watch.iter().copied().collect();
-                if let Some(w) = metrics::trends(&v, metrics::MIN_SPAN_MIN).iter().filter_map(metrics::verdict).last() {
+                let mut tr = metrics::trends(&v, metrics::MIN_SPAN_MIN);
+                tr.extend(metrics::drifts(&v));
+                if let Some(w) = tr.iter().filter_map(metrics::verdict).last() {
                     self.leak_warned = Some(Instant::now());
                     log(&format!("[ram] PERINGATAN: kemungkinan kebocoran RAM: {w}. Kirim Paket diagnostik supaya bisa diperiksa."));
                 }
@@ -4992,7 +5063,8 @@ impl App {
             return;
         }
         // Pengguna diam lebih dari 1 menit (tanpa mouse/keyboard): ukur tiap 3 detik saja.
-        let idle = win::idle_secs() >= 60 && !tasks;
+        // Indikator Ovner di bilah judul tetap tiap 1 detik (sama dengan Task Manager Windows).
+        let idle = win::idle_secs() >= 60 && !tasks && !app_on;
         usage::set_monitor_every(if idle { 3000 } else { 1000 });
         if self.stats_at.elapsed() < Duration::from_millis(if idle { 2900 } else { 900 }) {
             return;
@@ -5140,6 +5212,34 @@ impl App {
             self.icons_due = None;
             self.fetch_missing_icons();
         }
+        // Daftar filter dan update Ovner diperiksa lagi selama Ovner terbuka (dulu hanya saat
+        // mulai: bila pagi itu jaringan kantor masih meminta login, daftar tetap lama seharian).
+        if self.next_bg_check.is_none_or(|t| Instant::now() >= t) {
+            let first = self.next_bg_check.is_none();
+            self.next_bg_check = Some(Instant::now() + Duration::from_secs(15 * 60));
+            if !first {
+                let s = self.settings.borrow().clone();
+                start_filter_update(self.proxy.clone(), s.clone());
+                let due = UPDATE_RETRY.load(std::sync::atomic::Ordering::Relaxed) || self.last_update_check.elapsed() >= Duration::from_secs(6 * 3600);
+                if due && s.check_updates && cfg!(windows) {
+                    self.last_update_check = Instant::now();
+                    background_update_check(self.proxy.clone(), &s, 0);
+                }
+            }
+        }
+        // Setelah pekerjaan besar (mesin filter disusun ulang, PDF diukur, terjemahan, dst.),
+        // kembalikan memori bebas ke Windows: tanpa ini heap Windows menahan halaman yang sudah
+        // dilepas Rust, dan ovner.exe tampak tetap besar.
+        if self.last_compact.elapsed() >= Duration::from_secs(60) {
+            self.last_compact = Instant::now();
+            let peak = heap::take_recent_peak();
+            if peak.saturating_sub(heap::now()) >= 8 * 1_048_576 {
+                let freed = win::compact_heaps();
+                if freed >= 1_048_576 {
+                    log(&format!("[ram] heap Windows dirapikan: {} MB dikembalikan (puncak heap Rust {} MB, sekarang {} MB)", freed / 1_048_576, peak / 1_048_576, heap::now() / 1_048_576));
+                }
+            }
+        }
         if self.settings.borrow().metrics && self.last_metrics.elapsed() >= Duration::from_secs(60) {
             self.last_metrics = Instant::now();
             self.write_metrics();
@@ -5237,12 +5337,25 @@ impl App {
     fn update_caption(&self, v: &Value) {
         let mut parts: Vec<(String, bool)> = Vec::new();
         if !self.in_tray && !self.window.is_minimized() && self.window.fullscreen().is_none() {
-            let mb = |b: u64| format!("{} MB", b / 1_048_576);
-            let pct = |c: f64| if c >= 10.0 { format!("{c:.0}%") } else { format!("{c:.1}%") };
+            // Format Task Manager Windows: satu desimal, koma untuk bahasa Indonesia.
+            let comma = self.lang.code() != "en";
+            let dec = |x: f64| {
+                let t = format!("{x:.1}");
+                if comma {
+                    t.replace('.', ",")
+                } else {
+                    t
+                }
+            };
+            let mb = |b: u64| format!("{} MB", dec(b as f64 / 1_048_576.0));
+            let pct = |c: f64| format!("{}%", dec(c));
             let n = |x: &Value| x.as_f64().unwrap_or(0.0);
             if let Some(a) = v["app"].as_object() {
                 parts.push(("Ovner ".into(), false));
                 parts.push((mb(n(&a["ram"]) as u64), true));
+                if a.contains_key("own") {
+                    parts.push((format!(" (ovner.exe {} · WebView2 ({}) {})", dec(n(&a["own"]) / 1_048_576.0), n(&a["wvn"]) as u64, dec(n(&a["wv"]) / 1_048_576.0)), false));
+                }
                 parts.push(("  ·  CPU ".into(), false));
                 parts.push((pct(n(&a["cpu"])), true));
                 parts.push(("  ·  GPU ".into(), false));
@@ -5281,7 +5394,10 @@ impl App {
             return Value::Null;
         }
         let tot = usage::total(&self.stats);
-        let app = s.usage_overlay_app.then(|| json!({"ram": tot.working, "cpu": tot.cpu, "gpu": tot.gpu, "procs": tot.procs}));
+        // Seperti Task Manager Windows: baris "Ovner" (ovner.exe) dan "WebView2 Manager (n)".
+        let own: u64 = self.stats.iter().filter(|p| p.kind == "ovner").map(|p| p.working).sum();
+        let wvn = self.stats.iter().filter(|p| p.kind != "ovner").count();
+        let app = s.usage_overlay_app.then(|| json!({"ram": tot.working, "cpu": tot.cpu, "gpu": tot.gpu, "procs": tot.procs, "own": own, "wv": tot.working.saturating_sub(own), "wvn": wvn}));
         let tab = s
             .usage_overlay_tab
             .then(|| {
@@ -6289,7 +6405,7 @@ impl App {
             log(&format!("pesan tab {id}: {kind} ({} byte) url={current_url}", body.len()));
         }
         // Perintah halaman internal hanya diterima dari halaman internal.
-        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings" | "codec-hw" | "page-lang" | "tr-req" | "tr-progress" | "tr-lang" | "tr-device" | "read-text") {
+        if internal.is_none() && !matches!(kind, "key" | "url" | "page" | "cos" | "pick" | "pw-query" | "pw-capture" | "pw-fill" | "anubis" | "paste" | "dirty" | "clean" | "video-dl" | "video-never" | "video-settings" | "codec-hw" | "page-lang" | "tr-req" | "tr-progress" | "tr-lang" | "tr-device" | "read-text" | "tr-sel" | "tr-copy") {
             return false;
         }
         match kind {
@@ -6336,6 +6452,17 @@ impl App {
                 }
             }
             "tr-req" => self.on_tr_req(i, &msg),
+            "tr-sel" => {
+                let text = msg["text"].as_str().unwrap_or("").to_string();
+                let to: String = msg["to"].as_str().unwrap_or("auto").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(10).collect();
+                self.translate_selection_to(i, &text, Some(if to.is_empty() { "auto".into() } else { to }));
+            }
+            "tr-copy" => {
+                let text: String = msg["text"].as_str().unwrap_or("").chars().take(20000).collect();
+                if !text.is_empty() {
+                    win::set_clipboard(&text);
+                }
+            }
             "tr-progress" => {
                 let t = &mut self.tabs[i];
                 if msg["n"].as_u64() == Some(t.tr.n) && t.tr.n > 0 {
@@ -7183,9 +7310,15 @@ impl App {
                 self.render();
             }
             // ---- ekstensi Chrome ----
-            "ext-install" => {
+            "ext-install" | "ext-save" => {
                 let id = msg["id"].as_str().unwrap_or("").to_string();
-                self.ext_install(&id, None);
+                self.ext_install(&id, None, cmd == "ext-save");
+            }
+            "ext-folder" => {
+                let dir = msg["dir"].as_str().unwrap_or("").to_string();
+                if self.ext_infos.iter().any(|i| i.dir == dir) {
+                    win::open_folder(Path::new(&dir));
+                }
             }
             "ext-open" => {
                 let id = msg["id"].as_str().unwrap_or("").to_string();
@@ -7878,6 +8011,11 @@ impl App {
                 let a = self.tabs.iter().position(|t| t.recording).unwrap_or(self.active);
                 if self.tabs.get(a).is_some_and(|t| t.recording) {
                     for t in &mut self.tabs {
+                        if t.recording {
+                            if let Some(wv) = &t.webview {
+                                win::record_disable(wv);
+                            }
+                        }
                         t.recording = false;
                     }
                     let report = json!({
@@ -7892,7 +8030,10 @@ impl App {
                         "events": self.problems,
                     });
                     win::set_clipboard(&serde_json::to_string_pretty(&report).unwrap_or_default());
-                    win::info(&tf(self.lang, "d.record_copied", &[("n", &self.problems.len().to_string())]));
+                    let n = self.problems.len();
+                    // Laporan sudah di clipboard: lepaskan isinya (bisa ribuan baris).
+                    self.problems = Vec::new();
+                    win::info(&tf(self.lang, "d.record_copied", &[("n", &n.to_string())]));
                 } else if self.tabs.get(a).is_some_and(|t| t.webview.is_some()) {
                     self.problems.clear();
                     self.record_at = Instant::now();
@@ -8009,6 +8150,36 @@ fn nav_state(wv: &WebView) -> (bool, bool) {
     }
 }
 
+/// Cek update terakhir gagal (mis. jaringan kantor masih meminta login): coba lagi 15 menit lagi.
+static UPDATE_RETRY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Cek update Ovner dan versi WebView2 terbaru di latar (setelah `delay` detik).
+fn background_update_check(p: EventLoopProxy<UserEvent>, s: &Settings, delay: u64) {
+    let dir = data_dir().to_path_buf();
+    let channel = s.update_channel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(delay));
+        match update::check_and_stage(&dir, &channel) {
+            Ok(Some(v)) => {
+                UPDATE_RETRY.store(false, std::sync::atomic::Ordering::Relaxed);
+                log(&format!("update {v} siap"));
+                send(&p, UserEvent::UpdateReady(v));
+            }
+            Ok(None) => UPDATE_RETRY.store(false, std::sync::atomic::Ordering::Relaxed),
+            Err(e) => {
+                UPDATE_RETRY.store(true, std::sync::atomic::Ordering::Relaxed);
+                log(&format!("[update] PERINGATAN: cek update gagal (dicoba lagi 15 menit lagi): {e}"));
+            }
+        }
+        // WebView2 terbaru dari Microsoft (paling sering sehari sekali), untuk Tentang dan Diagnostik.
+        let installed = wry::webview_version().unwrap_or_default();
+        match versions::refresh_latest(&dir, Some(Duration::from_secs(20 * 3600)), win::download) {
+            Ok(latest) => log(&format!("WebView2: {}", versions::status(&installed, &latest, true).1)),
+            Err(e) => log(&format!("cek WebView2 terbaru: {e}")),
+        }
+    });
+}
+
 /// Siapkan daftar filter sesuai setelan lalu susun ulang mesinnya di latar bila berubah:
 /// buang daftar yang tidak dipakai, unduh yang belum ada, dan (bila otomatis) perbarui yang
 /// lebih tua dari seminggu.
@@ -8027,19 +8198,22 @@ fn filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings, force: bool) {
         let wanted = blocker::wanted_lists(&s);
         blocker::write_custom_rules(&dir, &s.custom_rules);
         blocker::prune_lists(&dir, &wanted);
-        let had_cache = blocker::load_cached(&dir).is_some();
+        let had_cache = blocker::has_cache(&dir);
         let stale = if force { wanted.clone() } else { blocker::stale_lists(&dir, &wanted, s.filter_update_hours) };
         let mut changed = false;
         if force || (!stale.is_empty() && s.auto_update_filters) {
             if !force {
                 std::thread::sleep(Duration::from_secs(3));
             }
-            let n = blocker::download_lists(&dir, &stale, false);
-            log(&format!("daftar filter berubah: {n}/{}", stale.len()));
+            let (n, failed) = blocker::download_lists(&dir, &stale, false);
+            log(&format!("[shields] daftar filter diperiksa: {n} berubah, {} sama, {} gagal (dari {})", stale.len().saturating_sub(n + failed.len()), failed.len(), stale.len()));
+            for f in &failed {
+                log(&format!("[shields] PERINGATAN: daftar filter gagal diunduh (dicoba lagi 15 menit lagi): {f}"));
+            }
             changed = n > 0;
         } else if !stale.is_empty() {
             // Pembaruan otomatis mati: hanya unduh daftar yang belum ada sama sekali.
-            changed = blocker::download_lists(&dir, &stale, true) > 0;
+            changed = blocker::download_lists(&dir, &stale, true).0 > 0;
         }
         if changed || !had_cache {
             let started = Instant::now();
@@ -8906,26 +9080,7 @@ fn main() {
     let blocker = Rc::new(RefCell::new(Blocker::new(cached.unwrap_or_else(blocker::builtin_engine), full, data_dir())));
     start_filter_update(proxy.clone(), settings.clone());
     if settings.check_updates && cfg!(windows) {
-        let p = proxy.clone();
-        let dir = data_dir().to_path_buf();
-        let channel = settings.update_channel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(20));
-            match update::check_and_stage(&dir, &channel) {
-                Ok(Some(v)) => {
-                    log(&format!("update {v} siap"));
-                    send(&p, UserEvent::UpdateReady(v));
-                }
-                Ok(None) => {}
-                Err(e) => log(&format!("cek update: {e}")),
-            }
-            // WebView2 terbaru dari Microsoft (paling sering sehari sekali), untuk Tentang dan Diagnostik.
-            let installed = wry::webview_version().unwrap_or_default();
-            match versions::refresh_latest(&dir, Some(Duration::from_secs(20 * 3600)), win::download) {
-                Ok(latest) => log(&format!("WebView2: {}", versions::status(&installed, &latest, true).1)),
-                Err(e) => log(&format!("cek WebView2 terbaru: {e}")),
-            }
-        });
+        background_update_check(proxy.clone(), &settings, 20);
     }
 
     let window = Rc::new(build_window(&event_loop, &settings.theme, !args.tray, !args.tray, (1280.0, 800.0), None).expect("jendela Ovner"));
@@ -9110,6 +9265,11 @@ fn main() {
         ui_frame: None,
         ui_pids: Vec::new(),
         ram_watch: std::collections::VecDeque::new(),
+        eco_prev_idle: HashSet::new(),
+        eco_logged: None,
+        last_compact: Instant::now(),
+        next_bg_check: None,
+        last_update_check: Instant::now(),
         leak_warned: None,
         menus,
         menu_tab: None,
@@ -9483,10 +9643,15 @@ fn main() {
                 UserEvent::Source(id, url, step, data) => app.on_source_step(id, url, step, data),
                 UserEvent::Shot(id, step, data) => app.on_shot(id, step, data),
                 UserEvent::Translated(id, n, b, r) => app.on_translated(id, n, b, r),
-                UserEvent::TrSel(v) => post_page(&app.toolbar, "trSel", &v.to_string(), "window.ovner && ovner.trSel"),
+                UserEvent::TrSel(id, v) => {
+                    if let Some(wv) = app.tab_index(id).and_then(|i| app.tabs[i].webview.as_ref()) {
+                        let _ = wv.evaluate_script(&format!("window.__ovnerTrB && __ovnerTrB.show({v})"));
+                    }
+                }
                 UserEvent::TtsResult(kind, v) => post_page(&app.toolbar, kind, &v.to_string(), &format!("window.ovner && ovner.{kind}")),
                 UserEvent::ExtLoaded(dir, r) => app.on_ext_loaded(dir, r),
                 UserEvent::ExtInstalled(id, r) => app.on_ext_installed(id, r),
+                UserEvent::ExtCrx(id, r) => app.on_ext_crx(id, r),
                 UserEvent::CiEval(r) => {
                     if let Some(c) = app.ci.as_mut() {
                         c.eval = Some(r);
@@ -9773,6 +9938,28 @@ fn main() {
             *control_flow = ControlFlow::Exit;
         }
     });
+}
+
+#[cfg(test)]
+mod download_folder_tests {
+    use std::path::Path;
+
+    #[test]
+    fn categories_only_in_default_downloads() {
+        let mut s = crate::settings::Settings::default();
+        s.dl_box_v2 = true;
+        let def = super::download_dir_of(&s);
+        assert!(super::sort_downloads_here(&s, &def));
+        let p = super::sorted_download_path(&s, &Path::new("D:\\Kerja\\PPI").join("PPI GAJI.pdf"));
+        assert_eq!(p, Path::new("D:\\Kerja\\PPI").join("PPI GAJI.pdf"), "lokasi pilihan sendiri dipakai apa adanya");
+        assert!(!super::sort_downloads_here(&s, Path::new("D:\\Kerja\\PPI")));
+        // Folder unduhan diatur sendiri di Pengaturan: tidak dibuatkan subfolder.
+        s.download_dir = "D:\\Unduhan".into();
+        assert!(!super::sort_downloads_here(&s, Path::new("D:\\Unduhan")));
+        s.download_dir.clear();
+        s.dl_box_v2 = false;
+        assert!(!super::sort_downloads_here(&s, &def));
+    }
 }
 
 #[cfg(test)]

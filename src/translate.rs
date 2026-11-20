@@ -27,13 +27,16 @@ pub fn translate(engine: &str, texts: &[String], from: &str, to: &str) -> Result
         return Ok(Out { texts: texts.iter().map(|t| format!("[{to}] {}", t.to_uppercase())).collect(), detected: Some("en".into()) });
     }
     match engine {
+        // Gagal lalu cadangan berhasil = PERINGATAN (pengguna tidak terganggu); keduanya gagal = GALAT.
         "google" => google(texts, from, to).or_else(|e| {
-            crate::log(&format!("[terjemah] Google gagal ({e}), dicoba Microsoft"));
-            microsoft(texts, from, to)
+            let r = microsoft(texts, from, to);
+            crate::log(&format!("[terjemah] {}: Google gagal ({e}), {}", if r.is_ok() { "PERINGATAN" } else { "GALAT" }, if r.is_ok() { "Microsoft dipakai" } else { "Microsoft juga gagal" }));
+            r
         }),
         _ => microsoft(texts, from, to).or_else(|e| {
-            crate::log(&format!("[terjemah] Microsoft gagal ({e}), dicoba Google"));
-            google(texts, from, to)
+            let r = google(texts, from, to);
+            crate::log(&format!("[terjemah] {}: Microsoft gagal ({e}), {}", if r.is_ok() { "PERINGATAN" } else { "GALAT" }, if r.is_ok() { "Google dipakai" } else { "Google juga gagal" }));
+            r
         }),
     }
 }
@@ -69,7 +72,17 @@ fn microsoft(texts: &[String], from: &str, to: &str) -> Result<Out, String> {
         }
         let r = net::post(&url, &[("Content-Type", "application/json")], body.as_bytes())?;
         if r.status == 200 {
-            return parse_microsoft(&r.text(), texts.len());
+            // Kadang jawaban 200 tetapi bukan JSON (halaman jaringan/pembatasan sesaat): coba
+            // sekali lagi, lalu laporkan potongan isinya supaya penyebabnya terlihat di log.
+            let text = r.text();
+            match parse_microsoft(&text, texts.len()) {
+                Ok(o) => return Ok(o),
+                Err(e) => {
+                    let head: String = text.trim().chars().take(120).collect();
+                    last = format!("{e}; isi: {:?}", if head.is_empty() { "(kosong)".to_string() } else { head });
+                    continue;
+                }
+            }
         }
         last = format!("HTTP {}: {}", r.status, r.text().chars().take(160).collect::<String>());
         if r.status != 429 && r.status < 500 {

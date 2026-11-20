@@ -48,6 +48,8 @@ pub struct Settings {
     pub translate_engine: String,
     /// Bahasa tujuan: "auto" (bahasa lain → Indonesia, Indonesia → Inggris) atau kode bahasa.
     pub translate_to: String,
+    /// Bahasa tujuan gelembung terjemahan teks terpilih ("auto" atau kode bahasa; diingat).
+    pub translate_sel_to: String,
     /// Suara baca keras: "local" (suara Windows), "edge" (suara Natural online seperti Edge),
     /// atau "azure" (Azure Speech berbayar, kunci sendiri).
     pub tts_engine: String,
@@ -400,6 +402,7 @@ impl Default for Settings {
             page_font: "off".into(),
             translate_engine: "microsoft".into(),
             translate_to: "auto".into(),
+            translate_sel_to: "auto".into(),
             tts_engine: "local".into(),
             tts_voice: String::new(),
             tts_rate: 100,
@@ -831,6 +834,9 @@ impl Settings {
             self.page_font = "off".into();
         }
         pick(&mut self.translate_engine, &["microsoft", "google"], "microsoft");
+        if self.translate_sel_to != "auto" && !(2..=10).contains(&self.translate_sel_to.len()) {
+            self.translate_sel_to = "auto".into();
+        }
         if self.translate_to != "auto" && !(2..=8).contains(&self.translate_to.len()) {
             self.translate_to = "auto".into();
         }

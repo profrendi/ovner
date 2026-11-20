@@ -43,6 +43,20 @@ pub fn id_from_key(key: &[u8]) -> String {
     h[..16].iter().flat_map(|b| [b >> 4, b & 15]).map(|n| (b'a' + n) as char).collect()
 }
 
+/// ID ekstensi dari unduhan .crx yang dicegat: dari alamat server pembaruan
+/// (`x=id%3D<id>…`) atau dari nama berkas ("<id>_12345.crx").
+pub fn crx_id(url: &str, name: &str) -> Option<String> {
+    let dec = url.replace("%3D", "=").replace("%3d", "=").replace("%26", "&");
+    if let Some(i) = dec.find("id=") {
+        let cand: String = dec[i + 3..].chars().take(32).collect();
+        if is_id(&cand) {
+            return Some(cand);
+        }
+    }
+    let base: String = name.chars().take(32).collect();
+    is_id(&base).then_some(base)
+}
+
 /// Alamat unduhan .crx dari server pembaruan Google.
 pub fn crx_url(id: &str, chromium: &str) -> String {
     let ver = if chromium.is_empty() { "140.0.0.0" } else { chromium };
@@ -193,6 +207,21 @@ pub fn install_crx(data: &Path, id: &str, crx: &[u8]) -> Result<PathBuf, String>
     let _ = std::fs::remove_dir_all(&dest);
     std::fs::rename(&tmp, &dest).map_err(|e| format!("folder ekstensi tidak bisa dipindah: {e}"))?;
     Ok(dest)
+}
+
+/// Simpan berkas .crx asli (untuk dibagikan/diperiksa) ke `dir`; nama "<nama ekstensi> <versi>.crx".
+pub fn save_crx(dir: &Path, name: &str, version: &str, crx: &[u8]) -> Result<PathBuf, String> {
+    let clean: String = name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || c.is_control() { ' ' } else { c }).collect();
+    let stem = format!("{} {}", clean.split_whitespace().collect::<Vec<_>>().join(" "), version).trim().to_string();
+    let _ = std::fs::create_dir_all(dir);
+    let mut p = dir.join(format!("{stem}.crx"));
+    let mut n = 1;
+    while p.exists() {
+        p = dir.join(format!("{stem} ({n}).crx"));
+        n += 1;
+    }
+    std::fs::write(&p, crx).map_err(|e| e.to_string())?;
+    Ok(p)
 }
 
 /// Unduh .crx sebuah ekstensi dari Chrome Web Store (memblokir; panggil dari thread latar).
@@ -406,6 +435,14 @@ mod tests {
         assert_eq!(store_id(&format!("https://chrome.google.com/webstore/detail/x/{id}")).as_deref(), Some(id));
         assert_eq!(store_id("https://chromewebstore.google.com/category/extensions"), None);
         assert_eq!(store_id(&format!("https://example.com/detail/{id}")), None);
+    }
+
+    #[test]
+    fn crx_ids_from_intercepted_downloads() {
+        let id = "pgjckoablokakigdlgbhdmeohbklphli";
+        assert_eq!(crx_id(&crx_url(id, "157.0"), "").as_deref(), Some(id));
+        assert_eq!(crx_id("https://clients2.googleusercontent.com/crx/blobs/AbC/x.crx", &format!("{id}_15820.crx")).as_deref(), Some(id));
+        assert_eq!(crx_id("https://example.com/a.crx", "a.crx"), None);
     }
 
     #[test]

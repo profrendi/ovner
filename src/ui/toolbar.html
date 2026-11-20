@@ -370,12 +370,13 @@
   #readopts.show { display: block; }
   /* Ekstensi Chrome */
   #extadd { height: 26px; padding: 0 12px; border: 0; border-radius: 13px; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; margin: 0 4px; }
-  #extadd[hidden] { display: none; }
+  #extadd[hidden], #extcrx[hidden] { display: none; }
+  #extcrx { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--field); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; margin-right: 4px; }
   #extadd:disabled { opacity: .75; cursor: default; }
   #extadd.err { background: #e5484d; }
   #extbtn[hidden] { display: none; }
   #extbtn.on { color: var(--accent); }
-  #extpanel { position: absolute; right: 150px; top: 4px; width: 360px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  #extpanel { position: absolute; right: 150px; top: 4px; width: 430px; display: none; background: var(--bar); border: 1px solid var(--line); padding: 12px 14px; font-size: 13px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
   #extpanel.show { display: block; }
   #extpanel h3 { margin: 2px 2px 8px 8px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
   #extpanel .er { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 12px; }
@@ -415,6 +416,7 @@
   </span>
   <button id="upd"></button>
   <button id="extadd" hidden></button>
+  <button id="extcrx" hidden></button>
   <button class="b" id="extbtn" hidden><svg viewBox="0 0 24 24"><path d="M10 4h4v3a2 2 0 1 0 4 0V4h2v6h-3a2 2 0 1 0 0 4h3v6h-6v-3a2 2 0 1 0-4 0v3H4v-6h3a2 2 0 1 0 0-4H4V4z"/></svg></button>
   <button class="b" id="vidbtn" hidden><svg viewBox="0 0 24 24"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="M17 10l4-2.5v9L17 14M10 9v6M7.5 12.5 10 15l2.5-2.5"/></svg></button>
   <button class="b" id="dlbtn"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
@@ -2153,6 +2155,13 @@
       add.classList.toggle("err", !!st.err && !st.busy);
       add.onclick = () => { send({ cmd: "ext-install", id: st.id }); };
     }
+    const crx = $("extcrx");
+    crx.hidden = !st || !!st.busy;
+    if (st) {
+      crx.textContent = "⬇ .crx";
+      crx.title = LX() ? "Save this extension's .crx file to your Downloads folder (to inspect or share its code)" : "Simpan berkas .crx ekstensi ini ke folder Downloads (untuk melihat/membagikan kodenya)";
+      crx.onclick = () => { send({ cmd: "ext-save", id: st.id }); };
+    }
     const b = $("extbtn");
     b.hidden = !items.length && !ex.restart;
     b.classList.toggle("on", items.some((i) => i.open));
@@ -2180,6 +2189,16 @@
         const o = mk("button", it.open ? "pri" : "", it.open ? (LX() ? "Close" : "Tutup") : (LX() ? "Open" : "Buka"));
         o.onclick = () => { send({ cmd: "ext-open", id: it.id }); closeExt(); };
         row.append(o);
+      }
+      const fd = mk("button", "", LX() ? "Folder" : "Folder");
+      fd.title = LX() ? "Open the folder with this extension's code" : "Buka folder berisi kode ekstensi ini";
+      fd.onclick = () => send({ cmd: "ext-folder", dir: it.dir });
+      row.append(fd);
+      if (it.store && it.id) {
+        const sv = mk("button", "", ".crx");
+        sv.title = LX() ? "Save the original .crx file to Downloads" : "Simpan berkas .crx asli ke folder Downloads";
+        sv.onclick = () => send({ cmd: "ext-save", id: it.id });
+        row.append(sv);
       }
       const rm = mk("button", "", LX() ? "Remove" : "Hapus");
       rm.onclick = () => { if (confirm((LX() ? "Remove extension " : "Hapus ekstensi ") + it.name + "?")) send({ cmd: "ext-remove", dir: it.dir }); };

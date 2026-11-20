@@ -36,6 +36,10 @@ pub enum DlEvent {
     WaitEnd { id: u64 },
     /// Baris untuk ovner.log.
     Log(String),
+    /// Halaman mencoba mengunduh ekstensi Chrome (.crx), mis. tombol "Tambahkan ke Chrome" di
+    /// Chrome Web Store. Chromium memblokir unduhan ini; Ovner membatalkannya dan memasang
+    /// ekstensinya sendiri. (alamat, nama berkas)
+    Crx { url: String, name: String },
     /// PDF yang sedang dibaca dari respons boleh diunduh juga lewat koneksi Ovner sendiri
     /// (WinHTTP, seperti download manager): mana yang selesai lebih dulu dipakai.
     Race { id: u64, url: String, cookie: String, referer: String, user_agent: String, total: i64 },
@@ -369,6 +373,17 @@ mod imp {
     }
 
     /// Folder Desktop pengguna yang sebenarnya (bisa dialihkan ke OneDrive oleh kebijakan kantor).
+    /// Folder Downloads Windows yang sebenarnya (bisa dipindah pengguna, mis. ke D:\ atau OneDrive).
+    pub fn downloads_dir() -> Option<std::path::PathBuf> {
+        use windows::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+        unsafe {
+            let p = SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None).ok()?;
+            let s = p.to_string().ok();
+            windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const _));
+            s.map(std::path::PathBuf::from)
+        }
+    }
+
     pub fn desktop_dir() -> Option<std::path::PathBuf> {
         use windows::Win32::System::Com::CoTaskMemFree;
         use windows::Win32::UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
@@ -683,6 +698,13 @@ mod imp {
                 let url = if op.Uri(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
                 let mut p = windows::core::PWSTR::null();
                 let mut path = if args.ResultFilePath(&mut p).is_ok() { take_pwstr(p) } else { String::new() };
+                let fname = std::path::Path::new(&path).file_name().map(|f| f.to_string_lossy().to_lowercase()).unwrap_or_default();
+                let lurl = url.to_lowercase();
+                if fname.ends_with(".crx") || lurl.contains("/service/update2/crx") || lurl.contains("googleusercontent.com/crx/") {
+                    let _ = args.SetCancel(true);
+                    cb(DlEvent::Crx { url: url.clone(), name: fname });
+                    return Ok(());
+                }
                 // Folder kategori (Download box v2): mis. Downloads\Video\a.mp4.
                 if !path.is_empty() {
                     let placed = place(&path);
@@ -834,6 +856,107 @@ mod imp {
             GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS, pmc.cb).ok()?;
             Some((pmc.PrivateUsage as u64, thread_count()))
         }
+    }
+
+    /// Rincian memori komit proses Ovner sendiri.
+    #[derive(Debug, Default, Clone)]
+    pub struct SelfMem {
+        /// Semua alokasi pribadi yang ter-komit (heap, stack thread, VirtualAlloc).
+        pub private: u64,
+        pub heaps: u32,
+        /// Heap Windows (semua heap proses): dipakai dan dipesan.
+        pub heap_used: u64,
+        pub heap_commit: u64,
+        /// DLL di luar Windows/WebView2/Ovner (jalur, ukuran image).
+        pub third_party: Vec<(String, u64)>,
+        pub modules: u32,
+    }
+
+    fn heap_totals() -> (u32, u64, u64) {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Memory::{GetProcessHeaps, HeapSummary, HEAP_SUMMARY};
+        unsafe {
+            let mut hs = vec![HANDLE::default(); 64];
+            let n = GetProcessHeaps(&mut hs) as usize;
+            if n > hs.len() {
+                hs = vec![HANDLE::default(); n];
+                GetProcessHeaps(&mut hs);
+            }
+            let (mut used, mut commit) = (0u64, 0u64);
+            for h in hs.iter().take(n) {
+                let mut sm = HEAP_SUMMARY { cb: std::mem::size_of::<HEAP_SUMMARY>() as u32, ..Default::default() };
+                if HeapSummary(*h, 0, &mut sm).as_bool() {
+                    used += sm.cbAllocated as u64;
+                    commit += sm.cbCommitted as u64;
+                }
+            }
+            (n.min(hs.len()) as u32, used, commit)
+        }
+    }
+
+    pub fn self_breakdown() -> Option<SelfMem> {
+        use windows::Win32::Foundation::HMODULE;
+        use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_PRIVATE};
+        use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleFileNameExW, GetModuleInformation, MODULEINFO};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut m = SelfMem::default();
+        unsafe {
+            // Jelajahi ruang alamat: jumlahkan halaman pribadi yang ter-komit.
+            let mut addr: usize = 0;
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            while VirtualQuery(Some(addr as *const _), &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) != 0 {
+                if mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE {
+                    m.private += mbi.RegionSize as u64;
+                }
+                let next = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
+                if next <= addr {
+                    break;
+                }
+                addr = next;
+            }
+            let (n, used, commit) = heap_totals();
+            m.heaps = n;
+            m.heap_used = used;
+            m.heap_commit = commit;
+            let me = GetCurrentProcess();
+            let mut mods = vec![HMODULE::default(); 1024];
+            let mut need = 0u32;
+            if EnumProcessModules(me, mods.as_mut_ptr(), (mods.len() * std::mem::size_of::<HMODULE>()) as u32, &mut need).is_ok() {
+                let count = (need as usize / std::mem::size_of::<HMODULE>()).min(mods.len());
+                m.modules = count as u32;
+                let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_string_lossy().to_lowercase())).unwrap_or_default();
+                for h in mods.iter().take(count) {
+                    let mut buf = [0u16; 520];
+                    let len = GetModuleFileNameExW(Some(me), Some(*h), &mut buf) as usize;
+                    let path = String::from_utf16_lossy(&buf[..len]);
+                    let low = path.to_lowercase();
+                    let ours = low.contains("\\windows\\") || low.contains("webview2") || low.contains("\\microsoft\\edge") || (!exe_dir.is_empty() && low.starts_with(&exe_dir));
+                    if !ours {
+                        let mut mi = MODULEINFO::default();
+                        let _ = GetModuleInformation(me, *h, &mut mi, std::mem::size_of::<MODULEINFO>() as u32);
+                        m.third_party.push((path, mi.SizeOfImage as u64));
+                    }
+                }
+            }
+        }
+        Some(m)
+    }
+
+    /// Kembalikan memori bebas di heap Windows ke sistem (HeapCompact semua heap proses).
+    /// Mengembalikan byte komit yang dilepas.
+    pub fn compact_heaps() -> u64 {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Memory::{GetProcessHeaps, HeapCompact, HEAP_NONE};
+        let (_, _, before) = heap_totals();
+        unsafe {
+            let mut hs = vec![HANDLE::default(); 64];
+            let n = (GetProcessHeaps(&mut hs) as usize).min(hs.len());
+            for h in hs.iter().take(n) {
+                let _ = HeapCompact(*h, HEAP_NONE);
+            }
+        }
+        let (_, _, after) = heap_totals();
+        before.saturating_sub(after)
     }
 
     fn thread_count() -> u32 {
@@ -1182,7 +1305,18 @@ mod imp {
     /// Chromium memindah halaman ke proses lain, domain yang dihidupkan sebelumnya hilang dan
     /// rekaman berhenti (laporan EDABU hanya berisi baris NAV setelah halaman pertama).
     pub fn record_enable(webview: &wry::WebView) {
-        for m in ["Runtime.enable", "Log.enable", "Network.enable", "Audits.enable"] {
+        for m in ["Runtime.enable", "Log.enable", "Audits.enable"] {
+            cdp(webview, m, "{}");
+        }
+        // Isi jawaban tidak dibutuhkan laporan: tanpa batas, Chromium menyimpan sampai ±100 MB
+        // isi jawaban per tab di proses inti selama Network domain hidup.
+        cdp(webview, "Network.enable", r#"{"maxTotalBufferSize":1048576,"maxResourceBufferSize":65536,"maxPostDataSize":0}"#);
+    }
+
+    /// Matikan lagi domain DevTools setelah rekaman selesai (dulu tetap hidup sampai tab
+    /// ditutup: setiap permintaan tetap dikirim ke Ovner dan isinya disimpan proses inti).
+    pub fn record_disable(webview: &wry::WebView) {
+        for m in ["Network.disable", "Audits.disable", "Log.disable", "Runtime.disable"] {
             cdp(webview, m, "{}");
         }
     }
@@ -2658,6 +2792,9 @@ mod imp {
     pub fn create_shortcut(_lnk: &Path, _exe: &Path, _description: &str) -> Result<(), String> {
         Ok(())
     }
+    pub fn downloads_dir() -> Option<std::path::PathBuf> {
+        None
+    }
     pub fn desktop_dir() -> Option<std::path::PathBuf> {
         None
     }
@@ -2774,6 +2911,21 @@ mod imp {
     pub fn self_memory() -> Option<(u64, u32)> {
         None
     }
+    #[derive(Debug, Default, Clone)]
+    pub struct SelfMem {
+        pub private: u64,
+        pub heaps: u32,
+        pub heap_used: u64,
+        pub heap_commit: u64,
+        pub third_party: Vec<(String, u64)>,
+        pub modules: u32,
+    }
+    pub fn self_breakdown() -> Option<SelfMem> {
+        None
+    }
+    pub fn compact_heaps() -> u64 {
+        0
+    }
     pub fn on_media(_webview: &wry::WebView, _cb: impl Fn(super::MediaHit) + 'static) {}
     pub fn on_focus(_webview: &wry::WebView, _cb: impl Fn() + 'static) {}
     pub fn context_menu(_webview: &wry::WebView, _items: impl Fn(&serde_json::Value) -> Vec<super::CtxItem> + 'static, _cb: impl Fn(&str, &serde_json::Value) + 'static) {}
@@ -2790,6 +2942,7 @@ mod imp {
     pub fn clip_webview(_webview: &wry::WebView, _rects: &[(i32, i32, i32, i32)]) {}
     pub fn record_problems(_webview: &wry::WebView, _cb: impl Fn(&str, String) + 'static) {}
     pub fn record_enable(_webview: &wry::WebView) {}
+    pub fn record_disable(_webview: &wry::WebView) {}
     pub fn read_clipboard() -> Option<String> {
         None
     }

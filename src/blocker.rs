@@ -217,6 +217,11 @@ pub fn builtin_engine() -> Engine {
 }
 
 /// Muat mesin dari cache bila cocok dengan daftar di disk.
+/// Cache mesin sudah ada (tanpa memuatnya: memuat = ±15 MB alokasi sementara).
+pub fn has_cache(data_dir: &Path) -> bool {
+    filters_dir(data_dir).join(CACHE_FILE).is_file()
+}
+
 pub fn load_cached(data_dir: &Path) -> Option<Engine> {
     let files = list_files(data_dir);
     if files.is_empty() {
@@ -297,19 +302,22 @@ pub fn load_resources(data_dir: &Path) -> Vec<adblock::resources::Resource> {
         .unwrap_or_default()
 }
 
-/// Unduh daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berhasil.
-/// `only_missing`: hanya unduh yang belum ada (mis. daftar baru dinyalakan).
-pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing: bool) -> usize {
+/// Unduh daftar (yang gagal tetap memakai berkas lama). Mengembalikan jumlah yang berubah dan
+/// daftar yang gagal beserta alasannya. `only_missing`: hanya unduh yang belum ada.
+pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing: bool) -> (usize, Vec<String>) {
     let dir = filters_dir(data_dir);
     let _ = std::fs::create_dir_all(&dir);
     let mut ok = 0;
+    let mut failed = Vec::new();
     for (name, url) in wanted {
         if only_missing && dir.join(name).is_file() {
             continue;
         }
         let tmp = dir.join(format!("{name}.unduh"));
         let _ = std::fs::remove_file(&tmp);
-        match crate::win::download(url, &tmp) {
+        let res = crate::win::download(url, &tmp);
+        let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(String::from)).unwrap_or_default();
+        match res {
             // Berkas HTML (halaman galat proxy kantor, misalnya) bukan daftar filter.
             Ok(()) if std::fs::read_to_string(&tmp).is_ok_and(|t| t.len() > 1000 && !t.trim_start().starts_with('<')) => {
                 let new = std::fs::read(&tmp).unwrap_or_default();
@@ -322,12 +330,18 @@ pub fn download_lists(data_dir: &Path, wanted: &[(String, String)], only_missing
                     ok += 1;
                 }
             }
-            _ => {
+            Ok(()) => {
+                let head: String = std::fs::read_to_string(&tmp).unwrap_or_default().chars().take(60).collect();
+                failed.push(format!("{name} dari {host}: isinya bukan daftar filter (mis. halaman login/blokir jaringan: {:?})", head.trim()));
+                let _ = std::fs::remove_file(&tmp);
+            }
+            Err(e) => {
+                failed.push(format!("{name} dari {host}: {e}"));
                 let _ = std::fs::remove_file(&tmp);
             }
         }
     }
-    ok
+    (ok, failed)
 }
 
 /// Jenis permintaan EasyList dari konteks sumber daya WebView2.

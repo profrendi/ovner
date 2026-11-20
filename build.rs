@@ -42,6 +42,25 @@ fn main() {
             .set("FileDescription", "Ovner")
             .set("CompanyName", "profrendi")
             .set("LegalCopyright", "MIT");
+        // Segment Heap (Windows 10 2004+, dipakai juga oleh Edge/Chromium): heap Windows lebih
+        // cepat mengembalikan memori yang sudah dilepas ke sistem, jadi ovner.exe tidak menahan
+        // sisa pekerjaan besar (mis. menyusun mesin filter iklan).
+        res.set_manifest(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application><supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/></application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+    </windowsSettings>
+  </application>
+</assembly>"#,
+        );
         res.compile().expect("kompilasi resource Windows");
     }
 }

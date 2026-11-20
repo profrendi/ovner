@@ -38,7 +38,13 @@ struct PidState {
     after: u64,
     /// Kelipatan jarak (1 = normal).
     backoff: u32,
+    /// Berapa kali hasil rapikan proses ini memantul (RAM-nya kembali dalam 1 menit).
+    bounces: u32,
 }
+
+/// Setelah memantul sekian kali, proses tidak dirapikan lagi kecuali RAM Windows menipis:
+/// merapikan proses yang langsung memakai lagi halamannya hanya membuang CPU dan disk.
+pub const MAX_BOUNCES: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct Trimmed {
@@ -90,7 +96,7 @@ impl Trimmer {
     /// Pilih proses yang dirapikan. `base` = jarak normal antar-rapikan per proses.
     /// `force` (diminta pengguna/diminimalkan): abaikan jarak dan syarat bertambah, tetapi
     /// proses yang sedang dipakai tetap tidak disentuh.
-    pub fn choose(&self, now: Instant, procs: &[Candidate], base: Duration, force: bool) -> (Vec<u32>, Vec<(String, &'static str)>) {
+    pub fn choose(&self, now: Instant, procs: &[Candidate], base: Duration, force: bool, pressure: bool) -> (Vec<u32>, Vec<(String, &'static str)>) {
         let mut pick = Vec::new();
         let mut skipped = Vec::new();
         for p in procs {
@@ -103,6 +109,10 @@ impl Trimmer {
             }
             if !force {
                 if let Some(st) = self.state.get(&p.pid) {
+                    if st.bounces >= MAX_BOUNCES && !pressure {
+                        skipped.push((p.kind.clone(), "berhenti dirapikan (2× memantul)"));
+                        continue;
+                    }
                     if now.duration_since(st.last) < base * st.backoff {
                         if st.backoff > 1 {
                             skipped.push((p.kind.clone(), "sering memantul"));
@@ -124,8 +134,8 @@ impl Trimmer {
     /// Catat hasil rapikan; penilaian dijadwalkan `CHECK_AFTER` kemudian.
     pub fn record(&mut self, now: Instant, done: Vec<Trimmed>) {
         for t in &done {
-            let backoff = self.state.get(&t.pid).map(|s| s.backoff).unwrap_or(1);
-            self.state.insert(t.pid, PidState { last: now, after: t.after, backoff });
+            let (backoff, bounces) = self.state.get(&t.pid).map(|s| (s.backoff, s.bounces)).unwrap_or((1, 0));
+            self.state.insert(t.pid, PidState { last: now, after: t.after, backoff, bounces });
         }
         if !done.is_empty() {
             self.pending = Some((now + CHECK_AFTER, done));
@@ -149,6 +159,9 @@ impl Trimmer {
             let bounced = freed > 0 && now.saturating_sub(t.after) * 10 >= freed * 8;
             if let Some(st) = self.state.get_mut(&t.pid) {
                 st.backoff = if bounced { (st.backoff * 2).min(MAX_BACKOFF) } else { 1 };
+                if bounced {
+                    st.bounces += 1;
+                }
                 if bounced {
                     v.bounced.push((t.kind.clone(), st.backoff));
                 }
@@ -191,11 +204,11 @@ mod tests {
             c(4, "network", 12, None),
             c(5, "browser", 60, None),
         ];
-        let (pick, skipped) = t.choose(t0, &procs, base, false);
+        let (pick, skipped) = t.choose(t0, &procs, base, false, false);
         assert_eq!(pick, vec![3, 5], "yang dipakai dan yang terlalu kecil dilewati");
         assert_eq!(skipped.len(), 2);
         // Paksa (diminta pengguna): syarat bertambah diabaikan, yang dipakai tetap tidak.
-        let (pick, _) = t.choose(t0, &procs, base, true);
+        let (pick, _) = t.choose(t0, &procs, base, true, false);
         assert_eq!(pick, vec![3, 4, 5]);
 
         t.record(t0, vec![Trimmed { pid: 3, kind: "renderer".into(), before: 120 * MB, after: 20 * MB }, Trimmed { pid: 5, kind: "browser".into(), before: 60 * MB, after: 10 * MB }]);
@@ -211,12 +224,12 @@ mod tests {
         // 5 menit kemudian: renderer boleh lagi bila bertambah ≥20 MB; browser menunggu 10 menit.
         let t5 = t0 + base;
         let procs = vec![c(3, "renderer", 45, None), c(5, "browser", 70, None)];
-        let (pick, skipped) = t.choose(t5, &procs, base, false);
+        let (pick, skipped) = t.choose(t5, &procs, base, false, false);
         assert_eq!(pick, vec![3]);
         assert_eq!(skipped, vec![("browser".to_string(), "sering memantul")]);
         let procs = vec![c(3, "renderer", 35, None)];
-        assert!(t.choose(t5, &procs, base, false).0.is_empty(), "baru bertambah 15 MB");
-        let (pick, _) = t.choose(t0 + base * 2, &[c(5, "browser", 70, None)], base, false);
+        assert!(t.choose(t5, &procs, base, false, false).0.is_empty(), "baru bertambah 15 MB");
+        let (pick, _) = t.choose(t0 + base * 2, &[c(5, "browser", 70, None)], base, false, false);
         assert_eq!(pick, vec![5]);
 
         // Memantul terus: jarak berlipat sampai 8×, lalu kembali 1× begitu bertahan.
@@ -228,6 +241,13 @@ mod tests {
         t.record(t0, vec![Trimmed { pid: 5, kind: "browser".into(), before: 60 * MB, after: 10 * MB }]);
         t.evaluate(&HashMap::from([(5, 12 * MB)]));
         assert_eq!(t.state[&5].backoff, 1);
+        // Sudah ≥ 2× memantul: tidak dirapikan lagi, kecuali RAM Windows menipis.
+        let later = t0 + base * 20;
+        let big = [c(5, "browser", 200, None)];
+        let (pick, skipped) = t.choose(later, &big, base, false, false);
+        assert!(pick.is_empty());
+        assert_eq!(skipped, vec![("browser".to_string(), "berhenti dirapikan (2× memantul)")]);
+        assert_eq!(t.choose(later, &big, base, false, true).0, vec![5]);
         t.retain(&[3]);
         assert!(!t.state.contains_key(&5));
     }

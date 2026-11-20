@@ -20,6 +20,7 @@ pub const SETTINGS_HTML: &str = include_str!("ui/settings.html");
 /// Nilai tersimpan yang tidak tampil sebagai baris di Pengaturan, dan alasannya.
 pub const HIDDEN: &[(&str, &str)] = &[
     ("schema", "internal: versi format setelan"),
+    ("translate_sel_to", "diatur langsung di gelembung terjemahan teks terpilih"),
     ("setup_done", "internal: layar sambutan sudah selesai"),
     ("yt_codec_migrated", "internal: penanda migrasi codec"),
     ("preset", "tombol Seimbang/Ketat/Maksimal di atas Pengaturan"),
@@ -413,24 +414,39 @@ pub fn ram_items(data: &Path) -> Vec<Value> {
     let mb = |b: u64| b as f64 / 1_048_576.0;
     let heap = crate::heap::now();
     let engine = crate::blocker::measure_engine(data);
-    match crate::win::self_memory() {
-        Some((commit, threads)) => {
+    match (crate::win::self_memory(), crate::win::self_breakdown()) {
+        (Some((commit, threads)), Some(b)) => {
             let eng = engine.map(|e| e.0).unwrap_or(0);
             out.push(item(
                 "RAM",
                 "Isi proses ovner.exe",
                 "info",
                 format!(
-                    "komit {:.0} MB = heap Rust Ovner {:.1} MB (di dalamnya mesin pemblokir ±{:.1} MB) + DLL WebView2/Windows, tumpukan {threads} thread, dll. ±{:.0} MB · puncak heap Rust {:.1} MB",
+                    "komit {:.0} MB · heap Rust Ovner {:.1} MB (mesin pemblokir ±{:.1} MB) · heap Windows {} heap: dipakai {:.1} MB, dipesan {:.1} MB · alokasi lain (WebView2/DLL/stack {threads} thread) ±{:.1} MB · puncak heap Rust {:.1} MB",
                     mb(commit),
                     mb(heap),
                     mb(eng),
-                    mb(commit.saturating_sub(heap)),
+                    b.heaps,
+                    mb(b.heap_used),
+                    mb(b.heap_commit),
+                    mb(b.private.saturating_sub(b.heap_commit)),
                     mb(crate::heap::peak())
                 ),
             ));
+            let names: Vec<String> = b.third_party.iter().map(|(p, sz)| format!("{} ({:.1} MB)", p, mb(*sz))).collect();
+            out.push(item(
+                "RAM",
+                "DLL pihak ketiga di ovner.exe",
+                if names.is_empty() { "ok" } else { "info" },
+                if names.is_empty() {
+                    format!("tidak ada ({} modul, semuanya Windows/WebView2/Ovner)", b.modules)
+                } else {
+                    format!("{} dari {} modul dimuat program lain (antivirus, peluncur, dll.): {}", names.len(), b.modules, names.join("; "))
+                },
+            ));
         }
-        None => out.push(item("RAM", "Isi proses ovner.exe", "info", format!("heap Rust Ovner {:.1} MB", mb(heap)))),
+        (Some((commit, _)), None) => out.push(item("RAM", "Isi proses ovner.exe", "info", format!("komit {:.0} MB, heap Rust Ovner {:.1} MB", mb(commit), mb(heap)))),
+        _ => out.push(item("RAM", "Isi proses ovner.exe", "info", format!("heap Rust Ovner {:.1} MB", mb(heap)))),
     }
     out.push(match engine {
         Some((used, ms, cache)) => item("RAM", "Mesin pemblokir iklan", "ok", format!("±{:.1} MB di memori (cache {:.1} MB di disk), dimuat {ms} ms", mb(used), mb(cache))),

@@ -71,6 +71,36 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.28
+
+**Ekstensi Chrome**
+- Tombol bawaan Chrome Web Store ("Tambahkan ke Chrome") kini juga jalan: unduhan .crx yang dulu diblokir Chromium (0 MB, gagal) dicegat dan ekstensinya dipasang lewat Ovner.
+- Klik kanan di halaman ekstensi Web Store: **Tambahkan ekstensi ini ke Ovner** dan **Unduh berkas .crx ekstensi ini**.
+- Tombol **⬇ .crx** di toolbar (halaman Web Store) dan di daftar ekstensi: berkas .crx asli disimpan ke folder Downloads dan tampil di daftar unduhan. Tombol **Folder** membuka folder berisi kode ekstensi.
+- Setiap langkah tercatat di log `[ekstensi]` (alamat unduh, ukuran, folder pasang, hasil muat).
+
+**Bilah judul seperti Task Manager Windows**
+- Tampil jumlah dan rinciannya: `Ovner 669,1 MB (ovner.exe 27,3 · WebView2 (10) 641,8)` — sama dengan baris "Ovner" + "WebView2 Manager (10)" di Task Manager, satu desimal, diperbarui tiap 1 detik.
+
+**Unduhan**
+- Subfolder jenis berkas (Documents, Video, …) hanya dibuat di folder Downloads bawaan. Lokasi yang dipilih sendiri ("Save as" di penampil PDF, folder unduhan di Pengaturan, dialog video) dipakai persis.
+
+**Terjemahan teks yang dipilih**
+- Hasilnya muncul dalam gelembung tepat di bawah teks yang diblok (bukan di panel atas), lengkap dengan pilihan bahasa tujuan (diingat), Salin, dan Tutup (Esc / klik di luar).
+
+**RAM dan kebocoran**
+- Perbaikan kebocoran: setelah "Rekam masalah" dihentikan, DevTools di tab itu dimatikan lagi (dulu tetap hidup sampai tab ditutup) dan isi laporan dilepas dari memori; saat merekam, penyimpanan isi jawaban jaringan dibatasi 1 MB.
+- ovner.exe memakai Segment Heap Windows dan mengembalikan memori bebas ke Windows setelah pekerjaan besar (mis. menyusun ulang mesin filter).
+- Diagnostik → RAM: rincian ovner.exe (heap Rust, heap Windows dipakai/dipesan, alokasi lain) dan **DLL pihak ketiga** yang dimuat program lain (antivirus, peluncur) ke dalam ovner.exe.
+- Rapikan RAM lebih cerdas: proses inti dan jaringan tidak dirapikan selama jendela dipakai; proses yang 2× memantul berhenti dirapikan; perapian agresif hanya bila RAM Windows tersedia < 25%.
+- Deteksi kebocoran juga membandingkan jumlah tab hidup yang sama di dua waktu berjarak ≥ 1 jam.
+- Mode efisiensi per proses tidak lagi bolak-balik tiap 10 detik; log tidak lagi penuh baris "efisiensi" dan "media terdeteksi".
+- Cek cache mesin filter tidak lagi memuat seluruh mesin (±15 MB sementara).
+
+**Jaringan kantor**
+- Daftar filter diperiksa lagi tiap 15 menit selama Ovner terbuka (dulu hanya saat mulai); yang gagal dicatat beserta alasannya. Cek update yang gagal (mis. jaringan masih meminta login) dicoba lagi 15 menit kemudian, lalu tiap 6 jam.
+- Penerjemah Microsoft yang sesekali menjawab bukan JSON dicoba ulang; bila Google berhasil mengambil alih, log mencatat PERINGATAN (bukan GALAT).
+
 ## Perbaikan 0.8.27
 
 - Toolbar tidak lagi menyalakan mesin suara Windows (speechSynthesis/SAPI) saat dibuka; mesin suara baru dimuat ketika Baca keras dipakai.
