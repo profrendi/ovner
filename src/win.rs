@@ -98,6 +98,43 @@ pub struct MediaHit {
     pub headers: Vec<(String, String)>,
 }
 
+/// Nama alasan unduhan WebView2 terputus (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON).
+pub fn interrupt_reason_name(code: i32) -> &'static str {
+    match code {
+        0 => "tidak ada",
+        1 => "berkas gagal ditulis",
+        2 => "akses berkas ditolak (folder tujuan)",
+        3 => "disk penuh",
+        4 => "nama berkas terlalu panjang",
+        5 => "berkas terlalu besar",
+        6 => "berkas dianggap berbahaya (Defender/SmartScreen)",
+        7 => "galat sementara berkas",
+        8 => "diblokir kebijakan",
+        9 => "pemeriksaan keamanan gagal",
+        10 => "berkas kurang dari seharusnya",
+        11 => "hash tidak cocok",
+        12 => "jaringan gagal",
+        13 => "waktu jaringan habis",
+        14 => "jaringan terputus",
+        15 => "server mati",
+        16 => "permintaan tidak valid",
+        17 => "server gagal",
+        18 => "server tidak mendukung Range",
+        19 => "isi dari server buruk",
+        20 => "server menolak (perlu login)",
+        21 => "masalah sertifikat server",
+        22 => "server melarang",
+        23 => "jawaban server tak terduga",
+        24 => "panjang isi tidak cocok",
+        25 => "pengalihan lintas asal",
+        26 => "dibatalkan pengguna",
+        27 => "dibatalkan karena ditutup",
+        28 => "dijeda",
+        29 => "proses unduh crash",
+        _ => "tidak dikenal",
+    }
+}
+
 /// Jenis media dari alamat + Content-Type, atau None bila bukan media yang layak diunduh
 /// (potongan HLS/DASH, gambar, situs yang sudah ditangani yt-dlp seperti YouTube).
 pub fn classify_media(url: &str, mime: &str, status: i32) -> Option<&'static str> {
@@ -130,6 +167,12 @@ pub fn classify_media(url: &str, mime: &str, status: i32) -> Option<&'static str
 
 #[cfg(test)]
 mod media_tests {
+    #[test]
+    fn interrupt_names() {
+        assert_eq!(super::interrupt_reason_name(3), "disk penuh");
+        assert_eq!(super::interrupt_reason_name(999), "tidak dikenal");
+    }
+
     use super::classify_media as c;
     #[test]
     fn classifies_media() {
@@ -663,6 +706,12 @@ mod imp {
                     let mut r = 0i64;
                     let _ = op.BytesReceived(&mut r);
                     DOWNLOADS.with(|d| d.borrow_mut().remove(&id));
+                    if st != COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+                        // Alasan dari WebView2 (disk penuh, diblokir Defender/SmartScreen, putus, ...).
+                        let mut why = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+                        let _ = op.InterruptReason(&mut why);
+                        crate::log(&format!("[unduh] alasan WebView2 unduhan gagal: {} (kode {}), berkas {path}", interrupt_reason_name(why.0), why.0));
+                    }
                     cb2(DlEvent::Done { id, ok: st == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, path, received: r });
                 }
             }

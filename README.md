@@ -71,6 +71,17 @@ situs tidak ikut pindah ke komputer lain; bookmark, riwayat, dan pengaturan ikut
   video tidak terkena trik sidik jari yang berat. Mode GPU *Hemat* kini hanya memindahkan gambar
   halaman ke CPU; untuk video tetap disarankan *Penuh*.
 
+## Perbaikan 0.8.31 (dari log Windows 10 IoT LTSC)
+
+Berdasarkan diagnostik, log, dan sesi dari PC LTSC. Tes: 118 lulus.
+
+- **Unduhan gagal "0.0 MB diterima" saat klik biasa**: unduhan WebView2 yang dipindah ke folder kategori (mis. `Downloads\Programs`) tidak dicek bentrok nama. Bila berkas bernama sama sudah ada dari unduhan sebelumnya, unduhan langsung gagal, sementara "Simpan tautan sebagai" lolos karena memilih nama baru. Kini nama di folder kategori selalu dibuat unik (`nama (1).exe`).
+- **Alasan gagal unduhan sekarang dicatat**: log `[unduh] alasan WebView2 unduhan gagal: …` (disk penuh, diblokir Defender/SmartScreen, putus, dsb.). Sebelumnya hanya "gagal/dibatalkan" tanpa sebab. Jika masih ada kegagalan, baris ini menunjukkan penyebab pastinya.
+- **Video YouTube memuat ulang berkali-kali**: tiap klik opsi codec di Pengaturan langsung memuat ulang tab YouTube. Kini perubahan ditunggu 4 detik (beberapa klik = satu muat ulang), dan tab tidak disentuh bila codec efektif sama dengan yang sudah dipakai halaman.
+- **Log "GALAT" palsu**: ringkasan "0 gagal" (mis. pemeriksaan daftar filter) dibaca sebagai galat dan menaikkan hitungan "Crash/galat" di diagnostik. Angka nol utuh tidak lagi dihitung ("10 gagal" tetap galat).
+- **Mengubah interval pembaruan daftar filter** tidak lagi memicu pembangunan ulang mesin filter (1-3 detik CPU dan puncak RAM ~88 MB tiap kali).
+- **Tautan bertanda tangan di log**: nilai `sig=`, `token=`, `srsltid=`, `key=`, dll. pada alamat di log dan diagnostik diganti `…`.
+
 ## Perbaikan 0.8.30 (audit kode sendiri)
 
 Audit modul yang tidak dijaga uji otomatis. Setiap temuan punya tes regresi (115 tes lulus), dan yang dulu panik dibuktikan dengan memutar kode lama.
