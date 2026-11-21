@@ -161,7 +161,32 @@ pub fn log_now(msg: &str) {
 pub fn format_line(time: &str, msg: &str) -> String {
     let (cat, rest) = split_category(msg);
     let (level, rest) = split_level(rest);
-    format!("{time} {level:<10} [{cat}] {rest}")
+    format!("{time} {level:<10} [{cat}] {}", redact_secrets(rest))
+}
+
+/// Nilai parameter alamat yang berisi tanda tangan/token/pelacak ("?sig=…", "&token=…") diganti
+/// "…" supaya log dan diagnostik yang dibagikan tidak membocorkan tautan bertanda tangan.
+pub fn redact_secrets(msg: &str) -> String {
+    const KEYS: [&str; 14] =
+        ["sig", "signature", "jwt", "token", "access_token", "auth", "key", "sc", "srsltid", "expires", "x-amz-signature", "x-amz-credential", "x-amz-security-token", "code"];
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(i) = rest.find(['?', '&']) {
+        out.push_str(&rest[..=i]);
+        rest = &rest[i + 1..];
+        let end = rest.find(['&', ' ', '"', '\'', ')', '#']).unwrap_or(rest.len());
+        let pair = &rest[..end];
+        match pair.split_once('=') {
+            Some((k, v)) if !v.is_empty() && KEYS.contains(&k.to_ascii_lowercase().as_str()) => {
+                out.push_str(k);
+                out.push_str("=…");
+            }
+            _ => out.push_str(pair),
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Kategori tertulis "[nama] …" (harus salah satu CATEGORIES) atau tebakan dari isi pesan.
@@ -227,7 +252,23 @@ pub fn categorize(msg: &str) -> &'static str {
 
 /// Tebak tingkat dari isi pesan.
 pub fn level_of(msg: &str) -> &'static str {
-    let m = msg.to_lowercase().replace("crashpad", "");
+    let mut m = msg.to_lowercase().replace("crashpad", "");
+    // Ringkasan "0 gagal" / "0 galat" bukan galat. Hanya angka 0 utuh ("10 gagal" tetap galat).
+    for w in ["gagal", "galat", "error", "panic", "crash"] {
+        let zero = format!("0 {w}");
+        let mut out = String::with_capacity(m.len());
+        let mut rest = m.as_str();
+        while let Some(i) = rest.find(&zero) {
+            let prev_digit = rest[..i].chars().next_back().is_some_and(|c| c.is_ascii_digit());
+            out.push_str(&rest[..i]);
+            if prev_digit {
+                out.push_str(&zero);
+            }
+            rest = &rest[i + zero.len()..];
+        }
+        out.push_str(rest);
+        m = out;
+    }
     let has = |w: &[&str]| w.iter().any(|x| m.contains(x));
     if has(&["panic", "galat", "gagal", "error", "tidak bisa", "crash"]) && !has(&["tidak ada yang baru"]) {
         "GALAT"
@@ -246,6 +287,24 @@ pub fn line_level(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrets_in_urls_are_hidden() {
+        assert_eq!(redact_secrets("pop-up: https://a.com/x?srsltid=AbC123&q=naruto"), "pop-up: https://a.com/x?srsltid=…&q=naruto");
+        assert_eq!(redact_secrets("https://s.com/f?sig=zzz"), "https://s.com/f?sig=…");
+        assert_eq!(redact_secrets("tanpa tautan 1 & 2"), "tanpa tautan 1 & 2");
+        assert_eq!(redact_secrets("https://a.com/?page=2&key="), "https://a.com/?page=2&key=");
+    }
+
+    #[test]
+    fn zero_failures_is_not_an_error() {
+        assert_eq!(level_of("[shields] daftar filter diperiksa: 3 berubah, 2 sama, 0 gagal (dari 5)"), "INFO");
+        assert_eq!(level_of("diperiksa: 3 berubah, 10 gagal (dari 13)"), "GALAT");
+        assert_eq!(level_of("diperiksa: 150 gagal"), "GALAT");
+        assert_eq!(level_of("0 gagal, 2 gagal"), "GALAT");
+        assert_eq!(level_of("0 error, 0 panic"), "INFO");
+        assert_eq!(level_of("x gagal"), "GALAT");
+    }
 
     #[test]
     fn lines_get_category_and_level() {

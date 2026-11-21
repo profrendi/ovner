@@ -305,6 +305,18 @@ fn free_download_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Jalur untuk unduhan WebView2 yang dipindah ke folder kategori. WebView2 hanya menjamin nama
+/// unik di folder asalnya; di folder kategori (mis. Downloads\Programs) berkas bernama sama bisa
+/// sudah ada dari unduhan sebelumnya, dan unduhan langsung gagal "0.0 MB diterima".
+#[allow(dead_code)]
+fn unique_sorted_path(s: &Settings, path: &str) -> String {
+    let placed = sorted_download_path(s, Path::new(path));
+    if placed.as_path() == Path::new(path) {
+        return path.to_string();
+    }
+    free_download_path(&placed).display().to_string()
+}
+
 fn delete_download_files(path: &str) {
     let p = PathBuf::from(path);
     if path.is_empty() {
@@ -955,6 +967,9 @@ struct App {
     ext_panel: Option<(String, WebView)>,
     /// Setelan codec YouTube diubah di panel tapi tab YouTube belum dimuat ulang.
     codec_dirty: bool,
+    /// Perubahan codec dari halaman Pengaturan menunggu jeda ini (supaya beberapa klik beruntun
+    /// hanya memuat ulang tab YouTube satu kali, bukan tiap klik).
+    codec_apply_at: Option<Instant>,
     /// Tersembunyi di tray.
     in_tray: bool,
     /// Sedang dalam keadaan hemat (tray atau diminimalkan).
@@ -1376,7 +1391,7 @@ fn build_tab_view(
         },
         {
             let st = tenv.settings.clone();
-            move |path| sorted_download_path(&st.borrow(), Path::new(path)).display().to_string()
+            move |path| unique_sorted_path(&st.borrow(), path)
         },
     );
     if !private {
@@ -5174,6 +5189,11 @@ impl App {
         if sleep_due {
             self.last_sleep_check = Instant::now();
         }
+        if self.codec_apply_at.is_some_and(|t| Instant::now() >= t) {
+            self.apply_codec_inner(false);
+            self.last_render_key.clear();
+            self.render();
+        }
         self.promote_waiting();
         self.start_due_races();
         self.decide_races();
@@ -5997,7 +6017,11 @@ impl App {
             }
             // Codec YouTube dari halaman Pengaturan: langsung berlaku di tab YouTube.
             "yt_codec" | "yt_block_av1" | "yt_block_vp9" | "yt_block_vp8" | "yt_block_h264" | "yt_block_60fps" | "yt_block_opus" | "yt_block_aac"
-            | "yt_no_loudness" => self.apply_codec(),
+            | "yt_no_loudness" => {
+                if self.any_youtube_tab() {
+                    self.codec_apply_at = Some(Instant::now() + CODEC_DEBOUNCE);
+                }
+            }
             "letterboxing" | "vertical_tabs" => {
                 self.each_window(|a| {
                     a.ensure_sidebar();
@@ -6006,7 +6030,7 @@ impl App {
                     a.render();
                 });
             }
-            "block_annoyances" | "strip_tracking_params" | "filter_update_hours" => start_filter_update(self.proxy.clone(), s.clone()),
+            "block_annoyances" | "strip_tracking_params" => start_filter_update(self.proxy.clone(), s.clone()),
             "security_level" | "script_allowed" => {
                 if let Some(wv) = self.active_webview() {
                     let _ = wv.reload();
@@ -6099,7 +6123,24 @@ impl App {
     /// Bangun ulang tab YouTube di semua jendela supaya setelan codec baru dipakai (YouTube
     /// memilih codec saat halaman dimuat). Tab lain tidak tersentuh.
     fn apply_codec(&mut self) {
+        self.apply_codec_inner(true);
+    }
+
+    /// `force`: tombol "Terapkan" selalu memuat ulang. Tanpa `force` (perubahan dari Pengaturan),
+    /// tab tidak disentuh bila codec yang efektif sama dengan yang sudah dipakai halaman.
+    fn apply_codec_inner(&mut self, force: bool) {
         self.codec_dirty = false;
+        self.codec_apply_at = None;
+        let (b, no60) = self.settings.borrow().yt_codec_blocks();
+        let key = codec_key(&b, no60, self.settings.borrow().yt_no_loudness);
+        {
+            let mut last = CODEC_APPLIED.lock().unwrap_or_else(|e| e.into_inner());
+            if !force && last.as_deref() == Some(key.as_str()) {
+                log("codec YouTube: setelan efektif tidak berubah, tab tidak dimuat ulang");
+                return;
+            }
+            *last = Some(key);
+        }
         let mut n = 0;
         self.each_window(|a| {
             let list: Vec<usize> = (0..a.tabs.len()).filter(|&j| a.tabs[j].webview.is_some() && video::is_youtube(&a.tabs[j].url)).collect();
@@ -6108,7 +6149,6 @@ impl App {
                 n += 1;
             }
         });
-        let (b, no60) = self.settings.borrow().yt_codec_blocks();
         log(&format!("codec YouTube: blokir {b:?}{}; {n} tab dimuat ulang", if no60 { " + >30fps" } else { "" }));
     }
 
@@ -8179,6 +8219,16 @@ fn background_update_check(p: EventLoopProxy<UserEvent>, s: &Settings, delay: u6
 /// Siapkan daftar filter sesuai setelan lalu susun ulang mesinnya di latar bila berubah:
 /// buang daftar yang tidak dipakai, unduh yang belum ada, dan (bila otomatis) perbarui yang
 /// lebih tua dari seminggu.
+/// Jeda sebelum perubahan codec dari Pengaturan memuat ulang tab YouTube.
+const CODEC_DEBOUNCE: Duration = Duration::from_secs(4);
+
+/// Codec efektif yang terakhir dipakai tab YouTube (kosong = belum pernah diterapkan).
+static CODEC_APPLIED: Mutex<Option<String>> = Mutex::new(None);
+
+fn codec_key(blocks: &[&str], no60: bool, no_loudness: bool) -> String {
+    format!("{}|{no60}|{no_loudness}", blocks.join(","))
+}
+
 fn start_filter_update(proxy: EventLoopProxy<UserEvent>, s: Settings) {
     filter_update(proxy, s, false);
 }
@@ -9191,7 +9241,12 @@ fn main() {
         next_id: Rc::new(Cell::new(0)),
         popups: Rc::new(RefCell::new(Vec::new())),
         closed: Vec::new(),
-        settings: Rc::new(RefCell::new(settings)),
+        settings: {
+            // Codec yang dipakai halaman YouTube saat Ovner dibuka: dasar pembanding "tidak berubah".
+            let (b, no60) = settings.yt_codec_blocks();
+            *CODEC_APPLIED.lock().unwrap_or_else(|e| e.into_inner()) = Some(codec_key(&b, no60, settings.yt_no_loudness));
+            Rc::new(RefCell::new(settings))
+        },
         blocker,
         store: Store::load(data_dir()),
         vault: vault::Vault::load(data_dir()),
@@ -9314,6 +9369,7 @@ fn main() {
         ext_restart: false,
         ext_panel: None,
         codec_dirty: false,
+        codec_apply_at: None,
         sampler: usage::Sampler::new(),
         stats: Vec::new(),
         stats_at: Instant::now(),
